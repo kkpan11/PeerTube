@@ -1,14 +1,12 @@
 import { AbstractUserExporter } from './abstract-user-exporter.js'
 import { UserSettingsExportJSON } from '@peertube/peertube-models'
 
-export class UserSettingsExporter extends AbstractUserExporter <UserSettingsExportJSON> {
-
+export class UserSettingsExporter extends AbstractUserExporter<UserSettingsExportJSON> {
   export () {
     return {
       json: {
         email: this.user.email,
 
-        emailPublic: this.user.emailPublic,
         nsfwPolicy: this.user.nsfwPolicy,
 
         autoPlayVideo: this.user.autoPlayVideo,
@@ -19,6 +17,7 @@ export class UserSettingsExporter extends AbstractUserExporter <UserSettingsExpo
 
         videosHistoryEnabled: this.user.videosHistoryEnabled,
         videoLanguages: this.user.videoLanguages,
+        language: this.user.language,
 
         theme: this.user.theme,
 

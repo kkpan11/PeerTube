@@ -3,11 +3,11 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="robots" content="noindex">
     <meta property="og:platform" content="PeerTube" />
 
     <!-- /!\ The following comment is used by the server to prerender some tags /!\ -->
 
+    <!-- favicon tag -->
     <!-- title tag -->
     <!-- description tag -->
     <!-- custom css tag -->
@@ -16,13 +16,16 @@
 
     <!-- /!\ Do not remove it /!\ -->
 
-    <link rel="icon" type="image/png" href="/client/assets/images/favicon.png" />
+    <script type="text/javascript">
+      // Must run before video.js is evaluated: PeerTube sizes the player with its own CSS
+      // Default video.js might impact SEO
+      window.VIDEOJS_NO_DYNAMIC_STYLE = true
+    </script>
   </head>
 
   <body id="custom-css" class="standalone-video-embed">
 
-    <div id="error-block">
-      <!-- eslint-disable-next-line @angular-eslint/template/elements-content -->
+    <div id="error-block" style="display: none;">
       <h1 id="error-title"></h1>
 
       <div id="error-content"></div>
@@ -34,8 +37,7 @@
       </details>
     </div>
 
-    <div id="video-password-block">
-      <!-- eslint-disable-next-line @angular-eslint/template/elements-content -->
+    <div id="video-password-block" style="display: none;">
       <h1 id="video-password-title"></h1>
 
       <div id="video-password-content"></div>

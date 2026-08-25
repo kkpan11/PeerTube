@@ -1,9 +1,9 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
 import { HttpStatusCode, VideoPlaylistCreateResult } from '@peertube/peertube-models'
 import { cleanupTests, makeGetRequest, makeHTMLRequest, PeerTubeServer } from '@peertube/peertube-server-commands'
 import { checkIndexTags, getWatchPlaylistBasePaths, getWatchVideoBasePaths, prepareClientTests } from '@tests/shared/client.js'
+import { expect } from 'chai'
 
 describe('Test index HTML generation', function () {
   let servers: PeerTubeServer[]
@@ -26,9 +26,8 @@ describe('Test index HTML generation', function () {
   }
 
   before(async function () {
-    this.timeout(120000);
-
-    ({
+    this.timeout(120000)
+    ;({
       servers,
       playlistIds,
       videoIds,
@@ -44,7 +43,6 @@ describe('Test index HTML generation', function () {
   })
 
   describe('Instance tags', function () {
-
     it('Should have valid index html tags (title, description...)', async function () {
       const config = await servers[0].config.getConfig()
       const res = await makeHTMLRequest(servers[0].url, '/videos/browse')
@@ -60,7 +58,7 @@ describe('Test index HTML generation', function () {
             shortDescription: 'my short description',
             description: 'my super description',
             terms: 'my super terms',
-            defaultNSFWPolicy: 'blur',
+            defaultNSFWPolicy: 'warn',
             defaultClientRoute: '/videos/recently-added',
             customizations: {
               javascript: 'alert("coucou")',
@@ -82,10 +80,21 @@ describe('Test index HTML generation', function () {
 
       checkIndexTags(res.text, 'PeerTube updated', 'my short description', 'body { background-color: red; }', config)
     })
+
+    it('Should escape HTML characters in the index html tags', async function () {
+      await servers[0].config.updateExistingConfig({
+        newConfig: {
+          instance: {
+            name: '</script><img src=x onerror=alert(1)>'
+          }
+        }
+      })
+      const res = await makeHTMLRequest(servers[0].url, '/videos/browse')
+      expect(res.text).to.contain('\\u003c/script\\u003e\\u003cimg src=x onerror=alert(1)\\u003e')
+    })
   })
 
   describe('Canonical tags', function () {
-
     it('Should use the original video URL for the canonical tag', async function () {
       for (const basePath of getWatchVideoBasePaths()) {
         for (const id of videoIds) {
@@ -123,10 +132,14 @@ describe('Test index HTML generation', function () {
       channelURLtests(await makeHTMLRequest(servers[0].url, '/c/root_channel@' + servers[0].host))
       channelURLtests(await makeHTMLRequest(servers[0].url, '/@root_channel@' + servers[0].host))
     })
+
+    it('Should escape canonical tag URL', async function () {
+      const res = await makeHTMLRequest(servers[0].url, '/watch/foo"><svg/onload=alert(1)>')
+      expect(res.text).to.not.contain('<svg/onload=alert(1)>')
+    })
   })
 
   describe('Indexation tags', function () {
-
     it('Should not index remote videos', async function () {
       for (const basePath of getWatchVideoBasePaths()) {
         for (const id of videoIds) {
@@ -223,10 +236,9 @@ describe('Test index HTML generation', function () {
   })
 
   describe('Check no leaks for private objects', function () {
-
-    it('Should not display internal/private/password protected video', async function () {
+    it('Should not display internal/private video', async function () {
       for (const basePath of getWatchVideoBasePaths()) {
-        for (const id of [ privateVideoId, internalVideoId, passwordProtectedVideoId ]) {
+        for (const id of [ privateVideoId, internalVideoId ]) {
           const res = await makeGetRequest({
             url: servers[0].url,
             path: basePath + id,
@@ -236,8 +248,20 @@ describe('Test index HTML generation', function () {
 
           expect(res.text).to.not.contain('internal')
           expect(res.text).to.not.contain('private')
-          expect(res.text).to.not.contain('password protected')
         }
+      }
+    })
+
+    it('Should not display password protected video', async function () {
+      for (const basePath of getWatchVideoBasePaths()) {
+        const res = await makeGetRequest({
+          url: servers[0].url,
+          path: basePath + passwordProtectedVideoId,
+          accept: 'text/html',
+          expectedStatus: HttpStatusCode.OK_200
+        })
+
+        expect(res.text).to.not.contain('password protected')
       }
     })
 

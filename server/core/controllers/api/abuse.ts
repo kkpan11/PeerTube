@@ -1,12 +1,13 @@
-import express from 'express'
-import { logger } from '@server/helpers/logger.js'
+import { abusePredefinedReasonsMap } from '@peertube/peertube-core-utils'
+import { AbuseCreate, AbuseState, HttpStatusCode, UserRight } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
+import { CONFIG } from '@server/initializers/config.js'
 import { createAccountAbuse, createVideoAbuse, createVideoCommentAbuse } from '@server/lib/moderation.js'
 import { Notifier } from '@server/lib/notifier/index.js'
 import { AbuseMessageModel } from '@server/models/abuse/abuse-message.js'
 import { AbuseModel } from '@server/models/abuse/abuse.js'
 import { getServerActor } from '@server/models/application/application.js'
-import { abusePredefinedReasonsMap } from '@peertube/peertube-core-utils'
-import { AbuseCreate, AbuseState, HttpStatusCode, UserRight } from '@peertube/peertube-models'
+import express from 'express'
 import { getFormattedObjects } from '../../helpers/utils.js'
 import { sequelizeTypescript } from '../../initializers/database.js'
 import {
@@ -20,6 +21,7 @@ import {
   asyncMiddleware,
   asyncRetryTransactionMiddleware,
   authenticate,
+  buildRateLimiter,
   checkAbuseValidForMessagesValidator,
   deleteAbuseMessageValidator,
   ensureUserHasRight,
@@ -31,11 +33,23 @@ import {
 } from '../../middlewares/index.js'
 import { AccountModel } from '../../models/account/account.js'
 
+const logger = createLogger()
+
 const abuseRouter = express.Router()
 
 abuseRouter.use(apiRateLimiter)
 
-abuseRouter.get('/',
+// Each accepted report notifies every moderator (in-app + email) and can federate a Flag activity
+// So also limit reports per user
+const reportAbuseRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.REPORT_ABUSE.ENABLED,
+  windowMs: CONFIG.RATES_LIMIT.REPORT_ABUSE.WINDOW_MS,
+  max: CONFIG.RATES_LIMIT.REPORT_ABUSE.MAX,
+  perUserKey: true
+})
+
+abuseRouter.get(
+  '/',
   openapiOperationDoc({ operationId: 'getAbuses' }),
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_ABUSES),
@@ -46,32 +60,38 @@ abuseRouter.get('/',
   abuseListForAdminsValidator,
   asyncMiddleware(listAbusesForAdmins)
 )
-abuseRouter.put('/:id',
+abuseRouter.put(
+  '/:id',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_ABUSES),
   asyncMiddleware(abuseUpdateValidator),
   asyncRetryTransactionMiddleware(updateAbuse)
 )
-abuseRouter.post('/',
+abuseRouter.post(
+  '/',
   authenticate,
+  reportAbuseRateLimiter,
   asyncMiddleware(abuseReportValidator),
   asyncRetryTransactionMiddleware(reportAbuse)
 )
-abuseRouter.delete('/:id',
+abuseRouter.delete(
+  '/:id',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_ABUSES),
   asyncMiddleware(abuseGetValidator),
   asyncRetryTransactionMiddleware(deleteAbuse)
 )
 
-abuseRouter.get('/:id/messages',
+abuseRouter.get(
+  '/:id/messages',
   authenticate,
   asyncMiddleware(getAbuseValidator),
   checkAbuseValidForMessagesValidator,
   asyncRetryTransactionMiddleware(listAbuseMessages)
 )
 
-abuseRouter.post('/:id/messages',
+abuseRouter.post(
+  '/:id/messages',
   authenticate,
   asyncMiddleware(getAbuseValidator),
   checkAbuseValidForMessagesValidator,
@@ -79,7 +99,8 @@ abuseRouter.post('/:id/messages',
   asyncRetryTransactionMiddleware(addAbuseMessage)
 )
 
-abuseRouter.delete('/:id/messages/:messageId',
+abuseRouter.delete(
+  '/:id/messages/:messageId',
   authenticate,
   asyncMiddleware(getAbuseValidator),
   checkAbuseValidForMessagesValidator,
@@ -166,7 +187,7 @@ async function deleteAbuse (req: express.Request, res: express.Response) {
 }
 
 async function reportAbuse (req: express.Request, res: express.Response) {
-  const videoInstance = res.locals.videoAll
+  const videoInstance = res.locals.videoFull
   const commentInstance = res.locals.videoCommentFull
   const accountInstance = res.locals.account
 

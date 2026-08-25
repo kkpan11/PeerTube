@@ -8,7 +8,7 @@ import { Observable, from, of, throwError } from 'rxjs'
 import { catchError, concatMap, map, switchMap, toArray } from 'rxjs/operators'
 import { VideoPasswordService } from '../video/video-password.service'
 import { VideoService } from '../video/video.service'
-import { VideoCaptionEdit } from './video-caption-edit.model'
+import { VideoCaptionEdit } from '../../../+videos-publish-manage/shared-manage/common/video-caption-edit.model'
 
 @Injectable()
 export class VideoCaptionService {
@@ -107,7 +107,7 @@ export class VideoCaptionService {
 
     return this.authHttp.post(`${VideoService.BASE_VIDEO_URL}/${video.id}/captions/generate`, body)
       .pipe(
-        map(() => 'success' as 'success'),
+        map(() => 'success' as const),
         catchError(err => {
           const error: PeerTubeProblemDocument = err.error
 

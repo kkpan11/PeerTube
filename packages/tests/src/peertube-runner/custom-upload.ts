@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { HttpStatusCode, RunnerJobState, RunnerJobVODPayload } from '@peertube/peertube-models'
@@ -11,9 +11,10 @@ import {
   setDefaultVideoChannel,
   waitJobs
 } from '@peertube/peertube-server-commands'
-import { MockUpload } from '@tests/shared/mock-servers/mock-upload.js'
+import { MockUpload, MockUploadStore } from '@tests/shared/mock-servers/mock-upload.js'
 import { PeerTubeRunnerProcess } from '@tests/shared/peertube-runner-process.js'
 import { SQLCommand } from '@tests/shared/sql-command.js'
+import { expect } from 'chai'
 
 describe('Test peertube-runner custom upload', function () {
   let server: PeerTubeServer
@@ -22,6 +23,8 @@ describe('Test peertube-runner custom upload', function () {
   let sqlCommand: SQLCommand
   let mockUploadServerUrl: string
   let transcoded: string
+
+  const resolutions = [ 720 ]
 
   const mockUpload = new MockUpload()
 
@@ -34,7 +37,16 @@ describe('Test peertube-runner custom upload', function () {
     await peertubeRunner.unregisterPeerTubeInstance({ runnerName: 'runner' })
   }
 
-  async function updatePayload (method?: 'PUT' | 'POST') {
+  async function updatePayload (options: {
+    method: 'PUT' | 'POST'
+    query?: string
+  }) {
+    const { method, query } = options
+
+    const urlSuffix = query
+      ? `?${query}`
+      : ''
+
     const { data } = await server.runnerJobs.list({ stateOneOf: [ RunnerJobState.PENDING ] })
 
     for (const job of data) {
@@ -42,7 +54,7 @@ describe('Test peertube-runner custom upload', function () {
 
       payload.output.videoFileCustomUpload = {
         method,
-        url: mockUploadServerUrl + '/upload-file'
+        url: mockUploadServerUrl + '/upload-file' + urlSuffix
       }
 
       await sqlCommand.setRunnerJobPayload(job.uuid, payload)
@@ -74,18 +86,28 @@ describe('Test peertube-runner custom upload', function () {
   })
 
   it('Should upload the file on another endpoint for web video', async function () {
+    await server.config.enableTranscoding({ hls: false, webVideo: true, resolutions })
+
     await server.videos.quickUpload({ name: 'video 1' })
     await server.videos.quickUpload({ name: 'video 2' })
     await waitJobs([ server ])
 
-    await updatePayload('POST')
+    await updatePayload({ method: 'POST' })
     await registerRunner()
 
     do {
-      const { body } = await makeGetRequest({ url: mockUploadServerUrl, path: '/uploaded-files', expectedStatus: HttpStatusCode.OK_200 })
+      const res = await makeGetRequest({ url: mockUploadServerUrl, path: '/uploaded-files', expectedStatus: HttpStatusCode.OK_200 })
+      const body = res.body as MockUploadStore[]
 
       // 2 x 5 retries because the server doesn't accept non existing files
-      if (body.length === 10 && body.every(f => f.method === 'POST')) break
+      if (body.length === 10 && body.every(f => f.method === 'POST')) {
+        for (const b of body) {
+          expect(Object.keys(b.query)).to.deep.equal([])
+        }
+
+        break
+      }
+
       await wait(500)
     } while (true)
 
@@ -97,14 +119,22 @@ describe('Test peertube-runner custom upload', function () {
     await server.videos.runTranscoding({ transcodingType: 'hls', videoId: transcoded })
     await waitJobs([ server ])
 
-    await updatePayload()
+    await updatePayload({ method: 'PUT', query: 'key1=value1&key2=value2' })
     await registerRunner()
 
     do {
-      const { body } = await makeGetRequest({ url: mockUploadServerUrl, path: '/uploaded-files', expectedStatus: HttpStatusCode.OK_200 })
+      const res = await makeGetRequest({ url: mockUploadServerUrl, path: '/uploaded-files', expectedStatus: HttpStatusCode.OK_200 })
+      const body = res.body as MockUploadStore[]
 
       // 5 retries because the server doesn't accept non existing files
-      if (body.length === 5 && body.every(f => f.method === 'PUT')) break
+      if (body.length === 5 && body.every(f => f.method === 'PUT')) {
+        for (const b of body) {
+          expect(b.query).to.deep.equal({ key1: 'value1', key2: 'value2' })
+        }
+
+        break
+      }
+
       await wait(500)
     } while (true)
 

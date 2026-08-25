@@ -1,0 +1,156 @@
+<h2 class="form-title">
+  <my-global-icon iconName="studio"></my-global-icon>
+
+  <ng-container i18n>Studio</ng-container>
+</h2>
+
+@if (getUnavailability()) {
+  <my-alert type="primary">{{ getUnavailability() }}</my-alert>
+} @else {
+  <div class="grid-container">
+    <form id="video-manage-form">
+      <div class="section cut">
+        <h3 class="section-label" i18n>CUT VIDEO</h3>
+
+        <div i18n class="description">Set a new start/end.</div>
+
+        <div class="form-group">
+          <label i18n for="cutStart">New start</label>
+          <my-timestamp-input
+            inputName="cutStart"
+            enableBorder="true"
+            [maxTimestamp]="videoEdit.getVideoAttributes().duration"
+            [formField]="studioForm.cut.start"
+          ></my-timestamp-input>
+        </div>
+
+        <div class="form-group">
+          <label i18n for="cutEnd">New end</label>
+          <my-timestamp-input
+            inputName="cutEnd"
+            enableBorder="true"
+            [maxTimestamp]="videoEdit.getVideoAttributes().duration"
+            [formField]="studioForm.cut.end"
+          ></my-timestamp-input>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3 class="section-label" i18n>ADD INTRO</h3>
+
+        <div i18n class="description">Concatenate a file at the beginning of the video.</div>
+
+        <div class="form-group">
+          <my-reactive-file
+            [formField]="studioForm['add-intro'].file"
+            inputName="addIntroFile"
+            i18n-inputLabel
+            inputLabel="Select the intro video file"
+            [extensions]="videoExtensions"
+            [displayFilename]="true"
+            [displayReset]="true"
+            [buttonTooltip]="getIntroOutroTooltip()"
+          ></my-reactive-file>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3 class="section-label" i18n>ADD OUTRO</h3>
+
+        <div i18n class="description">Concatenate a file at the end of the video.</div>
+
+        <div class="form-group">
+          <my-reactive-file
+            [formField]="studioForm['add-outro'].file"
+            inputName="addOutroFile"
+            i18n-inputLabel
+            inputLabel="Select the outro video file"
+            [extensions]="videoExtensions"
+            [displayFilename]="true"
+            [displayReset]="true"
+            [buttonTooltip]="getIntroOutroTooltip()"
+          ></my-reactive-file>
+        </div>
+      </div>
+
+      <div class="section">
+        <h3 class="section-label" i18n>ADD WATERMARK</h3>
+
+        <div i18n class="description">Add a watermark image to the video.</div>
+
+        <div class="form-group">
+          <my-reactive-file
+            [formField]="studioForm['add-watermark'].file"
+            inputName="addWatermarkFile"
+            i18n-inputLabel
+            inputLabel="Select watermark image file"
+            [extensions]="imageExtensions"
+            [displayFilename]="true"
+            [displayReset]="true"
+            [buttonTooltip]="getWatermarkTooltip()"
+          ></my-reactive-file>
+        </div>
+      </div>
+
+      <div class="section remove-segments">
+        <h3 class="section-label" i18n>REMOVE SEGMENTS</h3>
+
+        <div i18n class="description">Remove specific segments of the video. Each segment requires a start and end time.</div>
+
+        @for (_ of removeSegments; track $index; let i = $index) {
+          <div class="remove-segment form-group">
+            <span class="remove-segment-label" i18n>Segment {{ i + 1 }} to remove</span>
+
+            <div class="remove-segment-inputs">
+              <div>
+                <label i18n [for]="'removeStart-' + i">Start</label>
+                <my-timestamp-input
+                  [inputName]="'removeStart-' + i"
+                  enableBorder="true"
+                  [maxTimestamp]="videoEdit.getVideoAttributes().duration"
+                  [formField]="studioForm['remove-segments'][i].start"
+                ></my-timestamp-input>
+              </div>
+
+              <div>
+                <label i18n [for]="'removeEnd-' + i">End</label>
+                <my-timestamp-input
+                  [inputName]="'removeEnd-' + i"
+                  enableBorder="true"
+                  [maxTimestamp]="videoEdit.getVideoAttributes().duration"
+                  [formField]="studioForm['remove-segments'][i].end"
+                ></my-timestamp-input>
+              </div>
+
+              <my-button theme="secondary" (click)="removeSegmentRemoval(i)" icon="delete" i18n-title title="Cancel segment removal"></my-button>
+            </div>
+
+            <my-form-error [field]="studioForm['remove-segments'][i]()"></my-form-error>
+          </div>
+        }
+
+        <div class="form-group">
+          <my-form-error class="d-block mb-3" [field]="studioForm['remove-segments']()"></my-form-error>
+
+          <my-button theme="secondary" (click)="addSegmentRemoval()" i18n>Add segment to remove</my-button>
+        </div>
+      </div>
+    </form>
+
+    <div class="embed-container">
+      <div class="mb-1 fw-bold" i18n>Original video</div>
+      <my-embed [video]="videoEdit.getVideoAttributes()"></my-embed>
+    </div>
+
+    @if (!noEdit()) {
+      <div class="tasks-container">
+        <div class="mb-1 fw-bold" i18n>Edits to apply:</div>
+        <ol>
+          @for (task of videoEdit.getStudioTasksSummary(); track task) {
+            <li>{{ task }}</li>
+          }
+        </ol>
+      </div>
+    }
+  </div>
+}

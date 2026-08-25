@@ -1,5 +1,5 @@
+import { FeedEnclosurePreference, HttpStatusCode } from '@peertube/peertube-models'
 import { buildUUID } from '@peertube/peertube-node-utils'
-import { HttpStatusCode } from '@peertube/peertube-models'
 import { AbstractCommand, OverrideCommandOptions } from '../shared/index.js'
 
 type FeedType = 'videos' | 'video-comments' | 'subscriptions'
@@ -35,16 +35,20 @@ export class FeedCommand extends AbstractCommand {
   getPodcastXML (
     options: OverrideCommandOptions & {
       ignoreCache: boolean
-      channelId: number
+      channelId?: number
+      playlistId?: number
+      enclosurePreference?: FeedEnclosurePreference
     }
   ) {
-    const { ignoreCache, channelId } = options
+    const { ignoreCache, channelId, playlistId, enclosurePreference } = options
     const path = `/feeds/podcast/videos.xml`
 
     const query: { [id: string]: string } = {}
 
     if (ignoreCache) query.v = buildUUID()
     if (channelId) query.videoChannelId = channelId + ''
+    if (playlistId) query.playlistId = playlistId + ''
+    if (enclosurePreference) query.enclosurePreference = enclosurePreference
 
     return this.getRequestText({
       ...options,

@@ -1,5 +1,15 @@
-import { NgIf } from '@angular/common'
-import { Component, ElementRef, OnChanges, OnInit, booleanAttribute, inject, input, output, viewChild } from '@angular/core'
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  OnChanges,
+  OnInit,
+  booleanAttribute,
+  inject,
+  input,
+  output,
+  viewChild
+} from '@angular/core'
 import { Notifier, ServerService } from '@app/core'
 import { NgbDropdown, NgbDropdownMenu, NgbDropdownToggle, NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
 import { ActorImage } from '@peertube/peertube-models'
@@ -15,7 +25,8 @@ import { GlobalIconComponent } from '../shared-icons/global-icon.component'
     './actor-image-edit.scss',
     './actor-avatar-edit.component.scss'
   ],
-  imports: [ NgIf, ActorAvatarComponent, NgbTooltip, GlobalIconComponent, NgbDropdown, NgbDropdownToggle, NgbDropdownMenu ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ ActorAvatarComponent, NgbTooltip, GlobalIconComponent, NgbDropdown, NgbDropdownToggle, NgbDropdownMenu ]
 })
 export class ActorAvatarEditComponent implements OnInit, OnChanges {
   private serverService = inject(ServerService)
@@ -41,7 +52,7 @@ export class ActorAvatarEditComponent implements OnInit, OnChanges {
   maxAvatarSize = 0
   avatarExtensions = ''
 
-  preview: string
+  previewUrl: string
 
   actor: ActorAvatarInput
 
@@ -51,10 +62,12 @@ export class ActorAvatarEditComponent implements OnInit, OnChanges {
     this.maxAvatarSize = config.avatar.file.size.max
     this.avatarExtensions = config.avatar.file.extensions.join(', ')
 
-    this.avatarFormat = $localize`max size: 192*192px, ${getBytes(this.maxAvatarSize)} extensions: ${this.avatarExtensions}`
+    this.avatarFormat = $localize`max size: ${getBytes(this.maxAvatarSize)} extensions: ${this.avatarExtensions}`
   }
 
   ngOnChanges () {
+    this.previewUrl = undefined
+
     this.actor = {
       avatars: this.avatars(),
       name: this.username()
@@ -73,16 +86,23 @@ export class ActorAvatarEditComponent implements OnInit, OnChanges {
     this.avatarChange.emit(formData)
 
     if (this.previewImage()) {
-      imageToDataURL(avatarfile).then(result => this.preview = result)
+      imageToDataURL(avatarfile).then(result => this.previewUrl = result)
     }
   }
 
   deleteAvatar () {
-    this.preview = undefined
+    if (this.previewImage()) {
+      this.previewUrl = null
+      this.actor.avatars = []
+    }
+
     this.avatarDelete.emit()
   }
 
   hasAvatar () {
-    return !!this.preview || this.avatars().length !== 0
+    // User deleted the avatar
+    if (this.previewUrl === null) return false
+
+    return !!this.previewUrl || this.avatars().length !== 0
   }
 }

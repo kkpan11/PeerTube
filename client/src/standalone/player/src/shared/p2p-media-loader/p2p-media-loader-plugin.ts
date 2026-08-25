@@ -5,12 +5,13 @@ import { FragLoadedData, default as Hlsjs } from 'hls.js'
 import type { DownloadSource, SegmentErrorDetails, SegmentLoadDetails } from 'p2p-media-loader-core'
 import type { HlsWithP2PInstance } from 'p2p-media-loader-hlsjs'
 import videojs from 'video.js'
-import { P2PMediaLoaderPluginOptions, PlayerNetworkInfo } from '../../types'
+import { P2PMediaLoaderPluginOptions, PlayerNetworkInfo, VideojsPlayer, VideojsPlugin } from '../../types'
 import { SettingsButton } from '../settings/settings-menu-button'
 
 const debugLogger = debug('peertube:player:p2p-media-loader')
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
+
 class P2pMediaLoaderPlugin extends Plugin {
   declare private readonly options: P2PMediaLoaderPluginOptions
 
@@ -18,7 +19,6 @@ class P2pMediaLoaderPlugin extends Plugin {
   declare private statsP2PBytes: {
     pendingDownload: number[]
     pendingUpload: number[]
-    peersWithWebSeed: number
     peersP2POnly: number
     totalDownload: number
     totalUpload: number
@@ -31,11 +31,12 @@ class P2pMediaLoaderPlugin extends Plugin {
   declare private networkInfoInterval: any
 
   declare private liveEnded: boolean
+  declare private disposed: boolean
 
-  declare private connectedPeers: Set<string>
-  declare private totalHTTPPeers: number
+  // Swarms in which we are connected to a given peer: the same peer can be in multiple swarms
+  declare private connectedPeers: Map<string, Set<string>>
 
-  constructor (player: videojs.Player, options?: P2PMediaLoaderPluginOptions) {
+  constructor (player: VideojsPlayer, options?: P2PMediaLoaderPluginOptions) {
     super(player)
 
     this.options = options
@@ -43,7 +44,6 @@ class P2pMediaLoaderPlugin extends Plugin {
     this.statsP2PBytes = {
       pendingDownload: [] as number[],
       pendingUpload: [] as number[],
-      peersWithWebSeed: 0,
       peersP2POnly: 0,
       totalDownload: 0,
       totalUpload: 0
@@ -53,6 +53,7 @@ class P2pMediaLoaderPlugin extends Plugin {
       totalDownload: 0
     }
     this.liveEnded = false
+    this.disposed = false
 
     // FIXME: typings https://github.com/Microsoft/TypeScript/issues/14080
     if (!(videojs as any).Html5Hlsjs) {
@@ -83,6 +84,7 @@ class P2pMediaLoaderPlugin extends Plugin {
         clearInterval(this.networkInfoInterval)
 
         this.hlsjs = hlsjs
+        this.liveEnded = false
 
         debugLogger('hls.js initialized, initializing p2p-media-loader plugin', { hlsjs })
 
@@ -116,6 +118,8 @@ class P2pMediaLoaderPlugin extends Plugin {
   }
 
   dispose () {
+    this.disposed = true
+
     this.hlsjs?.p2pEngine?.destroy()
 
     this.hlsjs?.destroy()
@@ -151,6 +155,9 @@ class P2pMediaLoaderPlugin extends Plugin {
   }
 
   private initializePlugin () {
+    // The player may have been disposed while we were waiting for it to be ready
+    if (this.disposed) return
+
     this.hlsjs.p2pEngine.addEventListener('onSegmentError', (details: SegmentErrorDetails) => {
       if (navigator.onLine === false || this.liveEnded || details.downloadSource !== 'http') return
 
@@ -166,16 +173,15 @@ class P2pMediaLoaderPlugin extends Plugin {
       if (details.downloadSource !== 'http') return
 
       if (this.options.redundancyUrlManager) {
-        this.options.redundancyUrlManager.onSegmentSuccess(details.segmentUrl)
+        this.options.redundancyUrlManager.onSegmentSuccess(details.segment.url)
       }
     })
 
-    const redundancyUrlsCount = this.options.redundancyUrlManager
-      ? this.options.redundancyUrlManager.countBaseUrls()
-      : 0
-
-    this.totalHTTPPeers = 1 + redundancyUrlsCount
-    this.statsP2PBytes.peersWithWebSeed = this.totalHTTPPeers
+    this.hlsjs.p2pEngine.addEventListener('onSegmentAbort', details => {
+      if (this.options.redundancyUrlManager) {
+        this.options.redundancyUrlManager.onSegmentAbort(details.segment.url)
+      }
+    })
 
     this.runStats()
 
@@ -207,7 +213,7 @@ class P2pMediaLoaderPlugin extends Plugin {
   }
 
   private runStats () {
-    this.connectedPeers = new Set()
+    this.connectedPeers = new Map()
 
     if (this.hlsjs.p2pEngine.getConfig().core.mainStream.isP2PDisabled) {
       this.hlsjs.on(Hlsjs.Events.FRAG_LOADED, (e, data: FragLoadedData) => {
@@ -233,21 +239,31 @@ class P2pMediaLoaderPlugin extends Plugin {
     this.hlsjs.p2pEngine.addEventListener('onPeerConnect', peer => {
       if (peer.streamType !== 'main') return
 
-      this.connectedPeers.add(peer.peerId)
-      this.statsP2PBytes.peersP2POnly = this.connectedPeers.size
+      const swarms = this.connectedPeers.get(peer.peerId)
 
-      this.statsP2PBytes.peersWithWebSeed = this.totalHTTPPeers + this.statsP2PBytes.peersP2POnly
+      if (swarms) swarms.add(peer.infoHash)
+      else this.connectedPeers.set(peer.peerId, new Set([ peer.infoHash ]))
+
+      this.statsP2PBytes.peersP2POnly = this.connectedPeers.size
     })
     this.hlsjs.p2pEngine.addEventListener('onPeerClose', peer => {
       if (peer.streamType !== 'main') return
 
-      this.connectedPeers.delete(peer.peerId)
-      this.statsP2PBytes.peersP2POnly = this.connectedPeers.size
+      const swarms = this.connectedPeers.get(peer.peerId)
+      if (!swarms) return
 
-      this.statsP2PBytes.peersWithWebSeed = this.totalHTTPPeers + this.statsP2PBytes.peersP2POnly
+      swarms.delete(peer.infoHash)
+      if (swarms.size === 0) this.connectedPeers.delete(peer.peerId)
+
+      this.statsP2PBytes.peersP2POnly = this.connectedPeers.size
     })
 
     this.networkInfoInterval = setInterval(() => {
+      const player = this.player
+      const hlsjs = this.hlsjs
+
+      if (!player || !hlsjs) return
+
       const p2pDownloadSpeed = this.arraySum(this.statsP2PBytes.pendingDownload)
       const p2pUploadSpeed = this.arraySum(this.statsP2PBytes.pendingUpload)
 
@@ -257,25 +273,33 @@ class P2pMediaLoaderPlugin extends Plugin {
       this.statsP2PBytes.pendingUpload = []
       this.statsHTTPBytes.pendingDownload = []
 
-      return this.player.trigger('network-info', {
-        source: 'p2p-media-loader',
-        bandwidthEstimate: (this.hlsjs as any).bandwidthEstimate / 8,
-        http: {
-          downloadSpeed: httpDownloadSpeed,
-          downloaded: this.statsHTTPBytes.totalDownload
-        },
-        p2p: this.options.p2pEnabled
-          ? {
-            downloadSpeed: p2pDownloadSpeed,
-            uploadSpeed: p2pUploadSpeed,
-            peersWithWebSeed: this.statsP2PBytes.peersWithWebSeed,
-            peersP2POnly: this.statsP2PBytes.peersP2POnly,
-            downloaded: this.statsP2PBytes.totalDownload,
-            uploaded: this.statsP2PBytes.totalUpload
-          }
-          : undefined
-      } as PlayerNetworkInfo)
+      return player.trigger(
+        'network-info',
+        {
+          source: 'p2p-media-loader',
+          bandwidthEstimate: (hlsjs as any).bandwidthEstimate / 8,
+          http: {
+            downloadSpeed: httpDownloadSpeed,
+            downloaded: this.statsHTTPBytes.totalDownload
+          },
+          p2p: this.options.p2pEnabled
+            ? {
+              downloadSpeed: p2pDownloadSpeed,
+              uploadSpeed: p2pUploadSpeed,
+              peersWithWebSeed: this.getTotalHTTPPeers() + this.statsP2PBytes.peersP2POnly,
+              peersP2POnly: this.statsP2PBytes.peersP2POnly,
+              downloaded: this.statsP2PBytes.totalDownload,
+              uploaded: this.statsP2PBytes.totalUpload
+            }
+            : undefined
+        } satisfies PlayerNetworkInfo
+      )
     }, 1000)
+  }
+
+  // Our server + the redundancy servers that have not been discarded yet
+  private getTotalHTTPPeers () {
+    return 1 + (this.options.redundancyUrlManager?.countBaseUrls() || 0)
   }
 
   private arraySum (data: number[]) {

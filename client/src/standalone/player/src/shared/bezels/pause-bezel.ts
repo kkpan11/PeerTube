@@ -1,5 +1,6 @@
-import videojs from 'video.js'
 import { isMobile } from '@root-helpers/web-browser'
+import videojs from 'video.js'
+import { VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 
 function getPauseBezel () {
   return `
@@ -31,7 +32,8 @@ function getPlayBezel () {
   `
 }
 
-const Component = videojs.getComponent('Component')
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
+
 export class PauseBezel extends Component {
   declare container: HTMLDivElement
 
@@ -42,7 +44,7 @@ export class PauseBezel extends Component {
   declare private playerPlayHandler: () => void
   declare private videoChangeHandler: () => void
 
-  constructor (player: videojs.Player, options?: videojs.ComponentOptions) {
+  constructor (player: VideojsPlayer, options?: VideojsComponentOptions) {
     super(player, options)
 
     // Hide bezels on mobile since we already have our mobile overlay
@@ -79,15 +81,17 @@ export class PauseBezel extends Component {
       this.firstPlayDone = false
     }
 
-    player.on('video-change', () => this.videoChangeHandler)
+    player.on('video-change', this.videoChangeHandler)
     player.on('pause', this.playerPauseHandler)
     player.on('play', this.playerPlayHandler)
   }
 
   dispose () {
-    if (this.playerPauseHandler) this.player().off('pause', this.playerPauseHandler)
-    if (this.playerPlayHandler) this.player().off('play', this.playerPlayHandler)
-    if (this.videoChangeHandler) this.player().off('video-change', this.videoChangeHandler)
+    if (this.player()) {
+      if (this.playerPauseHandler) this.player().off('pause', this.playerPauseHandler)
+      if (this.playerPlayHandler) this.player().off('play', this.playerPlayHandler)
+      if (this.videoChangeHandler) this.player().off('video-change', this.videoChangeHandler)
+    }
 
     super.dispose()
   }

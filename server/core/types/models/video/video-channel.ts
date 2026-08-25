@@ -5,6 +5,7 @@ import {
   MAccountActor,
   MAccountDefault,
   MAccountFormattable,
+  MAccountId,
   MAccountIdActorId,
   MAccountLight,
   MAccountSummaryBlocks,
@@ -17,6 +18,7 @@ import {
   MActorAPChannel,
   MActorAPI,
   MActorAccountChannelId,
+  MActorAudience,
   MActorDefault,
   MActorDefaultBanner,
   MActorDefaultLight,
@@ -48,8 +50,13 @@ export type MChannelIdActor =
   & Use<'Actor', MActorAccountChannelId>
 
 export type MChannelUserId =
-  & Pick<MChannel, 'accountId'>
-  & Use<'Account', MAccountUserId>
+  & Pick<MChannel, 'id' | 'accountId'>
+  & Use<'Account', MAccountId & MAccountUserId>
+
+export type MChannelAccountId =
+  & Pick<MChannel, 'id' | 'accountId'>
+  & Use<'Actor', MActorId>
+  & Use<'Account', MAccountIdActorId>
 
 export type MChannelAccountIdUrl =
   & Pick<MChannel, 'id' | 'accountId'>
@@ -61,6 +68,7 @@ export type MChannelActor =
   & Use<'Actor', MActor>
 
 export type MChannelUrl = Use<'Actor', MActorUrl>
+export type MChannelAudience = Use<'Actor', MActorAudience>
 
 // Default scope
 export type MChannelDefault =
@@ -127,7 +135,7 @@ export type MChannelVideos =
 
 export type MChannelSummary =
   & FunctionProperties<MChannel>
-  & Pick<MChannel, 'id' | 'name' | 'description' | 'actorId'>
+  & Pick<MChannel, 'id' | 'name' | 'description'>
   & Use<'Actor', MActorSummary>
 
 export type MChannelSummaryAccount =
@@ -154,11 +162,11 @@ export type MChannelAccountSummaryFormattable =
 
 export type MChannelFormattable =
   & FunctionProperties<MChannel>
-  & Pick<MChannel, 'id' | 'name' | 'description' | 'createdAt' | 'updatedAt' | 'support'>
+  & Pick<MChannel, 'id' | 'name' | 'description' | 'createdAt' | 'updatedAt' | 'support' | 'accountId' | 'publicEmail'>
   & Use<'Actor', MActorFormattable>
   & PickWithOpt<VideoChannelModel, 'Account', MAccountFormattable>
 
 export type MChannelAP =
-  & Pick<MChannel, 'id' | 'name' | 'description' | 'support' | 'getClientUrl'>
+  & Pick<MChannel, 'id' | 'name' | 'description' | 'support' | 'getClientUrl' | 'publicEmail'>
   & Use<'Actor', MActorAPChannel>
   & Use<'Account', MAccountUrl>

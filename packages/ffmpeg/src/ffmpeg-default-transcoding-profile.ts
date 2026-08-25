@@ -1,8 +1,9 @@
 import { getAverageTheoreticalBitrate, getMaxTheoreticalBitrate, getMinTheoreticalBitrate } from '@peertube/peertube-core-utils'
 import {
   buildStreamSuffix,
+  ffprobePromise,
   getAudioStream,
-  getMaxAudioBitrate,
+  getCopyInfoOrMaxAudioKBitrate,
   getVideoStream,
   getVideoStreamBitrate,
   getVideoStreamDimensionsInfo,
@@ -17,11 +18,11 @@ const defaultX264VODOptionsBuilder: EncoderOptionsBuilder = (options: EncoderOpt
   const targetBitrate = getTargetBitrate({ inputBitrate, ratio: inputRatio, fps, resolution })
 
   return {
-    outputOptions: [
-      ...getCommonOutputOptions(targetBitrate),
+    videoFilters: fps
+      ? [ { name: 'fps', rawOptions: `fps=${fps}` } ]
+      : undefined,
 
-      `-r ${fps}`
-    ]
+    outputOptions: getCommonOutputOptions(targetBitrate)
   }
 }
 
@@ -31,10 +32,13 @@ const defaultX264LiveOptionsBuilder: EncoderOptionsBuilder = (options: EncoderOp
   const targetBitrate = getTargetBitrate({ inputBitrate, ratio: inputRatio, fps, resolution })
 
   return {
+    videoFilters: fps
+      ? [ { name: 'fps', rawOptions: `fps=${fps}` } ]
+      : undefined,
+
     outputOptions: [
       ...getCommonOutputOptions(targetBitrate, streamNum),
 
-      `${buildStreamSuffix('-r:v', streamNum)} ${fps}`,
       `${buildStreamSuffix('-b:v', streamNum)} ${targetBitrate}`
     ]
   }
@@ -42,7 +46,7 @@ const defaultX264LiveOptionsBuilder: EncoderOptionsBuilder = (options: EncoderOp
 
 const defaultAACOptionsBuilder: EncoderOptionsBuilder = async ({ input, streamNum, canCopyAudio, inputProbe }) => {
   if (canCopyAudio && await canDoQuickAudioTranscode(input, inputProbe)) {
-    return { copy: true, outputOptions: [ ] }
+    return { copy: true, outputOptions: [] }
   }
 
   const parsedAudio = await getAudioStream(input, inputProbe)
@@ -52,7 +56,7 @@ const defaultAACOptionsBuilder: EncoderOptionsBuilder = async ({ input, streamNu
 
   const audioCodecName = parsedAudio.audioStream['codec_name']
 
-  const bitrate = getMaxAudioBitrate(audioCodecName, parsedAudio.bitrate)
+  const bitrate = getCopyInfoOrMaxAudioKBitrate(audioCodecName, parsedAudio.bitrate)
 
   // Force stereo as it causes some issues with HLS playback in Chrome
   const base = [ '-channel_layout', 'stereo' ]
@@ -116,8 +120,8 @@ export async function canDoQuickAudioTranscode (path: string, probe?: FfprobeDat
   const audioBitrate = parsedAudio.bitrate
   if (!audioBitrate) return false
 
-  const maxAudioBitrate = getMaxAudioBitrate('aac', audioBitrate)
-  if (maxAudioBitrate !== -1 && audioBitrate > maxAudioBitrate) return false
+  const canCopy = getCopyInfoOrMaxAudioKBitrate('aac', audioBitrate) === -1
+  if (!canCopy) return false
 
   const channelLayout = parsedAudio.audioStream['channel_layout']
   // Causes playback issues with Chrome
@@ -128,6 +132,8 @@ export async function canDoQuickAudioTranscode (path: string, probe?: FfprobeDat
 
 export async function canDoQuickVideoTranscode (path: string, maxFPS: number, probe?: FfprobeData): Promise<boolean> {
   const videoStream = await getVideoStream(path, probe)
+  if (!videoStream) return true
+
   const fps = await getVideoStreamFPS(path, probe)
   const bitRate = await getVideoStreamBitrate(path, probe)
   const resolutionData = await getVideoStreamDimensionsInfo(path, probe)
@@ -143,6 +149,25 @@ export async function canDoQuickVideoTranscode (path: string, maxFPS: number, pr
   if (bitRate > getMaxTheoreticalBitrate({ ...resolutionData, fps })) return false
 
   return true
+}
+
+// Copy codecs if the input file can be quick transcoded (appropriate bitrate, codecs, etc.)
+// And if the input resolution/fps are the same as the output resolution/fps
+export async function canCopyForHLS (options: {
+  path: string
+  fps: number
+  resolution: number
+}, probe?: FfprobeData): Promise<boolean> {
+  const { path, fps, resolution } = options
+
+  const inputProbe = probe ?? await ffprobePromise(path)
+  const { resolution: inputResolution } = await getVideoStreamDimensionsInfo(path, inputProbe)
+  const inputFPS = await getVideoStreamFPS(path, inputProbe)
+
+  return await canDoQuickAudioTranscode(path, probe) &&
+    await canDoQuickVideoTranscode(path, fps, probe) &&
+    resolution === inputResolution &&
+    (!inputResolution || fps === inputFPS)
 }
 
 // ---------------------------------------------------------------------------

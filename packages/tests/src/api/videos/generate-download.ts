@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { getHLS } from '@peertube/peertube-core-utils'
-import { VideoDetails, VideoFile, VideoResolution } from '@peertube/peertube-models'
+import { HttpStatusCode, VideoDetails, VideoFile, VideoResolution } from '@peertube/peertube-models'
 import { buildSUUID } from '@peertube/peertube-node-utils'
 import {
   ObjectStorageCommand,
@@ -17,8 +17,11 @@ import { checkTmpIsEmpty } from '@tests/shared/directories.js'
 import { probeResBody } from '@tests/shared/videos.js'
 import { expect } from 'chai'
 import { FfprobeData } from 'fluent-ffmpeg'
+import { remove } from 'fs-extra'
+import { basename } from 'path'
 
 describe('Test generate download', function () {
+  const resolutions = [ VideoResolution.H_NOVIDEO, VideoResolution.H_144P ]
   let servers: PeerTubeServer[]
 
   before(async function () {
@@ -47,8 +50,6 @@ describe('Test generate download', function () {
         await server.kill()
         await server.run(objectStorage.getDefaultMockConfig())
       }
-
-      const resolutions = [ VideoResolution.H_NOVIDEO, VideoResolution.H_144P ]
 
       {
         await server.config.enableTranscoding({ hls: true, webVideo: true, splitAudioAndVideo: false, resolutions })
@@ -83,46 +84,52 @@ describe('Test generate download', function () {
       return probeResBody(body)
     }
 
-    function checkProbe (probe: FfprobeData, options: { hasVideo: boolean, hasAudio: boolean, hasImage: boolean }) {
+    function checkProbe (probe: FfprobeData, options: { hasVideo: boolean, hasAudio: boolean, hasImage: boolean, muxed: boolean }) {
       expect(probe.streams.some(s => s.codec_type === 'video' && s.codec_name !== 'mjpeg')).to.equal(options.hasVideo)
       expect(probe.streams.some(s => s.codec_type === 'audio')).to.equal(options.hasAudio)
       expect(probe.streams.some(s => s.codec_name === 'mjpeg')).to.equal(options.hasImage)
+
+      if (options.muxed) {
+        expect(probe.format.tags.compatible_brands).to.include('iso6')
+      } else {
+        expect(probe.format.tags.compatible_brands).to.not.include('iso6')
+      }
     }
 
     it('Should generate a classic web video file', async function () {
       const probe = await getProbe('common', video => [ getVideoFile(video.files).id ])
 
-      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false })
+      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false, muxed: false })
     })
 
     it('Should generate a classic HLS file', async function () {
       const probe = await getProbe('common', video => [ getVideoFile(getHLS(video).files).id ])
 
-      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false })
+      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false, muxed: true })
     })
 
     it('Should generate an audio only web video file', async function () {
       const probe = await getProbe('common', video => [ getAudioOnlyFile(video.files).id ])
 
-      checkProbe(probe, { hasAudio: true, hasVideo: false, hasImage: true })
+      checkProbe(probe, { hasAudio: true, hasVideo: false, hasImage: true, muxed: true })
     })
 
     it('Should generate an audio only HLS file', async function () {
       const probe = await getProbe('common', video => [ getAudioOnlyFile(getHLS(video).files).id ])
 
-      checkProbe(probe, { hasAudio: true, hasVideo: false, hasImage: true })
+      checkProbe(probe, { hasAudio: true, hasVideo: false, hasImage: true, muxed: true })
     })
 
     it('Should generate a video only file', async function () {
       const probe = await getProbe('splitted', video => [ getVideoFile(getHLS(video).files).id ])
 
-      checkProbe(probe, { hasAudio: false, hasVideo: true, hasImage: false })
+      checkProbe(probe, { hasAudio: false, hasVideo: true, hasImage: false, muxed: true })
     })
 
     it('Should merge audio and video files', async function () {
       const probe = await getProbe('splitted', video => [ getVideoFile(getHLS(video).files).id, getAudioFile(getHLS(video).files).id ])
 
-      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false })
+      checkProbe(probe, { hasAudio: true, hasVideo: true, hasImage: false, muxed: true })
     })
 
     it('Should have cleaned the TMP directory', async function () {
@@ -132,13 +139,37 @@ describe('Test generate download', function () {
     })
   }
 
+  describe('Download crash', function () {
+    it('Should not crash the server on non existing file', async function () {
+      this.timeout(120000)
+
+      await servers[0].config.enableTranscoding({ webVideo: false, hls: true, splitAudioAndVideo: true, resolutions })
+      const { uuid } = await servers[0].videos.quickUpload({ name: 'crash' })
+      await waitJobs(servers)
+
+      for (const server of servers) {
+        const video = await server.videos.get({ id: uuid })
+        const file = getHLS(video).files.find(f => f.hasVideo)
+
+        await remove(servers[0].getDirectoryPath('streaming-playlists/hls/' + uuid + '/' + basename(file.fileUrl)))
+
+        await server.videos.generateDownload({
+          videoId: uuid,
+          videoFileIds: [ file.id ],
+          expectedStatus: server === servers[0]
+            ? HttpStatusCode.OK_200
+            : HttpStatusCode.SERVICE_UNAVAILABLE_503
+        })
+      }
+    })
+  })
+
   for (const objectStorage of [ undefined, new ObjectStorageCommand() ]) {
     const testName = objectStorage
       ? 'On Object Storage'
       : 'On filesystem'
 
     describe(testName, function () {
-
       describe('Videos on local server', function () {
         runSuite(() => servers[0], objectStorage)
       })

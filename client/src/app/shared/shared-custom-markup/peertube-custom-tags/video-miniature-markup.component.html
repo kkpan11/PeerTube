@@ -1,6 +1,9 @@
-<my-video-miniature
-  *ngIf="video()"
-  [video]="video()" [user]="getUser()" [displayAsRow]="false"
-  [displayVideoActions]="true" [displayOptions]="displayOptions"
->
-</my-video-miniature>
+<!-- No "headingLevel" here: custom markup is embedded in user provided content, so we can't know the surrounding heading hierarchy -->
+@if (video()) {
+  <my-video-miniature
+    [video]="video()" [user]="user" [displayAsRow]="false"
+    [displayVideoActions]="true" [displayOptions]="displayOptions"
+    thumbnailSizes="280px"
+  >
+  </my-video-miniature>
+}

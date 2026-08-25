@@ -1,6 +1,8 @@
+<h1 class="visually-hidden">{{ titlePage }}</h1>
+
 <div class="top-buttons">
   <div class="search-wrapper">
-    <my-advanced-input-filter [emitOnInit]="false" (search)="onSearch($event)"></my-advanced-input-filter>
+    <my-search-input emitOnInit="true" (search)="onSearch($event)"></my-search-input>
   </div>
 
   <div class="history-switch">

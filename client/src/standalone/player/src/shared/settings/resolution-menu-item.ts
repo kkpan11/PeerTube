@@ -1,9 +1,11 @@
 import videojs from 'video.js'
+import { clearStoredPreferredResolution, savePreferredResolution } from '../../peertube-player-local-storage'
+import { VideojsMenuItem, VideojsMenuItemOptions, VideojsPlayer } from '../../types'
 
-const MenuItem = videojs.getComponent('MenuItem')
+const MenuItem = videojs.getComponent('MenuItem') as typeof VideojsMenuItem
 
-export interface ResolutionMenuItemOptions extends videojs.MenuItemOptions {
-  resolutionId: number
+export interface ResolutionMenuItemOptions extends VideojsMenuItemOptions {
+  resolutionId?: number
 }
 
 class ResolutionMenuItem extends MenuItem {
@@ -14,7 +16,7 @@ class ResolutionMenuItem extends MenuItem {
 
   declare private updateSelectionHandler: () => void
 
-  constructor (player: videojs.Player, options?: ResolutionMenuItemOptions) {
+  constructor (player: VideojsPlayer, options?: ResolutionMenuItemOptions) {
     super(player, { ...options, selectable: true })
 
     this.autoResolutionChosen = ''
@@ -36,6 +38,16 @@ class ResolutionMenuItem extends MenuItem {
     super.handleClick(event)
 
     this.player().peertubeResolutions().select({ id: this.resolutionId, fireCallback: true })
+
+    if (this.resolutionId === -1) {
+      clearStoredPreferredResolution()
+      return
+    }
+
+    const selectedResolution = this.player().peertubeResolutions().getResolutions().find(r => r.id === this.resolutionId)
+    if (selectedResolution?.height === undefined) return
+
+    savePreferredResolution(selectedResolution.height)
   }
 
   updateSelection () {

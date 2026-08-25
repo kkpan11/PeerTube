@@ -1,12 +1,15 @@
+import { VideoPrivacy } from '@peertube/peertube-models'
+import { DIRECTORIES } from '@server/initializers/constants.js'
+import { initDatabaseModels } from '@server/initializers/database.js'
+import { moveFilesIfPrivacyChanged } from '@server/lib/video-privacy.js'
+import { updateTorrentForFileAndSave } from '@server/lib/webtorrent.js'
+import { ApplicationModel } from '@server/models/application/application.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { MVideoFull } from '@server/types/models/index.js'
 import { ensureDir } from 'fs-extra/esm'
 import { Op } from 'sequelize'
-import { updateTorrentMetadata } from '@server/helpers/webtorrent.js'
-import { DIRECTORIES } from '@server/initializers/constants.js'
-import { moveFilesIfPrivacyChanged } from '@server/lib/video-privacy.js'
-import { VideoModel } from '@server/models/video/video.js'
-import { MVideoFullLight } from '@server/types/models/index.js'
-import { VideoPrivacy } from '@peertube/peertube-models'
-import { initDatabaseModels } from '@server/initializers/database.js'
+
+const MIGRATION_NAME = 'peertube-5.0'
 
 run()
   .then(() => process.exit(0))
@@ -16,12 +19,12 @@ run()
   })
 
 async function run () {
+  await initDatabaseModels(true)
+
   console.log('Moving private video files in dedicated folders.')
 
   await ensureDir(DIRECTORIES.HLS_STREAMING_PLAYLIST.PRIVATE)
   await ensureDir(DIRECTORIES.WEB_VIDEOS.PRIVATE)
-
-  await initDatabaseModels(true)
 
   const videos = await VideoModel.unscoped().findAll({
     attributes: [ 'uuid' ],
@@ -53,18 +56,20 @@ async function run () {
       console.error('Cannot process video %s.', uuid, err)
     }
   }
+
+  await ApplicationModel.setManualMigrationScriptRun(MIGRATION_NAME)
 }
 
-async function updateTorrents (video: MVideoFullLight) {
+async function updateTorrents (video: MVideoFull) {
   for (const file of video.VideoFiles) {
-    await updateTorrentMetadata(video, file)
+    await updateTorrentForFileAndSave(video, file)
 
     await file.save()
   }
 
   const playlist = video.getHLSPlaylist()
   for (const file of (playlist?.VideoFiles || [])) {
-    await updateTorrentMetadata(playlist, file)
+    await updateTorrentForFileAndSave(playlist, file)
 
     await file.save()
   }

@@ -1,12 +1,15 @@
-import { logger } from '@server/helpers/logger.js'
-import { WEBSERVER } from '@server/initializers/constants.js'
-import { UserModel } from '@server/models/user/user.js'
-import { UserNotificationModel } from '@server/models/user/user-notification.js'
-import { MUserDefault, MUserWithNotificationSetting, MVideoFullLight, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { UserNotificationType } from '@peertube/peertube-models'
+import { t } from '@server/helpers/i18n.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { WEBSERVER } from '@server/initializers/constants.js'
+import { UserNotificationModel } from '@server/models/user/user-notification.js'
+import { UserModel } from '@server/models/user/user.js'
+import { MUserDefault, MUserWithNotificationSetting, MVideoFull, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { AbstractNotification } from '../common/abstract-notification.js'
 
-export class StudioEditionFinishedForOwner extends AbstractNotification <MVideoFullLight> {
+const logger = createLogger()
+
+export class StudioEditionFinishedForOwner extends AbstractNotification<MVideoFull> {
   private user: MUserDefault
 
   async prepare () {
@@ -38,19 +41,18 @@ export class StudioEditionFinishedForOwner extends AbstractNotification <MVideoF
     return notification
   }
 
-  createEmail (to: string) {
+  createEmail (user: MUserWithNotificationSetting) {
+    const to = { email: user.email, language: user.getLanguage() }
     const videoUrl = WEBSERVER.URL + this.payload.getWatchStaticPath()
 
     return {
       to,
-      subject: `Edition of your video ${this.payload.name} has finished`,
-      text: `Edition of your video ${this.payload.name} has finished.`,
-      locals: {
-        title: 'Video edition has finished',
-        action: {
-          text: 'View video',
-          url: videoUrl
-        }
+      subject: t('Edition of your video has finished', to.language),
+      text: t('Edition of your video {videoName} has finished.', to.language, { videoName: this.payload.name }),
+      title: t('Video edition has finished', to.language),
+      action: {
+        text: t('View video', to.language),
+        url: videoUrl
       }
     }
   }

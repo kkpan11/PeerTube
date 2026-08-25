@@ -1,5 +1,16 @@
 import { NgClass } from '@angular/common'
-import { booleanAttribute, ChangeDetectorRef, Component, forwardRef, OnInit, inject, input, model, output } from '@angular/core'
+import {
+  booleanAttribute,
+  ChangeDetectionStrategy,
+  ChangeDetectorRef,
+  Component,
+  forwardRef,
+  inject,
+  input,
+  model,
+  OnInit,
+  output
+} from '@angular/core'
 import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms'
 import { secondsToTime, timeToInt } from '@peertube/peertube-core-utils'
 import { InputMaskModule } from 'primeng/inputmask'
@@ -15,6 +26,7 @@ import { InputMaskModule } from 'primeng/inputmask'
       multi: true
     }
   ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [ InputMaskModule, FormsModule, NgClass ]
 })
 export class TimestampInputComponent implements ControlValueAccessor, OnInit {
@@ -44,6 +56,10 @@ export class TimestampInputComponent implements ControlValueAccessor, OnInit {
     // empty
   }
 
+  onTouched = () => {
+    // empty
+  }
+
   writeValue (timestamp: number) {
     this.timestamp.set(timestamp)
     this.timestampString = this.formatter()(this.timestamp())
@@ -53,8 +69,8 @@ export class TimestampInputComponent implements ControlValueAccessor, OnInit {
     this.propagateChange = fn
   }
 
-  registerOnTouched () {
-    // Unused
+  registerOnTouched (fn: () => void) {
+    this.onTouched = fn
   }
 
   onModelChange () {
@@ -64,6 +80,8 @@ export class TimestampInputComponent implements ControlValueAccessor, OnInit {
   }
 
   onBlur () {
+    this.onTouched()
+
     const maxTimestamp = this.maxTimestamp()
     if (maxTimestamp && this.timestamp() > maxTimestamp) {
       this.writeValue(maxTimestamp)

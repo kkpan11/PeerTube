@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { VideoPrivacy } from '@peertube/peertube-models'
+import { VideoPrivacy, VideoResolution } from '@peertube/peertube-models'
 import { areMockObjectStorageTestsDisabled } from '@peertube/peertube-node-utils'
 import {
   ObjectStorageCommand,
@@ -15,6 +15,7 @@ import {
   waitJobs
 } from '@peertube/peertube-server-commands'
 import { FIXTURE_URLS } from '@tests/shared/fixture-urls.js'
+import { completeCheckHlsPlaylist } from '@tests/shared/streaming-playlists.js'
 import { checkAutoCaption, checkLanguage, checkNoCaption, getCaptionContent, uploadForTranscription } from '@tests/shared/transcription.js'
 import { expect } from 'chai'
 import { join } from 'path'
@@ -39,11 +40,12 @@ describe('Test video transcription', function () {
   // ---------------------------------------------------------------------------
 
   describe('Common on filesystem', function () {
-
     it('Should generate a transcription on request', async function () {
       this.timeout(360000)
 
       await servers[0].config.disableTranscription()
+      await servers[0].config.save()
+      await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true })
 
       const uuid = await uploadForTranscription(servers[0])
       await waitJobs(servers)
@@ -56,6 +58,22 @@ describe('Test video transcription', function () {
       await checkLanguage(servers, uuid, 'en')
 
       await checkAutoCaption({ servers, uuid })
+
+      const { data: captions } = await servers[0].captions.list({ videoId: uuid })
+      expect(captions).to.have.lengthOf(1)
+
+      await completeCheckHlsPlaylist({
+        servers,
+        videoUUID: uuid,
+        hlsOnly: true,
+        hasAudio: true,
+        hasVideo: true,
+        captions,
+        resolutions: [ VideoResolution.H_720P, VideoResolution.H_240P ]
+      })
+
+      await servers[0].config.rollback()
+      await servers[0].config.enableTranscription()
     })
 
     it('Should run transcription on upload by default', async function () {
@@ -118,6 +136,16 @@ describe('Test video transcription', function () {
       await servers[0].config.disableTranscoding()
     })
 
+    it('Should run transcription if enabled by user', async function () {
+      this.timeout(120000)
+
+      const uuid = await uploadForTranscription(servers[0], { generateTranscription: true })
+
+      await waitJobs(servers)
+      await checkAutoCaption({ servers, uuid })
+      await checkLanguage(servers, uuid, 'en')
+    })
+
     it('Should not run transcription if disabled by user', async function () {
       this.timeout(120000)
 
@@ -171,7 +199,7 @@ describe('Test video transcription', function () {
     })
 
     it('Should run transcription after a video edition', async function () {
-      this.timeout(120000)
+      this.timeout(240000)
 
       await servers[0].config.enableMinimumTranscoding()
       await servers[0].config.enableStudio()
@@ -187,7 +215,7 @@ describe('Test video transcription', function () {
         tasks: [
           {
             name: 'cut' as 'cut',
-            options: { start: 1 }
+            options: { start: 10 }
           }
         ]
       })
@@ -213,11 +241,45 @@ describe('Test video transcription', function () {
         tasks: [
           {
             name: 'cut' as 'cut',
-            options: { start: 1 }
+            options: { start: 10 }
           }
         ]
       })
 
+      await waitJobs(servers)
+
+      const newContent = await getCaptionContent(servers[0], uuid, 'en')
+      expect(oldContent).to.equal(newContent)
+    })
+
+    it('Should run transcription after a video replacement', async function () {
+      this.timeout(240000)
+
+      await servers[0].config.enableFileUpdate()
+
+      const uuid = await uploadForTranscription(servers[0])
+      await waitJobs(servers)
+
+      await checkAutoCaption({ servers, uuid })
+      const oldContent = await getCaptionContent(servers[0], uuid, 'en')
+
+      await servers[0].videos.replaceSourceFile({ videoId: uuid, fixture: 'video_short_360p.mp4' })
+      await waitJobs(servers)
+
+      const newContent = await getCaptionContent(servers[0], uuid, 'en')
+      expect(oldContent).to.not.equal(newContent)
+    })
+
+    it('Should not run transcription after video replacement if the subtitle has not been auto generated', async function () {
+      this.timeout(240000)
+
+      const uuid = await uploadForTranscription(servers[0], { language: 'en' })
+      await waitJobs(servers)
+
+      await servers[0].captions.add({ language: 'en', videoId: uuid, fixture: 'subtitle-good1.vtt' })
+      const oldContent = await getCaptionContent(servers[0], uuid, 'en')
+
+      await servers[0].videos.replaceSourceFile({ videoId: uuid, fixture: 'video_short_360p.mp4' })
       await waitJobs(servers)
 
       const newContent = await getCaptionContent(servers[0], uuid, 'en')
@@ -260,6 +322,8 @@ describe('Test video transcription', function () {
       this.timeout(360000)
 
       await servers[0].config.disableTranscription()
+      await servers[0].config.save()
+      await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true })
 
       const uuid = await uploadForTranscription(servers[0])
       await waitJobs(servers)
@@ -272,6 +336,23 @@ describe('Test video transcription', function () {
       await checkLanguage(servers, uuid, 'en')
 
       await checkAutoCaption({ servers, uuid, objectStorageBaseUrl: objectStorage.getMockCaptionFileBaseUrl() })
+
+      const { data: captions } = await servers[0].captions.list({ videoId: uuid })
+      expect(captions).to.have.lengthOf(1)
+
+      await completeCheckHlsPlaylist({
+        servers,
+        videoUUID: uuid,
+        hlsOnly: true,
+        hasAudio: true,
+        hasVideo: true,
+        captions,
+        objectStorageBaseUrl: objectStorage.getMockPlaylistBaseUrl(),
+        resolutions: [ VideoResolution.H_720P, VideoResolution.H_240P ]
+      })
+
+      await servers[0].config.rollback()
+      await servers[0].config.enableTranscription()
     })
 
     it('Should run transcription on upload by default', async function () {

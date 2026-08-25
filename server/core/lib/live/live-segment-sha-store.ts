@@ -1,19 +1,21 @@
+import { buildSUUID } from '@peertube/peertube-node-utils'
+import { mapToJSON } from '@server/helpers/core-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { LRU_CACHE } from '@server/initializers/constants.js'
+import { MStreamingPlaylistVideo } from '@server/types/models/index.js'
 import { writeJson } from 'fs-extra/esm'
 import { rename } from 'fs/promises'
-import PQueue from 'p-queue'
-import { basename } from 'path'
-import { mapToJSON } from '@server/helpers/core-utils.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
-import { MStreamingPlaylistVideo } from '@server/types/models/index.js'
+import { LRUCache } from 'lru-cache'
+import { basename, dirname, join } from 'path'
 import { buildSha256Segment } from '../hls.js'
 import { storeHLSFileFromPath } from '../object-storage/index.js'
-import { JFWriteOptions } from 'jsonfile'
 
-const lTags = loggerTagsFactory('live')
+const logger = createLogger('live')
 
 class LiveSegmentShaStore {
-
   private readonly segmentsSha256 = new Map<string, string>()
+
+  private readonly removedSegments = new LRUCache<string, true>({ max: LRU_CACHE.LIVE_SEGMENT_SHA_REMOVED_SEGMENTS.MAX_SIZE })
 
   private readonly videoUUID: string
 
@@ -22,7 +24,11 @@ class LiveSegmentShaStore {
 
   private readonly streamingPlaylist: MStreamingPlaylistVideo
   private readonly sendToObjectStorage: boolean
-  private readonly writeQueue = new PQueue({ concurrency: 1 })
+
+  // Coalesce concurrent writeToDisk() calls into a single write of the latest map state
+  // instead of queueing/running one full write per add/remove call
+  private writeLoopPromise: Promise<void> | null = null
+  private dirty = false
 
   constructor (options: {
     videoUUID: string
@@ -33,62 +39,84 @@ class LiveSegmentShaStore {
     this.videoUUID = options.videoUUID
 
     this.sha256Path = options.sha256Path
-    this.sha256PathTMP = options.sha256Path + '.tmp'
+    this.sha256PathTMP = join(dirname(options.sha256Path), buildSUUID() + '-segments-sha256.json.tmp')
 
     this.streamingPlaylist = options.streamingPlaylist
     this.sendToObjectStorage = options.sendToObjectStorage
   }
 
   async addSegmentSha (segmentPath: string) {
-    logger.debug('Adding live sha segment %s.', segmentPath, lTags(this.videoUUID))
+    const segmentName = basename(segmentPath)
+
+    // This segment has already been removed (its "unlink" event ran before we finished hashing it)
+    if (this.removedSegments.delete(segmentName)) {
+      logger.debug('Segment %s was removed before its hash could be added, ignoring it.', segmentPath)
+      return
+    }
+
+    logger.debug('Adding live sha segment %s.', segmentPath)
 
     const shaResult = await buildSha256Segment(segmentPath)
 
-    const segmentName = basename(segmentPath)
     this.segmentsSha256.set(segmentName, shaResult)
 
-    try {
-      await this.writeToDisk()
-    } catch (err) {
-      logger.error('Cannot write sha segments to disk.', { err })
-    }
+    await this.writeToDisk()
   }
 
-  async removeSegmentSha (segmentPath: string) {
+  removeSegmentSha (segmentPath: string) {
     const segmentName = basename(segmentPath)
 
-    logger.debug('Removing live sha segment %s.', segmentPath, lTags(this.videoUUID))
+    logger.debug('Removing live sha segment %s.', segmentPath)
 
     if (!this.segmentsSha256.has(segmentName)) {
-      logger.warn(
-        'Unknown segment in live segment hash store for video %s and segment %s.',
-        this.videoUUID, segmentPath, lTags(this.videoUUID)
-      )
+      logger.debug('Unknown segment in live segment hash store for video %s and segment %s.', this.videoUUID, segmentPath)
+
+      // Its hash may still be pending (addSegmentSha hasn't run yet)
+      // Remember it so we discard the hash instead of leaking it
+      this.removedSegments.set(segmentName, true)
       return
     }
 
     this.segmentsSha256.delete(segmentName)
 
-    await this.writeToDisk()
+    // Don't write to disk: the next addSegmentSha() call will persist this removal
   }
 
   private writeToDisk () {
-    return this.writeQueue.add(async () => {
-      logger.debug(`Writing segment sha JSON ${this.sha256Path} of ${this.videoUUID} on disk.`, lTags(this.videoUUID))
+    this.dirty = true
 
-      // Atomic write: use rename instead of move that is not atomic
-      await writeJson(this.sha256PathTMP, mapToJSON(this.segmentsSha256), { flush: true } as JFWriteOptions) // FIXME: jsonfile typings
-      await rename(this.sha256PathTMP, this.sha256Path)
+    if (this.writeLoopPromise === null) {
+      this.writeLoopPromise = this.runWriteLoop()
+    }
 
-      if (this.sendToObjectStorage) {
-        const url = await storeHLSFileFromPath(this.streamingPlaylist, this.sha256Path)
+    return this.writeLoopPromise
+  }
 
-        if (this.streamingPlaylist.segmentsSha256Url !== url) {
-          this.streamingPlaylist.segmentsSha256Url = url
-          await this.streamingPlaylist.save()
-        }
+  private async runWriteLoop () {
+    while (this.dirty) {
+      this.dirty = false
+
+      try {
+        await this.writeOnce()
+      } catch (err) {
+        logger.error('Cannot write sha segments to disk.', { err })
       }
-    })
+    }
+
+    this.writeLoopPromise = null
+  }
+
+  private async writeOnce () {
+    logger.debug(`Writing segment sha JSON ${this.sha256Path} of ${this.videoUUID} on disk.`)
+
+    // Atomic write: use rename instead of move that is not atomic
+    // FIXME: jsonfile typings
+    await (writeJson(this.sha256PathTMP, mapToJSON(this.segmentsSha256), { flush: true } as any) as unknown as Promise<void>)
+    await rename(this.sha256PathTMP, this.sha256Path)
+
+    if (this.sendToObjectStorage) {
+      await storeHLSFileFromPath(this.streamingPlaylist.Video, this.sha256Path)
+    }
   }
 }
 

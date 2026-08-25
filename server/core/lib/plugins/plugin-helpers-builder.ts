@@ -1,56 +1,59 @@
-import express from 'express'
-import { Server } from 'http'
-import { join } from 'path'
-import { buildLogger } from '@server/helpers/logger.js'
+import { ffprobePromise } from '@peertube/peertube-ffmpeg'
+import { FileStorage, VideoBlacklistCreate } from '@peertube/peertube-models'
+import { Awaitable } from '@peertube/peertube-typescript-utils'
+import { toCompleteUUID } from '@server/helpers/custom-validators/misc.js'
+import { buildWinstonLogger, createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { WEBSERVER } from '@server/initializers/constants.js'
 import { sequelizeTypescript } from '@server/initializers/database.js'
 import { AccountModel } from '@server/models/account/account.js'
-import { AccountBlocklistModel } from '@server/models/account/account-blocklist.js'
-import { getServerActor } from '@server/models/application/application.js'
+import { getServerAccount, getServerActor } from '@server/models/application/application.js'
+import { CommentAutomaticTagModel } from '@server/models/automatic-tag/comment-automatic-tag.js'
+import { VideoAutomaticTagModel } from '@server/models/automatic-tag/video-automatic-tag.js'
+import { AccountBlocklistModel } from '@server/models/blocklist/account-blocklist.js'
+import { ServerBlocklistModel } from '@server/models/blocklist/server-blocklist.js'
 import { ServerModel } from '@server/models/server/server.js'
-import { ServerBlocklistModel } from '@server/models/server/server-blocklist.js'
 import { UserModel } from '@server/models/user/user.js'
-import { VideoModel } from '@server/models/video/video.js'
 import { VideoBlacklistModel } from '@server/models/video/video-blacklist.js'
+import { VideoFileModel } from '@server/models/video/video-file.js'
+import { VideoModel } from '@server/models/video/video.js'
 import { MPlugin, MVideo, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { PeerTubeHelpers } from '@server/types/plugins/index.js'
-import { ffprobePromise } from '@peertube/peertube-ffmpeg'
-import { VideoBlacklistCreate, FileStorage } from '@peertube/peertube-models'
+import express from 'express'
+import { Server } from 'http'
+import { join } from 'path'
 import { addAccountInBlocklist, addServerInBlocklist, removeAccountFromBlocklist, removeServerFromBlocklist } from '../blocklist.js'
+import { JobQueue } from '../job-queue/index.js'
+import { LocalVideoUpdater } from '../local-video-updater.js'
 import { PeerTubeSocket } from '../peertube-socket.js'
 import { ServerConfigManager } from '../server-config-manager.js'
 import { blacklistVideo, unblacklistVideo } from '../video-blacklist.js'
 import { VideoPathManager } from '../video-path-manager.js'
 
+const logger = createLogger('plugin')
+
 function buildPluginHelpers (httpServer: Server, pluginModel: MPlugin, npmName: string): PeerTubeHelpers {
-  const logger = buildPluginLogger(npmName)
-
-  const database = buildDatabaseHelpers()
-  const videos = buildVideosHelpers()
-
-  const config = buildConfigHelpers()
-
-  const server = buildServerHelpers(httpServer)
-
-  const moderation = buildModerationHelpers()
-
-  const plugin = buildPluginRelatedHelpers(pluginModel, npmName)
-
-  const socket = buildSocketHelpers()
-
-  const user = buildUserHelpers()
-
   return {
-    logger,
-    database,
-    videos,
-    config,
-    moderation,
-    plugin,
-    server,
-    socket,
-    user
+    logger: buildPluginLogger(npmName),
+
+    database: buildDatabaseHelpers(),
+    videos: buildVideosHelpers(npmName),
+
+    config: buildConfigHelpers(),
+
+    server: buildServerHelpers(httpServer),
+
+    moderation: buildModerationHelpers(),
+
+    plugin: buildPluginRelatedHelpers(pluginModel, npmName),
+
+    socket: buildSocketHelpers(),
+
+    user: buildUserHelpers(),
+
+    automaticTags: buildAutomaticTagsHelpers(),
+
+    email: buildEmailHelpers()
   }
 }
 
@@ -61,7 +64,7 @@ export {
 // ---------------------------------------------------------------------------
 
 function buildPluginLogger (npmName: string) {
-  return buildLogger(npmName)
+  return buildWinstonLogger({ labelSuffix: npmName })
 }
 
 function buildDatabaseHelpers () {
@@ -78,18 +81,18 @@ function buildServerHelpers (httpServer: Server) {
   }
 }
 
-function buildVideosHelpers () {
+function buildVideosHelpers (npmName: string) {
   return {
     loadByUrl: (url: string) => {
       return VideoModel.loadByUrl(url)
     },
 
     loadByIdOrUUID: (id: number | string) => {
-      return VideoModel.load(id)
+      return VideoModel.loadWithThumbnails(toCompleteUUID(id))
     },
 
     loadByIdOrUUIDWithFiles: (id: number | string) => {
-      return VideoModel.loadWithFiles(id)
+      return VideoModel.loadWithFiles(toCompleteUUID(id))
     },
 
     removeVideo: (id: number) => {
@@ -100,8 +103,41 @@ function buildVideosHelpers () {
       })
     },
 
+    updateVideo: async (options: Parameters<PeerTubeHelpers['videos']['updateVideo']>[0]) => {
+      const video = await VideoModel.loadFull(options.videoId)
+      if (!video) return
+
+      await logger.withContext([ npmName, video.uuid ], async () => {
+        const updater = new LocalVideoUpdater({ video, user: null })
+        await updater.update(options.attributes)
+      })
+    },
+
     ffprobe: (path: string) => {
       return ffprobePromise(path)
+    },
+
+    withFile: async <T>(
+      options: {
+        videoId: number | string
+        videoFileId: number
+      },
+      cb: (path: string) => Awaitable<T>
+    ) => {
+      const videoFile = await VideoFileModel.loadWithVideoOrPlaylist(options.videoFileId, toCompleteUUID(options.videoId))
+      if (!videoFile) throw new Error('Video file not found')
+
+      const video = videoFile.getVideo()
+
+      return logger.withContext([ npmName, video.uuid ], async () => {
+        const releaser = await VideoPathManager.Instance.lockFiles(video.uuid)
+
+        try {
+          return await VideoPathManager.Instance.makeAvailableVideoFile(videoFile, cb)
+        } finally {
+          releaser()
+        }
+      })
     },
 
     getFiles: async (id: number | string) => {
@@ -109,6 +145,7 @@ function buildVideosHelpers () {
       if (!video) return undefined
 
       const webVideoFiles = (video.VideoFiles || []).map(f => ({
+        id: f.id,
         path: f.storage === FileStorage.FILE_SYSTEM
           ? VideoPathManager.Instance.getFSVideoFileOutputPath(video, f)
           : null,
@@ -124,6 +161,7 @@ function buildVideosHelpers () {
       const hlsVideoFiles = hls
         ? (video.getHLSPlaylist().VideoFiles || []).map(f => {
           return {
+            id: f.id,
             path: f.storage === FileStorage.FILE_SYSTEM
               ? VideoPathManager.Instance.getFSVideoFileOutputPath(hls, f)
               : null,
@@ -136,9 +174,16 @@ function buildVideosHelpers () {
         : []
 
       const thumbnails = video.Thumbnails.map(t => ({
-        type: t.type,
-        url: t.getOriginFileUrl(video),
-        path: t.getPath()
+        type: t.width > 300
+          ? 2 as const // Preview
+          : 1 as const, // Thumbnail
+
+        width: t.width,
+        height: t.height,
+        url: t.getLocalFileUrl(),
+        path: t.isLocal()
+          ? t.getFSPath()
+          : null
       }))
 
       return {
@@ -164,7 +209,7 @@ function buildModerationHelpers () {
 
       await addServerInBlocklist({
         byAccountId: options.byAccountId,
-        targetServerId: serverToBlock.id,
+        targetServer: serverToBlock,
         removeNotificationOfUserId: user?.id
       })
     },
@@ -177,20 +222,20 @@ function buildModerationHelpers () {
     },
 
     blockAccount: async (options: { byAccountId: number, handleToBlock: string }) => {
-      const accountToBlock = await AccountModel.loadByNameWithHost(options.handleToBlock)
+      const accountToBlock = await AccountModel.loadByHandle(options.handleToBlock)
       if (!accountToBlock) return
 
       const user = await UserModel.loadByAccountId(options.byAccountId)
 
       await addAccountInBlocklist({
         byAccountId: options.byAccountId,
-        targetAccountId: accountToBlock.id,
+        targetAccount: accountToBlock,
         removeNotificationOfUserId: user?.id
       })
     },
 
     unblockAccount: async (options: { byAccountId: number, handleToUnblock: string }) => {
-      const targetAccount = await AccountModel.loadByNameWithHost(options.handleToUnblock)
+      const targetAccount = await AccountModel.loadByHandle(options.handleToUnblock)
       if (!targetAccount) return
 
       const accountBlock = await AccountBlocklistModel.loadByAccountAndTarget(options.byAccountId, targetAccount.id)
@@ -203,7 +248,9 @@ function buildModerationHelpers () {
       const video = await VideoModel.loadFull(options.videoIdOrUUID)
       if (!video) return
 
-      await blacklistVideo(video, options.createOptions)
+      await logger.withContext([ video.uuid ], async () => {
+        await blacklistVideo(video, options.createOptions)
+      })
     },
 
     unblacklistVideo: async (options: { videoIdOrUUID: number | string }) => {
@@ -268,6 +315,62 @@ function buildUserHelpers () {
       if (!user) return undefined
 
       return UserModel.loadByIdFull(user.id)
+    }
+  }
+}
+
+function buildAutomaticTagsHelpers () {
+  return {
+    getServerCommentAutomaticTags: async (options: {
+      commentId: number
+    }) => {
+      const result = await CommentAutomaticTagModel.listByAccountIdsAndCommentId({
+        commentId: options.commentId,
+        accountIds: [ (await getServerAccount()).id ]
+      })
+
+      return result.map(r => r.AutomaticTag)
+    },
+
+    getAccountCommentAutomaticTags: async (options: {
+      accountId: number
+      commentId: number
+    }) => {
+      const result = await CommentAutomaticTagModel.listByAccountIdsAndCommentId({
+        commentId: options.commentId,
+        accountIds: [ options.accountId ]
+      })
+
+      return result.map(r => r.AutomaticTag)
+    },
+
+    getServerVideoAutomaticTags: async (options: { videoId: number }) => {
+      const result = await VideoAutomaticTagModel.listByAccountIdsAndVideoId({
+        videoId: options.videoId,
+        accountIds: [ (await getServerAccount()).id ]
+      })
+
+      return result.map(r => r.AutomaticTag)
+    }
+  }
+}
+
+function buildEmailHelpers () {
+  return {
+    createJob: async (payload: Parameters<PeerTubeHelpers['email']['createJob']>[0]) => {
+      await JobQueue.Instance.createJob({
+        type: 'email',
+        payload: {
+          to: { email: payload.to.email, language: payload.to.language || CONFIG.INSTANCE.DEFAULT_LANGUAGE },
+
+          text: payload.text,
+
+          subject: payload.subject,
+          title: payload.title,
+
+          action: payload.action
+        }
+      })
     }
   }
 }

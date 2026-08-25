@@ -1,9 +1,7 @@
-import { LiveVideoLatencyModeType, VideoChapter, VideoFile } from '@peertube/peertube-models'
+import { LiveVideoLatencyModeType, PlayerMode, PlayerTheme, Thumbnail, VideoChapter, VideoFile } from '@peertube/peertube-models'
 import { PluginsManager } from '@root-helpers/plugins-manager'
 import { PeerTubeDockPluginOptions } from '../shared/dock/peertube-dock-plugin'
-import { PlaylistPluginOptions, VideoJSCaption, VideoJSStoryboard } from './peertube-videojs-typings'
-
-export type PlayerMode = 'web-video' | 'p2p-media-loader'
+import { PlaylistPluginOptions, VideoJSCaption, VideojsPlayer, VideoJSStoryboard } from './peertube-videojs-typings'
 
 export type PeerTubePlayerConstructorOptions = {
   playerElement: () => HTMLVideoElement
@@ -16,7 +14,7 @@ export type PeerTubePlayerConstructorOptions = {
 
   peertubeLink: () => boolean
 
-  playbackRate?: number | string
+  playbackRate?: number
 
   enableHotkeys: boolean
   inactivityTimeout: number
@@ -26,6 +24,9 @@ export type PeerTubePlayerConstructorOptions = {
   instanceName: string
 
   theaterButton: boolean
+
+  // The player is the main content of the page, so its poster is likely the LCP element
+  mainContent?: boolean
 
   authorizationHeader: () => string
 
@@ -52,13 +53,16 @@ export type PeerTubePlayerConstructorOptions = {
 export type PeerTubePlayerLoadOptions = {
   mode: PlayerMode
 
+  theme: PlayerTheme
+
   startTime?: number | string
   stopTime?: number | string
 
   autoplay: boolean
   forceAutoplay: boolean
 
-  poster: string
+  thumbnails: Thumbnail[]
+
   subtitle?: string
   videoViewUrl: string
 
@@ -69,6 +73,8 @@ export type PeerTubePlayerLoadOptions = {
 
   liveOptions?: {
     latencyMode: LiveVideoLatencyModeType
+
+    dvrEnabled: boolean
   }
 
   videoCaptions: VideoJSCaption[]
@@ -86,6 +92,11 @@ export type PeerTubePlayerLoadOptions = {
   requiresPassword: boolean
   videoPassword: () => string
 
+  nsfwWarning?: {
+    flags: number
+    summary: string
+  }
+
   nextVideo: {
     enabled: boolean
     getVideoTitle: () => string
@@ -101,7 +112,7 @@ export type PeerTubePlayerLoadOptions = {
 
   upnext?: {
     isEnabled: () => boolean
-    isSuspended: (player: videojs.VideoJsPlayer) => boolean
+    isSuspended: (player: VideojsPlayer) => boolean
     timeout: number
   }
 

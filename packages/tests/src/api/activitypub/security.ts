@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { HttpStatusCode } from '@peertube/peertube-models'
@@ -73,8 +73,6 @@ async function makeFollowRequest (to: { url: string }, by: { url: string, privat
   const body = await activityPubContextify(follow, 'Follow', fakeFilter())
 
   const httpSignature = {
-    algorithm: HTTP_SIGNATURE.ALGORITHM,
-    authorizationHeaderName: HTTP_SIGNATURE.HEADER_NAME,
     keyId: by.url,
     key: by.privateKey,
     headers: HTTP_SIGNATURE.HEADERS_TO_SIGN_WITH_PAYLOAD
@@ -97,12 +95,31 @@ describe('Test ActivityPub security', function () {
   const keys = readJsonSync(buildAbsoluteFixturePath('./ap-json/peertube/keys.json'))
   const invalidKeys = readJsonSync(buildAbsoluteFixturePath('./ap-json/peertube/invalid-keys.json'))
   const baseHttpSignature = () => ({
-    algorithm: HTTP_SIGNATURE.ALGORITHM,
-    authorizationHeaderName: HTTP_SIGNATURE.HEADER_NAME,
     keyId: 'acct:peertube@' + servers[1].host,
     key: keys.privateKey,
     headers: HTTP_SIGNATURE.HEADERS_TO_SIGN_WITH_PAYLOAD
   })
+
+  async function postActivity (activity: any) {
+    const signer: any = { privateKey: keys.privateKey, url: servers[2].url + '/accounts/peertube' }
+    const signedBody: any = await signAndContextify({
+      byActor: signer,
+      data: activity,
+      contextType: 'Announce',
+      contextFilter: fakeFilter(),
+      signerFunction: signJsonLDObjectWithoutAssertion
+    })
+
+    const headers = buildGlobalHTTPHeaders(signedBody, buildDigest)
+
+    try {
+      await makePOSTAPRequest(url, signedBody, baseHttpSignature(), headers)
+
+      return { fail: false }
+    } catch (err) {
+      return { fail: true, statusCode: err.statusCode }
+    }
+  }
 
   // ---------------------------------------------------------------
 
@@ -124,7 +141,6 @@ describe('Test ActivityPub security', function () {
   })
 
   describe('When checking HTTP signature', function () {
-
     it('Should fail with an invalid digest', async function () {
       const body = await activityPubContextify(getAnnounceWithoutContext(servers[1]), 'Announce', fakeFilter())
       const headers = {
@@ -302,23 +318,173 @@ describe('Test ActivityPub security', function () {
       }
     })
 
+    it('Should fail with an activity using @graph payload', async function () {
+      const activity: any = {
+        'id': 'https://victim.example/users/alice/statuses/123/activity',
+        'type': 'Announce',
+        'actor': servers[2].url + '/accounts/peertube',
+        'published': '2026-03-30T07:18:30Z',
+        'to': [ 'https://www.w3.org/ns/activitystreams#Public' ],
+        'cc': [ 'https://victim.example/users/alice/followers' ],
+        'object': 'https://target.example/users/bob/statuses/456',
+        '@graph': [
+          {
+            id: 'https://victim.example/users/alice#announces/123/undo',
+            type: 'Undo',
+            actor: servers[2].url + '/accounts/peertube',
+            to: [ 'https://www.w3.org/ns/activitystreams#Public' ],
+            object: 'https://victim.example/users/alice/statuses/123/activity'
+          }
+        ]
+      }
+
+      const { fail, statusCode } = await postActivity(activity)
+      expect(fail).to.be.true
+      expect(statusCode).to.equal(HttpStatusCode.FORBIDDEN_403)
+    })
+
+    it('Should fail with an activity using @reverse payload', async function () {
+      const activity: any = {
+        'id': 'https://victim.example/users/alice/statuses/123/activity',
+        'type': 'Announce',
+        'actor': servers[2].url + '/accounts/peertube',
+        'published': '2026-03-30T07:18:30Z',
+        'to': [ 'https://www.w3.org/ns/activitystreams#Public' ],
+        'cc': [ 'https://victim.example/users/alice/followers' ],
+        'object': 'https://target.example/users/bob/statuses/456',
+        '@reverse': {
+          object: {
+            id: 'https://victim.example/users/alice#announces/123/undo',
+            type: 'Undo',
+            actor: servers[2].url + '/accounts/peertube',
+            to: [ 'https://www.w3.org/ns/activitystreams#Public' ]
+          }
+        }
+      }
+
+      const { fail, statusCode } = await postActivity(activity)
+      expect(fail).to.be.true
+      expect(statusCode).to.equal(HttpStatusCode.FORBIDDEN_403)
+    })
+
+    it('Should fail with an activity using @included payload', async function () {
+      const activity: any = {
+        '@context': 'https://www.w3.org/ns/activitystreams',
+        'id': 'https://alice.example/notes/42/activity',
+        'type': 'Create',
+        'actor': servers[2].url + '/accounts/peertube',
+
+        'cc': 'https://www.w3.org/ns/activitystreams#Public',
+        'object': {
+          id: 'https://alice.example/notes/42',
+          type: 'Note',
+          attributedTo: 'https://alice.example/actors/1',
+          cc: 'https://www.w3.org/ns/activitystreams#Public',
+          content: 'Welcome to Fediverse!'
+        },
+        '@included': {
+          id: 'https://alice.example/notes/42/activity',
+          to: 'https://bob.example/actors/1',
+          object: {
+            id: 'https://alice.example/notes/42',
+            to: 'https://bob.example/actors/1',
+            inReplyTo: 'https://bob.example/notes/1'
+          }
+        }
+      }
+
+      const { fail, statusCode } = await postActivity(activity)
+      expect(fail).to.be.true
+      expect(statusCode).to.equal(HttpStatusCode.FORBIDDEN_403)
+    })
+
+    it('Should fail with an activity using aliased @included payload', async function () {
+      const activity: any = {
+        '@context': [ 'https://www.w3.org/ns/activitystreams', { included: '@included' } ],
+        'id': 'https://alice.example/notes/42/activity',
+        'type': 'Create',
+        'actor': servers[2].url + '/accounts/peertube',
+        'cc': 'https://www.w3.org/ns/activitystreams#Public',
+        'object': {
+          id: 'https://alice.example/notes/42',
+          type: 'Note',
+          attributedTo: 'https://alice.example/actors/1',
+          cc: 'https://www.w3.org/ns/activitystreams#Public',
+          content: 'Welcome to Fediverse!'
+        },
+        'included': {
+          id: 'https://alice.example/notes/42/activity',
+          to: 'https://bob.example/actors/1',
+          object: {
+            id: 'https://alice.example/notes/42',
+            to: 'https://bob.example/actors/1',
+            inReplyTo: 'https://bob.example/notes/1'
+          }
+        }
+      }
+
+      const { fail, statusCode } = await postActivity(activity)
+      expect(fail).to.be.true
+      expect(statusCode).to.equal(HttpStatusCode.FORBIDDEN_403)
+    })
+
+    it('Should fail with an activity using inner @included payload', async function () {
+      const activity: any = {
+        '@context': [ 'https://www.w3.org/ns/activitystreams', { included: '@included' } ],
+        'id': 'https://alice.example/notes/42/activity',
+        'type': 'Create',
+        'actor': servers[2].url + '/accounts/peertube',
+        'cc': 'https://www.w3.org/ns/activitystreams#Public',
+        'object': {
+          id: 'https://alice.example/notes/42',
+          type: 'Note',
+          attributedTo: 'https://alice.example/actors/1',
+          cc: 'https://www.w3.org/ns/activitystreams#Public',
+          content: 'Welcome to Fediverse!',
+          included: {
+            id: 'https://alice.example/notes/42/activity',
+            to: 'https://bob.example/actors/1',
+            object: {
+              id: 'https://alice.example/notes/42',
+              to: 'https://bob.example/actors/1',
+              inReplyTo: 'https://bob.example/notes/1'
+            }
+          }
+        }
+      }
+
+      const { fail, statusCode } = await postActivity(activity)
+      expect(fail).to.be.true
+      expect(statusCode).to.equal(HttpStatusCode.FORBIDDEN_403)
+    })
+
     it('Should succeed with a valid signature', async function () {
-      const body = getAnnounceWithoutContext(servers[1])
-      body.actor = servers[2].url + '/accounts/peertube'
+      {
+        const activity = getAnnounceWithoutContext(servers[1])
 
-      const signer: any = { privateKey: keys.privateKey, url: servers[2].url + '/accounts/peertube' }
-      const signedBody = await signAndContextify({
-        byActor: signer,
-        data: body,
-        contextType: 'Announce',
-        contextFilter: fakeFilter(),
-        signerFunction: signJsonLDObjectWithoutAssertion
-      })
+        const { fail } = await postActivity(activity)
+        expect(fail).to.be.false
+      }
 
-      const headers = buildGlobalHTTPHeaders(signedBody, buildDigest)
+      {
+        const activity: any = {
+          '@context': 'https://www.w3.org/ns/activitystreams',
+          'id': 'https://alice.example/notes/42/activity',
+          'type': 'Create',
+          'actor': servers[2].url + '/accounts/peertube',
+          'cc': 'https://www.w3.org/ns/activitystreams#Public',
+          'object': {
+            id: 'https://alice.example/notes/42',
+            type: 'Note',
+            attributedTo: 'https://alice.example/actors/1',
+            cc: 'https://www.w3.org/ns/activitystreams#Public',
+            content: 'Welcome to Fediverse!'
+          }
+        }
 
-      const { statusCode } = await makePOSTAPRequest(url, signedBody, baseHttpSignature(), headers)
-      expect(statusCode).to.equal(HttpStatusCode.NO_CONTENT_204)
+        const { fail } = await postActivity(activity)
+        expect(fail).to.be.false
+      }
     })
 
     it('Should refresh the actor keys', async function () {

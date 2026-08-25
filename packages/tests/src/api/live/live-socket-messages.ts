@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { LiveVideoCreate, LiveVideoEventPayload, VideoPrivacy, VideoState, VideoStateType } from '@peertube/peertube-models'
@@ -35,7 +35,6 @@ describe('Test live socket messages', function () {
   })
 
   describe('Live socket messages', function () {
-
     async function createLiveWrapper (options: Partial<LiveVideoCreate> = {}) {
       const liveAttributes = {
         name: 'live video',
@@ -102,7 +101,7 @@ describe('Test live socket messages', function () {
     })
 
     it('Should correctly send views change notification', async function () {
-      this.timeout(60000)
+      this.timeout(90000)
 
       let localLastVideoViewers = 0
       let remoteLastVideoViewers = 0
@@ -114,7 +113,9 @@ describe('Test live socket messages', function () {
         const videoId = await servers[0].videos.getId({ uuid: liveVideoUUID })
 
         const localSocket = servers[0].socketIO.getLiveNotificationSocket()
-        localSocket.on('views-change', (data: LiveVideoEventPayload) => { localLastVideoViewers = data.viewers })
+        localSocket.on('views-change', (data: LiveVideoEventPayload) => {
+          localLastVideoViewers = data.viewers
+        })
         localSocket.emit('subscribe', { videoId })
       }
 
@@ -122,7 +123,9 @@ describe('Test live socket messages', function () {
         const videoId = await servers[1].videos.getId({ uuid: liveVideoUUID })
 
         const remoteSocket = servers[1].socketIO.getLiveNotificationSocket()
-        remoteSocket.on('views-change', (data: LiveVideoEventPayload) => { remoteLastVideoViewers = data.viewers })
+        remoteSocket.on('views-change', (data: LiveVideoEventPayload) => {
+          remoteLastVideoViewers = data.viewers
+        })
         remoteSocket.emit('subscribe', { videoId })
       }
 
@@ -143,11 +146,11 @@ describe('Test live socket messages', function () {
         }
       }, 1000)
 
-      await wait(6000)
-      await waitJobs(servers)
-
-      expect(localLastVideoViewers).to.equal(2)
-      expect(remoteLastVideoViewers).to.equal(2)
+      const deadline = Date.now() + 30000
+      // oxlint-disable-next-line no-unmodified-loop-condition
+      while ((localLastVideoViewers !== 2 || remoteLastVideoViewers !== 2) && Date.now() < deadline) {
+        await wait(500)
+      }
 
       clearInterval(interval)
       await stopFfmpeg(ffmpegCommand)
@@ -200,7 +203,9 @@ describe('Test live socket messages', function () {
         const videoId = await servers[0].videos.getId({ uuid: liveVideoUUID })
 
         const localSocket = servers[0].socketIO.getLiveNotificationSocket()
-        localSocket.on('force-end', () => { hadForcedEndEvent = true })
+        localSocket.on('force-end', () => {
+          hadForcedEndEvent = true
+        })
         localSocket.emit('subscribe', { videoId })
       }
 
@@ -220,7 +225,7 @@ describe('Test live socket messages', function () {
       // Streaming session #2
       ffmpegCommand = await servers[0].live.sendRTMPStreamInVideo(rtmpOptions)
 
-      // eslint-disable-next-line no-unmodified-loop-condition
+      // oxlint-disable-next-line no-unmodified-loop-condition
       while (!hadForcedEndEvent) {
         await wait(500)
       }

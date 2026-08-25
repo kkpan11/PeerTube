@@ -1,5 +1,4 @@
-import { NgIf } from '@angular/common'
-import { Component, OnInit, inject } from '@angular/core'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { FormGroup, FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { Router } from '@angular/router'
 import { AuthService, Notifier, User } from '@app/core'
@@ -13,7 +12,8 @@ import { InputTextComponent } from '../../../shared/shared-forms/input-text.comp
   selector: 'my-account-two-factor',
   templateUrl: './my-account-two-factor.component.html',
   styleUrls: [ './my-account-two-factor.component.scss' ],
-  imports: [ NgIf, FormsModule, ReactiveFormsModule, InputTextComponent, QRCodeComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, ReactiveFormsModule, InputTextComponent, QRCodeComponent ]
 })
 export class MyAccountTwoFactorComponent implements OnInit {
   private notifier = inject(Notifier)
@@ -62,7 +62,7 @@ export class MyAccountTwoFactorComponent implements OnInit {
         this.step = 'confirm'
       },
 
-      error: err => this.notifier.error(err.message)
+      error: err => this.notifier.handleError(err)
     })
   }
 
@@ -80,7 +80,7 @@ export class MyAccountTwoFactorComponent implements OnInit {
         this.router.navigateByUrl('/my-account/settings')
       },
 
-      error: err => this.notifier.error(err.message)
+      error: err => this.notifier.handleError(err)
     })
   }
 

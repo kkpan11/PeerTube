@@ -1,4 +1,4 @@
-import { ActorImage, VideoCommentPolicyType } from '../index.js'
+import { ActorImage, LogoType, PlayerTheme, VideoCommentPolicyType } from '../index.js'
 import { ClientScriptJSON } from '../plugins/plugin-package-json.model.js'
 import { NSFWPolicyType } from '../videos/nsfw-policy.type.js'
 import { VideoPrivacyType } from '../videos/video-privacy.enum.js'
@@ -32,11 +32,24 @@ export interface RegisteredIdAndPassAuthConfig {
   weight: number
 }
 
+export interface FileConstraints {
+  size: {
+    max: number
+  }
+  extensions: string[]
+}
+
 export interface ServerConfig {
   serverVersion: string
   serverCommit?: string
 
   client: {
+    newFeaturesInfo: boolean
+
+    header: {
+      hideInstanceName: boolean
+    }
+
     videos: {
       miniature: {
         preferAuthorDisplayName: boolean
@@ -44,6 +57,11 @@ export interface ServerConfig {
       resumableUpload: {
         maxChunkSize: number
       }
+    }
+
+    browseVideos: {
+      defaultSort: string
+      defaultScope: string
     }
 
     menu: {
@@ -75,12 +93,14 @@ export interface ServerConfig {
     publish: {
       downloadEnabled: boolean
 
-      // TODO: remove, deprecated in 6.2
-      commentsEnabled: boolean
       commentsPolicy: VideoCommentPolicyType
 
       privacy: VideoPrivacyType
       licence: number
+    }
+
+    live: {
+      saveReplay: boolean
     }
 
     p2p: {
@@ -94,6 +114,7 @@ export interface ServerConfig {
     }
 
     player: {
+      theme: PlayerTheme
       autoPlay: boolean
     }
   }
@@ -122,6 +143,7 @@ export interface ServerConfig {
       externalLink: string
       mastodonLink: string
       blueskyLink: string
+      xLink: string
     }
 
     defaultClientRoute: string
@@ -132,6 +154,16 @@ export interface ServerConfig {
 
     avatars: ActorImage[]
     banners: ActorImage[]
+
+    defaultLanguage: string
+
+    logo: {
+      type: LogoType
+      width: number
+      height: number
+      fileUrl: string
+      isFallback: boolean
+    }[]
   }
 
   search: {
@@ -162,6 +194,20 @@ export interface ServerConfig {
     builtIn: { name: 'peertube-core-light-beige' | 'peertube-core-dark-brown' }[]
 
     default: string
+
+    customization: {
+      primaryColor: string
+      onPrimaryColor: string
+      foregroundColor: string
+      backgroundColor: string
+      backgroundSecondaryColor: string
+      menuForegroundColor: string
+      menuBackgroundColor: string
+      menuBorderRadius: string
+      headerForegroundColor: string
+      headerBackgroundColor: string
+      inputBorderRadius: string
+    }
   }
 
   email: {
@@ -183,6 +229,7 @@ export interface ServerConfig {
   transcoding: {
     hls: {
       enabled: boolean
+      splitAudioAndVideo: boolean
     }
 
     web_videos: {
@@ -197,12 +244,21 @@ export interface ServerConfig {
     remoteRunners: {
       enabled: boolean
     }
+
+    alwaysTranscodeOriginalResolution: boolean
+    alwaysTranscodePodcastOptimizedAudio: boolean
   }
 
   live: {
     enabled: boolean
 
     allowReplay: boolean
+
+    dvr: {
+      // Seconds
+      maxWindow: number
+    }
+
     latencySetting: {
       enabled: boolean
     }
@@ -278,43 +334,33 @@ export interface ServerConfig {
     }
   }
 
-  avatar: {
-    file: {
-      size: {
-        max: number
-      }
-      extensions: string[]
+  blocklist: {
+    publicLog: {
+      enabled: boolean
     }
+  }
+
+  avatar: {
+    file: FileConstraints
   }
 
   banner: {
-    file: {
-      size: {
-        max: number
-      }
-      extensions: string[]
-    }
+    file: FileConstraints
+  }
+
+  logo: {
+    file: FileConstraints
   }
 
   video: {
-    image: {
-      size: {
-        max: number
-      }
-      extensions: string[]
-    }
+    image: FileConstraints
     file: {
       extensions: string[]
     }
   }
 
   videoCaption: {
-    file: {
-      size: {
-        max: number
-      }
-      extensions: string[]
-    }
+    file: FileConstraints
   }
 
   user: {
@@ -374,6 +420,16 @@ export interface ServerConfig {
 
   views: {
     videos: {
+      remote: {
+        // milliseconds
+        maxAge: number
+      }
+
+      local: {
+        // milliseconds
+        maxAge: number
+      }
+
       watchingInterval: {
         // milliseconds
         anonymous: number
@@ -386,6 +442,9 @@ export interface ServerConfig {
 
   storyboards: {
     enabled: boolean
+    remoteRunners: {
+      enabled: boolean
+    }
   }
 
   videoTranscription: {
@@ -398,6 +457,19 @@ export interface ServerConfig {
 
   webrtc: {
     stunServers: string[]
+  }
+
+  nsfwFlagsSettings: {
+    enabled: boolean
+  }
+
+  fieldsConstraints: {
+    users: {
+      password: {
+        minLength: number
+        maxLength: number
+      }
+    }
   }
 }
 

@@ -1,4 +1,5 @@
 import { Routes } from '@angular/router'
+import { AboutContactComponent } from '../about-contact/about-contact.component'
 import { AboutInstanceComponent } from './about-instance.component'
 import { AboutInstanceResolver } from './about-instance.resolver'
 import { AboutInstanceHomeComponent } from './children/about-instance-home.component'
@@ -47,6 +48,15 @@ export const aboutInstanceRoutes: Routes = [
       {
         path: 'moderation',
         component: AboutInstanceModerationComponent
+      },
+      {
+        path: 'contact',
+        component: AboutContactComponent,
+        data: {
+          meta: {
+            title: $localize`Contact`
+          }
+        }
       }
     ]
   }

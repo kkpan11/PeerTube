@@ -1,5 +1,6 @@
 import { ResultList } from '../../common/index.js'
 import { Account } from '../../actors/index.js'
+import { VideoChannelSummary } from '../channel/video-channel.model.js'
 
 export interface VideoComment {
   id: number
@@ -40,6 +41,8 @@ export interface VideoCommentForAdminOrUser {
     id: number
     uuid: string
     name: string
+
+    channel: VideoChannelSummary
   }
 
   heldForReview: boolean
@@ -51,5 +54,12 @@ export type VideoCommentThreads = ResultList<VideoComment> & { totalNotDeletedCo
 
 export interface VideoCommentThreadTree {
   comment: VideoComment
+
+  // May contain less elements than `totalChildren`: the tree is truncated in depth and in width
   children: VideoCommentThreadTree[]
+
+  // Total direct replies of `comment` the current user can see
+  totalChildren: number
 }
+
+export type VideoCommentReplies = ResultList<VideoCommentThreadTree>

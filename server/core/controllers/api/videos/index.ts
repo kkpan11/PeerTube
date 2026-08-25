@@ -1,15 +1,22 @@
-import { HttpStatusCode } from '@peertube/peertube-models'
+import { HttpStatusCode, VideoChannelActivityAction } from '@peertube/peertube-models'
 import { pickCommonVideoQuery } from '@server/helpers/query.js'
+import { scheduleVideoRefreshIfNeeded } from '@server/lib/activitypub/videos/index.js'
 import { openapiOperationDoc } from '@server/middlewares/doc.js'
 import { getServerActor } from '@server/models/application/application.js'
+import { VideoChannelActivityModel } from '@server/models/video/video-channel-activity.js'
 import express from 'express'
 import { auditLoggerFactory, getAuditIdFromRes, VideoAuditView } from '../../../helpers/audit-logger.js'
-import { buildNSFWFilter, getCountVideos } from '../../../helpers/express-utils.js'
-import { logger } from '../../../helpers/logger.js'
+import { buildNSFWFilters, getCountVideos } from '../../../helpers/express-utils.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { getFormattedObjects } from '../../../helpers/utils.js'
-import { VIDEO_CATEGORIES, VIDEO_LANGUAGES, VIDEO_LICENCES, VIDEO_PRIVACIES } from '../../../initializers/constants.js'
+import {
+  VIDEO_CATEGORIES,
+  VIDEO_LANGUAGES,
+  VIDEO_LICENCES,
+  VIDEO_PRIVACIES,
+  VIDEO_TEXT_LANGUAGES
+} from '../../../initializers/constants.js'
 import { sequelizeTypescript } from '../../../initializers/database.js'
-import { JobQueue } from '../../../lib/job-queue/index.js'
 import { Hooks } from '../../../lib/plugins/hooks.js'
 import {
   apiRateLimiter,
@@ -17,12 +24,13 @@ import {
   asyncRetryTransactionMiddleware,
   authenticate,
   checkVideoFollowConstraints,
-  commonVideosFiltersValidator,
+  commonVideosFiltersValidatorFactory,
   optionalAuthenticate,
   paginationValidator,
   setDefaultPagination,
   setDefaultVideosSort,
-  videosCustomGetValidator,
+  videoGetValidatorFactory,
+  videoLanguagesScopeValidator,
   videosRemoveValidator,
   videosSortValidator
 } from '../../../middlewares/index.js'
@@ -32,6 +40,7 @@ import { blacklistRouter } from './blacklist.js'
 import { videoCaptionsRouter } from './captions.js'
 import { videoChaptersRouter } from './chapters.js'
 import { videoCommentRouter } from './comment.js'
+import { videoEmbedPrivacyRouter } from './embed-privacy.js'
 import { filesRouter } from './files.js'
 import { videoImportsRouter } from './import.js'
 import { liveRouter } from './live.js'
@@ -47,6 +56,8 @@ import { transcodingRouter } from './transcoding.js'
 import { updateRouter } from './update.js'
 import { uploadRouter } from './upload.js'
 import { viewRouter } from './view.js'
+
+const logger = createLogger()
 
 const auditLogger = auditLoggerFactory('videos')
 const videosRouter = express.Router()
@@ -72,44 +83,36 @@ videosRouter.use('/', videoPasswordRouter)
 videosRouter.use('/', storyboardRouter)
 videosRouter.use('/', videoSourceRouter)
 videosRouter.use('/', videoChaptersRouter)
+videosRouter.use('/', videoEmbedPrivacyRouter)
 
-videosRouter.get('/categories',
-  openapiOperationDoc({ operationId: 'getCategories' }),
-  listVideoCategories
-)
-videosRouter.get('/licences',
-  openapiOperationDoc({ operationId: 'getLicences' }),
-  listVideoLicences
-)
-videosRouter.get('/languages',
-  openapiOperationDoc({ operationId: 'getLanguages' }),
-  listVideoLanguages
-)
-videosRouter.get('/privacies',
-  openapiOperationDoc({ operationId: 'getPrivacies' }),
-  listVideoPrivacies
-)
+videosRouter.get('/categories', openapiOperationDoc({ operationId: 'getCategories' }), listVideoCategories)
+videosRouter.get('/licences', openapiOperationDoc({ operationId: 'getLicences' }), listVideoLicences)
+videosRouter.get('/languages', openapiOperationDoc({ operationId: 'getLanguages' }), videoLanguagesScopeValidator, listVideoLanguages)
+videosRouter.get('/privacies', openapiOperationDoc({ operationId: 'getPrivacies' }), listVideoPrivacies)
 
-videosRouter.get('/',
+videosRouter.get(
+  '/',
   openapiOperationDoc({ operationId: 'getVideos' }),
   paginationValidator,
   videosSortValidator,
   setDefaultVideosSort,
   setDefaultPagination,
   optionalAuthenticate,
-  commonVideosFiltersValidator,
+  commonVideosFiltersValidatorFactory(),
   asyncMiddleware(listVideos)
 )
 
-videosRouter.get('/:id',
+videosRouter.get(
+  '/:id',
   openapiOperationDoc({ operationId: 'getVideo' }),
   optionalAuthenticate,
-  asyncMiddleware(videosCustomGetValidator('for-api')),
+  asyncMiddleware(videoGetValidatorFactory('for-api')),
   asyncMiddleware(checkVideoFollowConstraints),
   asyncMiddleware(getVideo)
 )
 
-videosRouter.delete('/:id',
+videosRouter.delete(
+  '/:id',
   openapiOperationDoc({ operationId: 'delVideo' }),
   authenticate,
   asyncMiddleware(videosRemoveValidator),
@@ -132,7 +135,13 @@ function listVideoLicences (_req: express.Request, res: express.Response) {
   res.json(VIDEO_LICENCES)
 }
 
-function listVideoLanguages (_req: express.Request, res: express.Response) {
+function listVideoLanguages (req: express.Request, res: express.Response) {
+  const scope = req.query.scope as string
+
+  if (scope === 'subtitle') {
+    return res.json(VIDEO_TEXT_LANGUAGES)
+  }
+
   res.json(VIDEO_LANGUAGES)
 }
 
@@ -148,9 +157,7 @@ async function getVideo (req: express.Request, res: express.Response) {
   // Filter may return null/undefined value to forbid video access
   if (!video) return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
 
-  if (video.isOutdated()) {
-    JobQueue.Instance.createJobAsync({ type: 'activitypub-refresher', payload: { type: 'video', url: video.url } })
-  }
+  scheduleVideoRefreshIfNeeded(video)
 
   return res.json(video.toFormattedDetailsJSON())
 }
@@ -163,12 +170,12 @@ async function listVideos (req: express.Request, res: express.Response) {
 
   const apiOptions = await Hooks.wrapObject({
     ...query,
+    ...buildNSFWFilters({ req, res }),
 
     displayOnlyForFollower: {
       actorId: serverActor.id,
       orLocalVideos: true
     },
-    nsfw: buildNSFWFilter(res, query.nsfw),
     user: res.locals.oauth ? res.locals.oauth.token.User : undefined,
     countVideos
   }, 'filter:api.videos.list.params')
@@ -183,10 +190,18 @@ async function listVideos (req: express.Request, res: express.Response) {
 }
 
 async function removeVideo (req: express.Request, res: express.Response) {
-  const videoInstance = res.locals.videoAll
+  const videoInstance = res.locals.videoFull
 
   await sequelizeTypescript.transaction(async t => {
     await videoInstance.destroy({ transaction: t })
+
+    await VideoChannelActivityModel.addVideoActivity({
+      action: VideoChannelActivityAction.DELETE,
+      user: res.locals.oauth.token.User,
+      channel: videoInstance.VideoChannel,
+      video: videoInstance,
+      transaction: t
+    })
   })
 
   auditLogger.delete(getAuditIdFromRes(res), new VideoAuditView(videoInstance.toFormattedDetailsJSON()))
@@ -195,6 +210,6 @@ async function removeVideo (req: express.Request, res: express.Response) {
   Hooks.runAction('action:api.video.deleted', { video: videoInstance, req, res })
 
   return res.type('json')
-            .status(HttpStatusCode.NO_CONTENT_204)
-            .end()
+    .status(HttpStatusCode.NO_CONTENT_204)
+    .end()
 }

@@ -1,10 +1,10 @@
 import videojs from 'video.js'
-import { PlayerNetworkInfo } from '../../types'
+import { PlayerNetworkInfo, VideojsButton } from '../../types'
 import { bytes } from '../common'
 
-const Button = videojs.getComponent('Button')
-class P2PInfoButton extends Button {
+const Button = videojs.getComponent('Button') as typeof VideojsButton
 
+class P2PInfoButton extends Button {
   createEl () {
     const div = videojs.dom.createEl('div', { className: 'vjs-peertube' })
     const subDivP2P = videojs.dom.createEl('div', {
@@ -12,7 +12,10 @@ class P2PInfoButton extends Button {
     }) as HTMLDivElement
     div.appendChild(subDivP2P)
 
-    const downloadIcon = videojs.dom.createEl('span', { className: 'icon icon-download' })
+    const downloadIcon = videojs.dom.createEl('span', { className: 'icon icon-download' }, {
+      role: 'img',
+      ariaLabel: this.player().localize('Download speed:')
+    })
     subDivP2P.appendChild(downloadIcon)
 
     const downloadSpeedText = videojs.dom.createEl('span', { className: 'download-speed-text' })
@@ -22,7 +25,10 @@ class P2PInfoButton extends Button {
     downloadSpeedText.appendChild(downloadSpeedUnit)
     subDivP2P.appendChild(downloadSpeedText)
 
-    const uploadIcon = videojs.dom.createEl('span', { className: 'icon icon-upload' })
+    const uploadIcon = videojs.dom.createEl('span', { className: 'icon icon-upload' }, {
+      role: 'img',
+      ariaLabel: this.player().localize('Upload speed:')
+    })
     subDivP2P.appendChild(uploadIcon)
 
     const uploadSpeedText = videojs.dom.createEl('span', { className: 'upload-speed-text' })
@@ -64,8 +70,7 @@ class P2PInfoButton extends Button {
         const downloadedFromServer = bytes(httpStats.downloaded).join(' ')
         const downloadedFromPeers = bytes(p2pStats.downloaded).join(' ')
 
-        subDivP2P.title +=
-          ' * ' + this.player().localize('From servers: ') + downloadedFromServer + '\n' +
+        subDivP2P.title += ' * ' + this.player().localize('From servers: ') + downloadedFromServer + '\n' +
           ' * ' + this.player().localize('From peers: ') + downloadedFromPeers + '\n'
       }
       subDivP2P.title += this.player().localize('Total uploaded: ') + totalUploaded.join(' ')
@@ -83,7 +88,7 @@ class P2PInfoButton extends Button {
       subDivP2P.className = 'vjs-peertube-displayed'
     })
 
-    this.player_.on('network-info', (_event, data: PlayerNetworkInfo) => {
+    this.player_.on('network-info', (_event: any, data: PlayerNetworkInfo) => {
       if (data.p2p) return
 
       if (data.source === 'web-video') subDivHttpText.textContent = 'HTTP'

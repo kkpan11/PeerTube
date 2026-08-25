@@ -1,45 +1,49 @@
 import { buildAspectRatio } from '@peertube/peertube-core-utils'
-import { HttpStatusCode, UserRight, VideoState } from '@peertube/peertube-models'
+import { HttpStatusCode, VideoChannelActivityAction, VideoState } from '@peertube/peertube-models'
 import { sequelizeTypescript } from '@server/initializers/database.js'
-import { CreateJobArgument, CreateJobOptions, JobQueue } from '@server/lib/job-queue/index.js'
+import { buildNonDuplicatedFederateVideoJob } from '@server/lib/activitypub/videos/federate.js'
+import { buildNonDuplicatedVideoAutomaticTagsJob } from '@server/lib/automatic-tags/automatic-tags.js'
+import { CreateJobOptions, CreateJobTypeAndPayload, JobQueue } from '@server/lib/job-queue/index.js'
 import { Hooks } from '@server/lib/plugins/hooks.js'
-import { regenerateMiniaturesIfNeeded } from '@server/lib/thumbnail.js'
+import { regenerateLocalVideoThumbnailsFromVideoIfNeeded } from '@server/lib/thumbnail.js'
 import { setupUploadResumableRoutes } from '@server/lib/uploadx.js'
 import { autoBlacklistVideoIfNeeded } from '@server/lib/video-blacklist.js'
+import { regenerateTranscriptionTaskIfNeeded } from '@server/lib/video-captions.js'
 import { buildNewFile, createVideoSource } from '@server/lib/video-file.js'
-import { buildMoveVideoJob, buildStoryboardJobIfNeeded } from '@server/lib/video-jobs.js'
+import { addRemoteStoryboardJobIfNeeded, buildLocalStoryboardJobIfNeeded, buildMoveVideoJob } from '@server/lib/video-jobs.js'
 import { VideoPathManager } from '@server/lib/video-path-manager.js'
 import { buildNextVideoState } from '@server/lib/video-state.js'
 import { openapiOperationDoc } from '@server/middlewares/doc.js'
+import { VideoChannelActivityModel } from '@server/models/video/video-channel-activity.js'
 import { VideoModel } from '@server/models/video/video.js'
-import { MStreamingPlaylistFiles, MVideo, MVideoFile, MVideoFullLight } from '@server/types/models/index.js'
+import { MStreamingPlaylistFiles, MVideo, MVideoFile, MVideoFileInfoHash, MVideoFull } from '@server/types/models/index.js'
 import express from 'express'
 import { move } from 'fs-extra/esm'
-import { logger, loggerTagsFactory } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import {
   asyncMiddleware,
   authenticate,
-  ensureUserHasRight,
   replaceVideoSourceResumableInitValidator,
   replaceVideoSourceResumableValidator,
   videoSourceGetLatestValidator
 } from '../../../middlewares/index.js'
 
-const lTags = loggerTagsFactory('api', 'video')
+const logger = createLogger('api', 'video')
 
 const videoSourceRouter = express.Router()
 
-videoSourceRouter.get('/:id/source',
+videoSourceRouter.get(
+  '/:id/source',
   openapiOperationDoc({ operationId: 'getVideoSource' }),
   authenticate,
   asyncMiddleware(videoSourceGetLatestValidator),
   getVideoLatestSource
 )
 
-videoSourceRouter.delete('/:id/source/file',
+videoSourceRouter.delete(
+  '/:id/source/file',
   openapiOperationDoc({ operationId: 'deleteVideoSourceFile' }),
   authenticate,
-  ensureUserHasRight(UserRight.MANAGE_VIDEO_FILES),
   asyncMiddleware(videoSourceGetLatestValidator),
   asyncMiddleware(deleteVideoLatestSourceFile)
 )
@@ -63,7 +67,7 @@ export {
 
 async function deleteVideoLatestSourceFile (req: express.Request, res: express.Response) {
   const videoSource = res.locals.videoSource
-  const video = res.locals.videoAll
+  const video = res.locals.videoWithRights
 
   await video.removeOriginalFile(videoSource)
 
@@ -72,6 +76,14 @@ async function deleteVideoLatestSourceFile (req: express.Request, res: express.R
 
   await videoSource.save()
 
+  await VideoChannelActivityModel.addVideoActivity({
+    action: VideoChannelActivityAction.UPDATE_SOURCE_FILE,
+    user: res.locals.oauth.token.User,
+    channel: video.VideoChannel,
+    video,
+    transaction: null
+  })
+
   return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
 }
 
@@ -79,17 +91,26 @@ function getVideoLatestSource (req: express.Request, res: express.Response) {
   return res.json(res.locals.videoSource.toFormattedJSON())
 }
 
-async function replaceVideoSourceResumable (req: express.Request, res: express.Response) {
+function replaceVideoSourceResumable (req: express.Request, res: express.Response) {
+  return logger.withContext([ res.locals.videoFull.uuid ], () => doReplaceVideoSourceResumable(req, res))
+}
+
+async function doReplaceVideoSourceResumable (req: express.Request, res: express.Response) {
   const videoPhysicalFile = res.locals.updateVideoFileResumable
   const user = res.locals.oauth.token.User
 
-  const videoFile = await buildNewFile({ path: videoPhysicalFile.path, mode: 'web-video', ffprobe: res.locals.ffprobe })
+  const videoFile = await buildNewFile({
+    path: videoPhysicalFile.path,
+    mode: 'web-video',
+    ffprobe: res.locals.ffprobe
+  }) as MVideoFileInfoHash
+
   const originalFilename = videoPhysicalFile.originalname
 
-  const videoFileMutexReleaser = await VideoPathManager.Instance.lockFiles(res.locals.videoAll.uuid)
+  const videoFileMutexReleaser = await VideoPathManager.Instance.lockFiles(res.locals.videoFull.uuid)
 
   try {
-    const destination = VideoPathManager.Instance.getFSVideoFileOutputPath(res.locals.videoAll, videoFile)
+    const destination = VideoPathManager.Instance.getFSVideoFileOutputPath(res.locals.videoFull, videoFile)
     await move(videoPhysicalFile.path, destination)
 
     let oldWebVideoFiles: MVideoFile[] = []
@@ -98,7 +119,7 @@ async function replaceVideoSourceResumable (req: express.Request, res: express.R
     const inputFileUpdatedAt = new Date()
 
     const video = await sequelizeTypescript.transaction(async transaction => {
-      const video = await VideoModel.loadFull(res.locals.videoAll.id, transaction)
+      const video = await VideoModel.loadFull(res.locals.videoFull.id, transaction)
 
       oldWebVideoFiles = video.VideoFiles
       oldStreamingPlaylists = video.VideoStreamingPlaylists
@@ -125,9 +146,19 @@ async function replaceVideoSourceResumable (req: express.Request, res: express.R
       await autoBlacklistVideoIfNeeded({
         video,
         user,
+        // The name and the description of the video did not change, so its automatic tags are still up to date
+        holdIfAutoTagPolicy: false,
         isRemote: false,
         isNew: false,
         isNewFile: true,
+        transaction
+      })
+
+      await VideoChannelActivityModel.addVideoActivity({
+        action: VideoChannelActivityAction.UPDATE_SOURCE_FILE,
+        user,
+        channel: video.VideoChannel,
+        video,
         transaction
       })
 
@@ -144,11 +175,12 @@ async function replaceVideoSourceResumable (req: express.Request, res: express.R
       createdAt: inputFileUpdatedAt
     })
 
-    await regenerateMiniaturesIfNeeded(video, res.locals.ffprobe)
+    await regenerateLocalVideoThumbnailsFromVideoIfNeeded(video, res.locals.ffprobe)
     await video.VideoChannel.setAsUpdated()
+
     await addVideoJobsAfterUpload(video, videoFile.withVideoOrPlaylist(video))
 
-    logger.info('Replaced video file of video %s with uuid %s.', video.name, video.uuid, lTags(video.uuid))
+    logger.info('Replaced video file of video %s with uuid %s.', video.name, video.uuid)
 
     Hooks.runAction('action:api.video.file-updated', { video, req, res })
 
@@ -158,10 +190,10 @@ async function replaceVideoSourceResumable (req: express.Request, res: express.R
   }
 }
 
-async function addVideoJobsAfterUpload (video: MVideoFullLight, videoFile: MVideoFile) {
-  const jobs: (CreateJobArgument & CreateJobOptions)[] = [
+async function addVideoJobsAfterUpload (video: MVideoFull, videoFile: MVideoFile) {
+  const jobs: (CreateJobTypeAndPayload & CreateJobOptions)[] = [
     {
-      type: 'manage-video-torrent' as 'manage-video-torrent',
+      type: 'manage-video-torrent' as const,
       payload: {
         videoId: video.id,
         videoFileId: videoFile.id,
@@ -169,34 +201,40 @@ async function addVideoJobsAfterUpload (video: MVideoFullLight, videoFile: MVide
       }
     },
 
-    buildStoryboardJobIfNeeded({ video, federate: false }),
+    await buildLocalStoryboardJobIfNeeded({ video, federate: false }),
 
-    {
-      type: 'federate-video' as 'federate-video',
-      payload: {
-        videoUUID: video.uuid,
-        isNewVideoForFederation: false
-      }
-    }
+    // The video has a new file to analyze: rebuild its automatic tags before re-federating it
+    buildNonDuplicatedVideoAutomaticTagsJob({ video, moderation: 'apply' }),
+
+    buildNonDuplicatedFederateVideoJob({ video })
   ]
 
   if (video.state === VideoState.TO_MOVE_TO_EXTERNAL_STORAGE) {
-    jobs.push(await buildMoveVideoJob({ video, isNewVideo: false, previousVideoState: undefined, type: 'move-to-object-storage' }))
+    jobs.push(
+      await buildMoveVideoJob({
+        type: 'move-to-object-storage',
+        video,
+        moveVideoState: {
+          previousVideoState: undefined
+        }
+      })
+    )
   }
 
   if (video.state === VideoState.TO_TRANSCODE) {
     jobs.push({
-      type: 'transcoding-job-builder' as 'transcoding-job-builder',
+      type: 'transcoding-job-builder' as const,
       payload: {
         videoUUID: video.uuid,
-        optimizeJob: {
-          isNewVideo: false
-        }
+        optimizeJob: {}
       }
     })
   }
 
-  return JobQueue.Instance.createSequentialJobFlow(...jobs)
+  await JobQueue.Instance.createSequentialJobFlow(...jobs)
+
+  await addRemoteStoryboardJobIfNeeded(video)
+  await regenerateTranscriptionTaskIfNeeded(video)
 }
 
 async function removeOldFiles (options: {
@@ -211,6 +249,6 @@ async function removeOldFiles (options: {
   }
 
   for (const playlist of playlists) {
-    await video.removeStreamingPlaylistFiles(playlist)
+    await video.removeAllStreamingPlaylistFiles({ playlist })
   }
 }

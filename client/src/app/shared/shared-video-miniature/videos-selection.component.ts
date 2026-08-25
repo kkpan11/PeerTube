@@ -1,9 +1,9 @@
-import { NgFor, NgIf, NgTemplateOutlet } from '@angular/common'
-import { AfterContentInit, Component, contentChildren, inject, input, model, TemplateRef } from '@angular/core'
+import { NgTemplateOutlet } from '@angular/common'
+import { AfterContentInit, Component, contentChildren, inject, input, model, TemplateRef, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { ComponentPagination, Notifier, resetCurrentPage, User } from '@app/core'
 import { objectKeysTyped } from '@peertube/peertube-core-utils'
-import { ResultList, VideosExistInPlaylists, VideoSortField } from '@peertube/peertube-models'
+import { ResultList, VideoSortField } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
 import { Observable, Subject } from 'rxjs'
 import { PeertubeCheckboxComponent } from '../shared-forms/peertube-checkbox.component'
@@ -18,12 +18,12 @@ export type SelectionType = { [id: number]: boolean }
   selector: 'my-videos-selection',
   templateUrl: './videos-selection.component.html',
   styleUrls: [ './videos-selection.component.scss' ],
-  imports: [ NgIf, InfiniteScrollerDirective, NgFor, PeertubeCheckboxComponent, FormsModule, VideoMiniatureComponent, NgTemplateOutlet ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ InfiniteScrollerDirective, PeertubeCheckboxComponent, FormsModule, VideoMiniatureComponent, NgTemplateOutlet ]
 })
 export class VideosSelectionComponent implements AfterContentInit {
   private notifier = inject(Notifier)
 
-  readonly videosContainedInPlaylists = input<VideosExistInPlaylists>(undefined)
   readonly user = input<User>(undefined)
   readonly pagination = input<ComponentPagination>(undefined)
 
@@ -37,6 +37,8 @@ export class VideosSelectionComponent implements AfterContentInit {
   readonly disabled = input(false)
 
   readonly getVideosObservableFunction = input<(page: number, sort?: VideoSortField) => Observable<ResultList<Video>>>(undefined)
+
+  readonly headingLevel = input(2)
 
   readonly templates = contentChildren(PeerTubeTemplateDirective)
 
@@ -64,8 +66,6 @@ export class VideosSelectionComponent implements AfterContentInit {
       const t = this.templates().find(t => t.name() === 'globalButtons')
       if (t) this.globalButtonsTemplate = t.template
     }
-
-    this.loadMoreVideos()
   }
 
   getVideosObservable (page: number) {
@@ -112,7 +112,7 @@ export class VideosSelectionComponent implements AfterContentInit {
         },
 
         error: err => {
-          const message = $localize`Cannot load more videos. Try again later.`
+          const message = $localize`Cannot load more videos. Please try again later.`
 
           logger.error(message, err)
           this.notifier.error(message)

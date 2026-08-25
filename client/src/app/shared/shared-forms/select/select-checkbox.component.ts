@@ -1,5 +1,4 @@
-import { CommonModule } from '@angular/common'
-import { booleanAttribute, Component, forwardRef, input, model, numberAttribute, output } from '@angular/core'
+import { booleanAttribute, Component, forwardRef, input, model, numberAttribute, output, ChangeDetectionStrategy } from '@angular/core'
 import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms'
 import { MultiSelectModule } from 'primeng/multiselect'
 import { SelectOptionsItem } from '../../../../types/select-options-item.model'
@@ -14,7 +13,8 @@ import { SelectOptionsItem } from '../../../../types/select-options-item.model'
       multi: true
     }
   ],
-  imports: [ MultiSelectModule, FormsModule, CommonModule ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ MultiSelectModule, FormsModule ]
 })
 export class SelectCheckboxComponent implements ControlValueAccessor {
   readonly inputId = input.required<string>()
@@ -26,14 +26,13 @@ export class SelectCheckboxComponent implements ControlValueAccessor {
   readonly selectableGroupAsModel = input<boolean>(undefined)
   readonly placeholder = input<string>(undefined)
 
-  readonly selectionLimit = input<number>(undefined)
-
   readonly selectedItemsLabel = input<string>(undefined)
 
   readonly virtualScroll = input(false, { transform: booleanAttribute })
   readonly virtualScrollItemSize = input(33, { transform: numberAttribute })
 
   readonly showClear = input<boolean, unknown>(undefined, { transform: booleanAttribute })
+  readonly showToggleAll = input<boolean, unknown>(undefined, { transform: booleanAttribute })
 
   readonly panelHide = output()
 

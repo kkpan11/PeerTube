@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { HttpStatusCode } from '@peertube/peertube-models'
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '@tests/shared/checks.js'
+import { checkBadCountPagination, checkBadSort, checkBadStartPagination } from '@tests/shared/checks.js'
 import {
   cleanupTests,
   createSingleServer,
@@ -51,7 +51,7 @@ describe('Test videos API validator', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, null, query)
+      await checkBadSort(server.url, path, null, query)
     })
 
     it('Should succeed with the correct parameters', async function () {
@@ -149,8 +149,13 @@ describe('Test videos API validator', function () {
       await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
     })
 
+    it('Should fail with too many uuids', async function () {
+      const customQuery = { ...query, uuids: new Array(101).fill('dfd70b83-639f-4980-94af-304a56ab4b35') }
+      await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    })
+
     it('Should succeed with valid uuids', async function () {
-      const customQuery = { ...query, uuids: [ 'dfd70b83-639f-4980-94af-304a56ab4b35' ] }
+      const customQuery = { ...query, uuids: new Array(90).fill('dfd70b83-639f-4980-94af-304a56ab4b35') }
       await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.OK_200 })
     })
   })
@@ -172,7 +177,7 @@ describe('Test videos API validator', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, null, query)
+      await checkBadSort(server.url, path, null, query)
     })
 
     it('Should fail with an invalid host', async function () {
@@ -184,8 +189,18 @@ describe('Test videos API validator', function () {
       await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
     })
 
+    it('Should fail with too many uuids', async function () {
+      const customQuery = { ...query, uuids: new Array(101).fill('dfd70b83-639f-4980-94af-304a56ab4b35') }
+      await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    })
+
     it('Should succeed with the correct parameters', async function () {
-      await makeGetRequest({ url: server.url, path, query, expectedStatus: HttpStatusCode.OK_200 })
+      await makeGetRequest({
+        url: server.url,
+        path,
+        query: { ...query, uuids: new Array(90).fill('dfd70b83-639f-4980-94af-304a56ab4b35') },
+        expectedStatus: HttpStatusCode.OK_200
+      })
     })
   })
 
@@ -206,7 +221,7 @@ describe('Test videos API validator', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, null, query)
+      await checkBadSort(server.url, path, null, query)
     })
 
     it('Should fail with an invalid host', async function () {
@@ -217,13 +232,22 @@ describe('Test videos API validator', function () {
       await makeGetRequest({ url: server.url, path, query: { ...query, handles: [ '' ] }, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
     })
 
+    it('Should fail with too many handles', async function () {
+      const customQuery = { ...query, handles: new Array(101).fill('handle') }
+      await makeGetRequest({ url: server.url, path, query: customQuery, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    })
+
     it('Should succeed with the correct parameters', async function () {
-      await makeGetRequest({ url: server.url, path, query, expectedStatus: HttpStatusCode.OK_200 })
+      await makeGetRequest({
+        url: server.url,
+        path,
+        query: { ...query, handles: new Array(90).fill('handle') },
+        expectedStatus: HttpStatusCode.OK_200
+      })
     })
   })
 
   describe('Search target', function () {
-
     it('Should fail/succeed depending on the search target', async function () {
       const query = { search: 'coucou' }
       const paths = [

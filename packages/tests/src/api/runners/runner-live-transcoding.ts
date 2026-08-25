@@ -1,8 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
-import { FfmpegCommand } from 'fluent-ffmpeg'
-import { readFile } from 'fs/promises'
 import { wait } from '@peertube/peertube-core-utils'
 import {
   HttpStatusCode,
@@ -29,6 +26,9 @@ import {
   testFfmpegStreamError,
   waitJobs
 } from '@peertube/peertube-server-commands'
+import { expect } from 'chai'
+import { FfmpegCommand } from 'fluent-ffmpeg'
+import { readFile } from 'fs/promises'
 
 describe('Test runner live transcoding', function () {
   let server: PeerTubeServer
@@ -51,7 +51,6 @@ describe('Test runner live transcoding', function () {
   })
 
   describe('Without transcoding enabled', function () {
-
     before(async function () {
       await server.config.enableLive({
         allowReplay: false,
@@ -87,7 +86,6 @@ describe('Test runner live transcoding', function () {
     async function testPlaylistFile (fixture: string, expected: string) {
       const text = await server.streamingPlaylists.get({ url: `${baseUrl}/${video.uuid}/${fixture}` })
       expect(await readFile(buildAbsoluteFixturePath(expected), 'utf-8')).to.equal(text)
-
     }
 
     async function testTSFile (fixture: string, expected: string) {
@@ -242,7 +240,7 @@ describe('Test runner live transcoding', function () {
 
       await server.runnerJobs.success({ jobUUID, runnerToken, jobToken: acceptedJob.jobToken, payload: {} })
 
-      await wait(1500)
+      await server.live.waitUntilEnded({ videoId: video.uuid })
       await waitJobs([ server ])
 
       {

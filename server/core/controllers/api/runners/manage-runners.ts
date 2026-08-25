@@ -1,6 +1,5 @@
-import express from 'express'
 import { HttpStatusCode, ListRunnersQuery, RegisterRunnerBody, UserRight } from '@peertube/peertube-models'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { generateRunnerToken } from '@server/helpers/token-generator.js'
 import {
   apiRateLimiter,
@@ -18,23 +17,28 @@ import {
   registerRunnerValidator
 } from '@server/middlewares/validators/runners/index.js'
 import { RunnerModel } from '@server/models/runner/runner.js'
+import express from 'express'
 
-const lTags = loggerTagsFactory('api', 'runner')
+const logger = createLogger('api', 'runner')
 
 const manageRunnersRouter = express.Router()
 
-manageRunnersRouter.post('/register',
+manageRunnersRouter.post(
+  '/register',
   apiRateLimiter,
   asyncMiddleware(registerRunnerValidator),
   asyncMiddleware(registerRunner)
 )
-manageRunnersRouter.post('/unregister',
+
+manageRunnersRouter.post(
+  '/unregister',
   apiRateLimiter,
   asyncMiddleware(getRunnerFromTokenValidator),
   asyncMiddleware(unregisterRunner)
 )
 
-manageRunnersRouter.delete('/:runnerId',
+manageRunnersRouter.delete(
+  '/:runnerId',
   apiRateLimiter,
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_RUNNERS),
@@ -42,7 +46,8 @@ manageRunnersRouter.delete('/:runnerId',
   asyncMiddleware(deleteRunner)
 )
 
-manageRunnersRouter.get('/',
+manageRunnersRouter.get(
+  '/',
   apiRateLimiter,
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_RUNNERS),
@@ -64,40 +69,48 @@ export {
 async function registerRunner (req: express.Request, res: express.Response) {
   const body: RegisterRunnerBody = req.body
 
-  const runnerToken = generateRunnerToken()
+  return logger.withContext([ body.name ], async () => {
+    const runnerToken = generateRunnerToken()
 
-  const runner = new RunnerModel({
-    runnerToken,
-    name: body.name,
-    description: body.description,
-    lastContact: new Date(),
-    ip: req.ip,
-    runnerRegistrationTokenId: res.locals.runnerRegistrationToken.id
+    const runner = new RunnerModel({
+      runnerToken,
+      name: body.name,
+      description: body.description,
+      lastContact: new Date(),
+      ip: req.ip,
+      version: body.version,
+      runnerRegistrationTokenId: res.locals.runnerRegistrationToken.id
+    })
+
+    await runner.save()
+
+    logger.info('Registered new runner %s', runner.name)
+
+    return res.json({ id: runner.id, runnerToken })
   })
-
-  await runner.save()
-
-  logger.info('Registered new runner %s', runner.name, { ...lTags(runner.name) })
-
-  return res.json({ id: runner.id, runnerToken })
 }
 async function unregisterRunner (req: express.Request, res: express.Response) {
   const runner = res.locals.runner
-  await runner.destroy()
 
-  logger.info('Unregistered runner %s', runner.name, { ...lTags(runner.name) })
+  return logger.withContext([ runner.name ], async () => {
+    await runner.destroy()
 
-  return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+    logger.info('Unregistered runner %s', runner.name)
+
+    return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+  })
 }
 
 async function deleteRunner (req: express.Request, res: express.Response) {
   const runner = res.locals.runner
 
-  await runner.destroy()
+  return logger.withContext([ runner.name ], async () => {
+    await runner.destroy()
 
-  logger.info('Deleted runner %s', runner.name, { ...lTags(runner.name) })
+    logger.info('Deleted runner %s', runner.name)
 
-  return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+    return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+  })
 }
 
 async function listRunners (req: express.Request, res: express.Response) {

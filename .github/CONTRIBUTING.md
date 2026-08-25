@@ -79,7 +79,7 @@ First, you should use a server or PC with at least 4GB of RAM. Less RAM may lead
 git clone https://github.com/Chocobozzz/PeerTube
 cd PeerTube
 git remote add me git@github.com:YOUR_GITHUB_USERNAME/PeerTube.git
-yarn install --pure-lockfile
+npm run install-node-dependencies
 ```
 
 Note that development is done on the `develop` branch. If you want to hack on
@@ -136,6 +136,16 @@ More detailed documentation is available:
   * [Server code/architecture](https://docs.joinpeertube.org/contribute/architecture#server)
   * [Server development (adding a new feature...)](/support/doc/development/server.md)
 
+### Embed only
+
+The embed is a standalone application built using Vite.
+The generated files (HTML entrypoint and multiple JS and CSS files) are served by the Vite server (behind `localhost:5173/videos/embed/:videoUUID` or `localhost:5173/video-playlists/embed/:playlistUUID`).
+The following command will compile embed files and run the PeerTube server:
+
+```sh
+npm run dev:embed
+```
+
 ### Client side
 
 To develop on the client side:
@@ -145,31 +155,22 @@ npm run dev:client
 ```
 
 The API will listen on `localhost:9000` and the frontend on `localhost:3000`.
+Embed is also available on `localhost:5173`.
 Client files are automatically compiled on change, and the web browser will
 reload them automatically thanks to hot module replacement.
 
 More detailed documentation is available:
   * [Client code/architecture](https://docs.joinpeertube.org/contribute/architecture#client)
 
-
-### Client and server side
+### Client with embed and server side
 
 The API will listen on `localhost:9000` and the frontend on `localhost:3000`.
+Embed is also available on `localhost:5173`.
 File changes are automatically recompiled, injected in the web browser (no need to refresh manually)
 and the web server is automatically restarted.
 
 ```sh
 npm run dev
-```
-
-### Embed
-
-The embed is a standalone application built using Vite.
-The generated files (HTML entrypoint and multiple JS and CSS files) are served by the Vite server (behind `localhost:5173/videos/embed/:videoUUID` or `localhost:5173/video-playlists/embed/:playlistUUID`).
-The following command will compile embed files and run the PeerTube server:
-
-```sh
-npm run dev:embed
 ```
 
 ### RTL layout
@@ -223,8 +224,19 @@ Instance configurations are in `config/test-{1,2,3}.yaml`.
 
 To test emails with PeerTube:
 
- * Run [mailslurper](http://mailslurper.com/)
- * Run PeerTube using mailslurper SMTP port: `NODE_CONFIG='{ "smtp": { "hostname": "localhost", "port": 2500, "tls": false } }' NODE_ENV=dev node dist/server`
+ * Run [MailDev](https://github.com/maildev/maildev) using Docker
+ * Run PeerTube using MailDev SMTP port: `NODE_CONFIG='{ "smtp": { "hostname": "localhost", "port": 2500, "tls": false } }' NODE_ENV=dev node dist/server`
+
+To test all emails without having to run actions manually on the web interface, you can run notification unit tests with environment variables to relay emails to your MailDev instance. For example:
+
+```sh
+MAILDEV_RELAY_HOST=localhost MAILDEV_RELAY_PORT=2500 mocha --exit --bail packages/tests/src/api/notifications/comments-notifications.ts
+```
+
+You can then go to the MailDev web interface and see how emails look like.
+
+The admin web interface also have a button to send some email templates to a specific email address.
+
 
 ### Environment variables
 

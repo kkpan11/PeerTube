@@ -1,7 +1,9 @@
 import { sha256 } from '@peertube/peertube-node-utils'
 import { exists } from '@server/helpers/custom-validators/misc.js'
 import { Redis as IoRedis, RedisOptions } from 'ioredis'
-import { logger, loggerTagsFactory } from '../helpers/logger.js'
+import { readFileSync } from 'node:fs'
+import { ConnectionOptions } from 'node:tls'
+import { createLogger } from '../helpers/logger.js'
 import { generateRandomString } from '../helpers/utils.js'
 import { CONFIG } from '../initializers/config.js'
 import {
@@ -16,13 +18,15 @@ import {
   WEBSERVER
 } from '../initializers/constants.js'
 
-const lTags = loggerTagsFactory('redis')
+const logger = createLogger('redis')
+
+type StatKind = 'views' | 'downloads'
 
 class Redis {
-
   private static instance: Redis
   private initialized = false
   private connected = false
+  private quitting = false
   private client: IoRedis
   private prefix: string
 
@@ -35,28 +39,44 @@ class Redis {
     this.initialized = true
 
     const redisMode = CONFIG.REDIS.SENTINEL.ENABLED ? 'sentinel' : 'standalone'
-    logger.info(`Connecting to Redis in "${redisMode}" mode...`, lTags())
+    logger.info(`Connecting to Redis in "${redisMode}" mode...`)
 
     this.client = new IoRedis(Redis.getRedisClientOptions('', { enableAutoPipelining: true }, true))
-    this.client.on('error', err => logger.error('Redis failed to connect', { err, ...lTags() }))
+    this.client.on('error', err => logger.error('Redis failed to connect', { err }))
     this.client.on('connect', () => {
-      logger.info('Connected to redis.', lTags())
+      logger.info('Connected to redis.')
 
       this.connected = true
     })
-    this.client.on('reconnecting', (ms) => {
-      logger.error(`Reconnecting to redis in ${ms}.`, lTags())
+    this.client.on('reconnecting', ms => {
+      logger.error(`Reconnecting to redis in ${ms}.`)
     })
     this.client.on('close', () => {
-      logger.error('Connection to redis has closed.', lTags())
+      // Expected when we shut down PeerTube
+      if (this.quitting !== true) logger.error('Connection to redis has closed.')
+
       this.connected = false
     })
 
     this.client.on('end', () => {
-      logger.error('Connection to redis has closed and no more reconnects will be done.', lTags())
+      if (this.quitting === true) {
+        logger.info('Connection to redis has closed.')
+        return
+      }
+
+      logger.error('Connection to redis has closed and no more reconnects will be done.')
     })
 
     this.prefix = 'redis-' + WEBSERVER.HOST + '-'
+  }
+
+  async quit () {
+    if (this.initialized !== true) return
+
+    this.initialized = false
+    this.quitting = true
+
+    await this.client.quit()
   }
 
   static getRedisClientOptions (name?: string, options: RedisOptions = {}, logOptions = false): RedisOptions {
@@ -67,17 +87,34 @@ class Redis {
       if (logOptions) {
         logger.info(
           `Using sentinel redis options`,
-          { sentinels: CONFIG.REDIS.SENTINEL.SENTINELS, name: CONFIG.REDIS.SENTINEL.MASTER_NAME, ...lTags() }
+          { sentinels: CONFIG.REDIS.SENTINEL.SENTINELS, name: CONFIG.REDIS.SENTINEL.MASTER_NAME }
         )
+      }
+
+      let sentinelTLS: ConnectionOptions = undefined
+      if (CONFIG.REDIS.SENTINEL.ENABLE_TLS) {
+        sentinelTLS = { rejectUnauthorized: CONFIG.REDIS.SENTINEL.TLS_SETTINGS.REJECT_UNAUTHORIZED }
+
+        if (CONFIG.REDIS.SENTINEL.TLS_SETTINGS.CA) {
+          sentinelTLS.ca = readFileSync(CONFIG.REDIS.SENTINEL.TLS_SETTINGS.CA, { encoding: 'utf8' })
+        }
+        if (CONFIG.REDIS.SENTINEL.TLS_SETTINGS.CERT) {
+          sentinelTLS.cert = readFileSync(CONFIG.REDIS.SENTINEL.TLS_SETTINGS.CERT, { encoding: 'utf8' })
+        }
+        if (CONFIG.REDIS.SENTINEL.TLS_SETTINGS.KEY) {
+          sentinelTLS.key = readFileSync(CONFIG.REDIS.SENTINEL.TLS_SETTINGS.KEY, { encoding: 'utf8' })
+        }
       }
 
       return {
         connectionName,
         connectTimeout,
         enableTLSForSentinelMode: CONFIG.REDIS.SENTINEL.ENABLE_TLS,
-        sentinelPassword: CONFIG.REDIS.AUTH,
+        sentinelPassword: CONFIG.REDIS.SENTINEL.PASSWORD,
+        password: CONFIG.REDIS.AUTH,
         sentinels: CONFIG.REDIS.SENTINEL.SENTINELS,
         name: CONFIG.REDIS.SENTINEL.MASTER_NAME,
+        sentinelTLS,
         ...options
       }
     }
@@ -85,8 +122,23 @@ class Redis {
     if (logOptions) {
       logger.info(
         `Using standalone redis options`,
-        { db: CONFIG.REDIS.DB, host: CONFIG.REDIS.HOSTNAME, port: CONFIG.REDIS.PORT, path: CONFIG.REDIS.SOCKET, ...lTags() }
+        { db: CONFIG.REDIS.DB, host: CONFIG.REDIS.HOSTNAME, port: CONFIG.REDIS.PORT, path: CONFIG.REDIS.SOCKET }
       )
+    }
+
+    let tls: ConnectionOptions = undefined
+    if (CONFIG.REDIS.ENABLE_TLS) {
+      tls = { rejectUnauthorized: CONFIG.REDIS.TLS_SETTINGS.REJECT_UNAUTHORIZED }
+
+      if (CONFIG.REDIS.TLS_SETTINGS.CA) {
+        tls.ca = readFileSync(CONFIG.REDIS.TLS_SETTINGS.CA, { encoding: 'utf8' })
+      }
+      if (CONFIG.REDIS.TLS_SETTINGS.CERT) {
+        tls.cert = readFileSync(CONFIG.REDIS.TLS_SETTINGS.CERT, { encoding: 'utf8' })
+      }
+      if (CONFIG.REDIS.TLS_SETTINGS.KEY) {
+        tls.key = readFileSync(CONFIG.REDIS.TLS_SETTINGS.KEY, { encoding: 'utf8' })
+      }
     }
 
     return {
@@ -98,6 +150,7 @@ class Redis {
       port: CONFIG.REDIS.PORT,
       path: CONFIG.REDIS.SOCKET,
       showFriendlyErrorStack: true,
+      tls,
       ...options
     }
   }
@@ -154,18 +207,49 @@ class Redis {
     return this.getValue(this.generateTwoFactorRequestKey(userId, requestToken))
   }
 
+  /* ************ Login failures ************ */
+
+  // Failures are tracked per source IP
+  // Each IP's contribution to the account lock is capped at MAX_PER_IP so a single IP cannot lock an account by themselves
+  async addLoginFailure (userId: number, ip: string) {
+    const key = this.generateLoginFailureKey(userId)
+    const field = this.generateLoginFailureIPField(ip)
+
+    await this.incrementHashField(key, field)
+    await this.setExpiration(key, CONFIG.RATES_LIMIT.LOGIN_LOCKOUT.WINDOW_MS)
+
+    // Let the caller know the (capped) total so it can detect the exact failure that triggers the lock
+    return this.getLoginFailures(userId)
+  }
+
+  async getLoginFailures (userId: number) {
+    const failuresPerIP = await this.getHash(this.generateLoginFailureKey(userId))
+
+    return Object.values(failuresPerIP).reduce((total, value) => {
+      return total + Math.min(parseInt(value, 10), CONFIG.RATES_LIMIT.LOGIN_LOCKOUT.MAX_PER_IP)
+    }, 0)
+  }
+
+  deleteLoginFailures (userId: number) {
+    return this.removeValue(this.generateLoginFailureKey(userId))
+  }
+
   /* ************ Email verification ************ */
 
-  async setUserVerifyEmailVerificationString (userId: number) {
+  async setUserVerifyEmailVerificationString (userId: number, isPendingEmail: boolean) {
     const generatedString = await generateRandomString(32)
 
-    await this.setValue(this.generateUserVerifyEmailKey(userId), generatedString, EMAIL_VERIFY_LIFETIME)
+    await this.setValue(this.generateUserVerifyEmailKey(userId, isPendingEmail), generatedString, EMAIL_VERIFY_LIFETIME)
 
     return generatedString
   }
 
-  async getUserVerifyEmailLink (userId: number) {
-    return this.getValue(this.generateUserVerifyEmailKey(userId))
+  async getUserVerifyEmailLink (userId: number, isPendingEmail: boolean) {
+    return this.getValue(this.generateUserVerifyEmailKey(userId, isPendingEmail))
+  }
+
+  deleteUserVerifyEmailLink (userId: number, isPendingEmail: boolean) {
+    return this.removeValue(this.generateUserVerifyEmailKey(userId, isPendingEmail))
   }
 
   async setRegistrationVerifyEmailVerificationString (registrationId: number) {
@@ -178,6 +262,10 @@ class Redis {
 
   async getRegistrationVerifyEmailLink (registrationId: number) {
     return this.getValue(this.generateRegistrationVerifyEmailKey(registrationId))
+  }
+
+  deleteRegistrationVerifyEmailLink (registrationId: number) {
+    return this.removeValue(this.generateRegistrationVerifyEmailKey(registrationId))
   }
 
   /* ************ Contact form per IP ************ */
@@ -200,51 +288,10 @@ class Redis {
     return this.exists(this.generateSessionIdViewKey(sessionId, videoUUID))
   }
 
-  /* ************ Video views stats ************ */
+  /* ************ Video stats ************ */
 
-  addVideoViewStats (videoId: number) {
-    const { videoKey, setKey } = this.generateVideoViewStatsKeys({ videoId })
-
-    return Promise.all([
-      this.addToSet(setKey, videoId.toString()),
-      this.increment(videoKey)
-    ])
-  }
-
-  async getVideoViewsStats (videoId: number, hour: number) {
-    const { videoKey } = this.generateVideoViewStatsKeys({ videoId, hour })
-
-    const valueString = await this.getValue(videoKey)
-    const valueInt = parseInt(valueString, 10)
-
-    if (isNaN(valueInt)) {
-      logger.error(`Cannot get videos views stats of video ${videoId} in hour ${hour}: views number is NaN (${valueString}).`, lTags())
-      return undefined
-    }
-
-    return valueInt
-  }
-
-  async listVideosViewedForStats (hour: number) {
-    const { setKey } = this.generateVideoViewStatsKeys({ hour })
-
-    const stringIds = await this.getSet(setKey)
-    return stringIds.map(s => parseInt(s, 10))
-  }
-
-  deleteVideoViewsStats (videoId: number, hour: number) {
-    const { setKey, videoKey } = this.generateVideoViewStatsKeys({ videoId, hour })
-
-    return Promise.all([
-      this.deleteFromSet(setKey, videoId.toString()),
-      this.deleteKey(videoKey)
-    ])
-  }
-
-  /* ************ Local video views buffer ************ */
-
-  addLocalVideoView (videoId: number) {
-    const { videoKey, setKey } = this.generateLocalVideoViewsKeys(videoId)
+  addVideoStat (kind: StatKind, videoId: number) {
+    const { videoKey, setKey } = this.generateVideoStatsKeys({ kind, videoId })
 
     return Promise.all([
       this.addToSet(setKey, videoId.toString()),
@@ -252,34 +299,73 @@ class Redis {
     ])
   }
 
-  async getLocalVideoViews (videoId: number) {
-    const { videoKey } = this.generateLocalVideoViewsKeys(videoId)
+  async getVideoStats (kind: StatKind, videoId: number, hour: number) {
+    const { videoKey } = this.generateVideoStatsKeys({ kind, videoId, hour })
 
     const valueString = await this.getValue(videoKey)
     const valueInt = parseInt(valueString, 10)
 
-    if (isNaN(valueInt)) {
-      logger.error(`Cannot get videos views of video ${videoId}: views number is NaN (${valueString}).`, lTags())
-      return undefined
-    }
+    if (isNaN(valueInt)) return undefined
 
     return valueInt
   }
 
-  async listLocalVideosViewed () {
-    const { setKey } = this.generateLocalVideoViewsKeys()
+  async listVideosForStats (hour: number) {
+    const { setKey } = this.generateVideoStatsKeys({ hour })
 
     const stringIds = await this.getSet(setKey)
     return stringIds.map(s => parseInt(s, 10))
   }
 
-  deleteLocalVideoViews (videoId: number) {
-    const { setKey, videoKey } = this.generateLocalVideoViewsKeys(videoId)
+  async deleteVideoStats (videoId: number, hour: number) {
+    for (const kind of ([ 'views', 'downloads' ] as StatKind[])) {
+      const { setKey, videoKey } = this.generateVideoStatsKeys({ kind, videoId, hour })
+
+      await Promise.all([
+        this.deleteFromSet(setKey, videoId.toString()),
+        this.deleteKey(videoKey)
+      ])
+    }
+  }
+
+  /* ************ Local video stats buffer ************ */
+
+  addLocalVideoStat (kind: StatKind, videoId: number) {
+    const { videoKey, setKey } = this.generateLocalVideoStatKeys(kind, videoId)
 
     return Promise.all([
-      this.deleteFromSet(setKey, videoId.toString()),
-      this.deleteKey(videoKey)
+      this.addToSet(setKey, videoId.toString()),
+      this.increment(videoKey)
     ])
+  }
+
+  async getLocalVideoStats (kind: StatKind, videoId: number) {
+    const { videoKey } = this.generateLocalVideoStatKeys(kind, videoId)
+
+    const valueString = await this.getValue(videoKey)
+    const valueInt = parseInt(valueString, 10)
+
+    if (isNaN(valueInt)) return undefined
+
+    return valueInt
+  }
+
+  async listLocalVideosWithStats () {
+    const { setKey } = this.generateLocalVideoStatKeys()
+
+    const stringIds = await this.getSet(setKey)
+    return stringIds.map(s => parseInt(s, 10))
+  }
+
+  async deleteLocalVideoStats (videoId: number) {
+    for (const kind of ([ 'views', 'downloads' ] as StatKind[])) {
+      const { setKey, videoKey } = this.generateLocalVideoStatKeys(kind, videoId)
+
+      await Promise.all([
+        this.deleteFromSet(setKey, videoId.toString()),
+        this.deleteKey(videoKey)
+      ])
+    }
   }
 
   /* ************ Video viewers stats ************ */
@@ -321,6 +407,46 @@ class Redis {
     ])
   }
 
+  /* ************ Generic stats ************ */
+
+  getStats (options: {
+    key?: string
+    // Or
+    scope?: string
+    ip?: string
+    videoId?: number
+  }) {
+    if (options.key) return this.getObject(options.key)
+
+    const { key } = this.generateKeysForStats(options.scope, options.ip, options.videoId)
+
+    return this.getObject(key)
+  }
+
+  setStats (scope: string, sessionId: string, videoId: number, object: any) {
+    const { setKey, key } = this.generateKeysForStats(scope, sessionId, videoId)
+
+    return Promise.all([
+      this.addToSet(setKey, key),
+      this.setObject(key, object)
+    ])
+  }
+
+  getStatsKeys (scope: string) {
+    const { setKey } = this.generateKeysForStats(scope)
+
+    return this.getSet(setKey)
+  }
+
+  deleteStatsKey (scope: string, key: string) {
+    const { setKey } = this.generateKeysForStats(scope)
+
+    return Promise.all([
+      this.deleteFromSet(setKey, key),
+      this.deleteKey(key)
+    ])
+  }
+
   /* ************ Resumable uploads final responses ************ */
 
   setUploadSession (uploadId: string) {
@@ -348,10 +474,15 @@ class Redis {
 
   /* ************ Keys generation ************ */
 
-  private generateLocalVideoViewsKeys (videoId: number): { setKey: string, videoKey: string }
-  private generateLocalVideoViewsKeys (): { setKey: string }
-  private generateLocalVideoViewsKeys (videoId?: number) {
-    return { setKey: `local-video-views-buffer`, videoKey: `local-video-views-buffer-${videoId}` }
+  private generateLocalVideoStatKeys (type: StatKind, videoId: number): { setKey: string, videoKey: string }
+  private generateLocalVideoStatKeys (): { setKey: string }
+  private generateLocalVideoStatKeys (type?: StatKind, videoId?: number) {
+    const setKey = `local-video-stats-buffer`
+    if (!type || !videoId) return { setKey }
+
+    const videoKey = `local-video-${type}-buffer-${videoId}`
+
+    return { setKey, videoKey }
   }
 
   generateLocalVideoViewerKeys (sessionId: string, videoId: number): { setKey: string, viewerKey: string }
@@ -366,12 +497,30 @@ class Redis {
     }
   }
 
-  private generateVideoViewStatsKeys (options: { videoId?: number, hour?: number }) {
+  private generateVideoStatsKeys (options: { hour: number }): { setKey: string }
+  private generateVideoStatsKeys (options: { videoId: number, hour?: number, kind: StatKind }): { setKey: string, videoKey: string }
+  private generateVideoStatsKeys (options: { kind?: StatKind, videoId?: number, hour?: number }) {
     const hour = exists(options.hour)
       ? options.hour
       : new Date().getHours()
 
-    return { setKey: `videos-view-h${hour}`, videoKey: `video-view-${options.videoId}-h${hour}` }
+    if (!options.kind || !options.videoId) {
+      return { setKey: `videos-stats-h${hour}` }
+    }
+
+    return { setKey: `videos-stats-h${hour}`, videoKey: `video-${options.kind}-${options.videoId}-h${hour}` }
+  }
+
+  generateKeysForStats (scope: string, sessionId: string, videoId: number): { setKey: string, key: string }
+  generateKeysForStats (scole: string): { setKey: string }
+  generateKeysForStats (scope: string, sessionId?: string, videoId?: number) {
+    return {
+      setKey: `${scope}-stats-keys`,
+
+      key: sessionId && videoId
+        ? `${scope}-stats-${sessionId}-${videoId}`
+        : undefined
+    }
   }
 
   private generateResetPasswordKey (userId: number) {
@@ -382,8 +531,16 @@ class Redis {
     return 'two-factor-request-' + userId + '-' + token
   }
 
-  private generateUserVerifyEmailKey (userId: number) {
-    return 'verify-email-user-' + userId
+  private generateLoginFailureKey (userId: number) {
+    return 'login-failure-' + userId
+  }
+
+  private generateLoginFailureIPField (ip: string) {
+    return sha256(CONFIG.SECRETS.PEERTUBE + '-' + ip)
+  }
+
+  private generateUserVerifyEmailKey (userId: number, isPendingEmail: boolean) {
+    return 'verify-email-user-' + userId + (isPendingEmail ? '-pending' : '')
   }
 
   private generateRegistrationVerifyEmailKey (registrationId: number) {
@@ -428,10 +585,15 @@ class Redis {
     const value = await this.getValue(key)
     if (!value) return null
 
-    return JSON.parse(value)
+    try {
+      return JSON.parse(value)
+    } catch (err) {
+      logger.warn('Cannot parse Redis key %s.', key, { err })
+      return null
+    }
   }
 
-  private setObject (key: string, value: { [ id: string ]: number | string }, expirationMilliseconds?: number) {
+  private setObject (key: string, value: { [id: string]: number | string }, expirationMilliseconds?: number) {
     return this.setValue(key, JSON.stringify(value), expirationMilliseconds)
   }
 
@@ -449,6 +611,14 @@ class Redis {
 
   private increment (key: string) {
     return this.client.incr(this.prefix + key)
+  }
+
+  private incrementHashField (key: string, field: string) {
+    return this.client.hincrby(this.prefix + key, field, 1)
+  }
+
+  private getHash (key: string) {
+    return this.client.hgetall(this.prefix + key)
   }
 
   private async exists (key: string) {

@@ -10,6 +10,15 @@ export function getParamString (params: URLSearchParams, name: string, defaultVa
     : defaultValue
 }
 
+export function getParamFloat (params: URLSearchParams, name: string, defaultValue?: number) {
+  if (!params.has(name)) return defaultValue
+
+  const value = parseFloat(params.get(name))
+  if (isNaN(value)) return defaultValue
+
+  return value
+}
+
 export function objectToUrlEncoded (obj: any) {
   const str: string[] = []
   for (const key of Object.keys(obj)) {
@@ -17,4 +26,13 @@ export function objectToUrlEncoded (obj: any) {
   }
 
   return str.join('&')
+}
+
+export function isSameOrigin (current: string, target: string) {
+  const currentUrl = new URL(current)
+  const targetUrl = new URL(target)
+
+  if (currentUrl.hostname === 'localhost' && targetUrl.hostname === 'localhost') return true
+
+  return currentUrl.origin === targetUrl.origin
 }

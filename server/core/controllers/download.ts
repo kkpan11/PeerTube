@@ -1,9 +1,11 @@
 import { forceNumber, maxBy } from '@peertube/peertube-core-utils'
-import { FileStorage, HttpStatusCode, VideoResolution, VideoStreamingPlaylistType } from '@peertube/peertube-models'
+import { FileStorage, HttpStatusCode, UserRight, VideoResolution, VideoStreamingPlaylistType } from '@peertube/peertube-models'
 import { exists } from '@server/helpers/custom-validators/misc.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { getAuthUser, parseRangeHeader, pipelineToResponse } from '@server/helpers/express-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { generateRequestStream } from '@server/helpers/requests.js'
+import { ThrottleStream } from '@server/helpers/stream-throttle.js'
 import { CONFIG } from '@server/initializers/config.js'
-import { VideoTorrentsSimpleFileCache } from '@server/lib/files-cache/index.js'
 import {
   generateHLSFilePresignedUrl,
   generateOriginalFilePresignedUrl,
@@ -12,29 +14,32 @@ import {
 } from '@server/lib/object-storage/index.js'
 import { getFSUserExportFilePath } from '@server/lib/paths.js'
 import { Hooks } from '@server/lib/plugins/hooks.js'
-import { muxToMergeVideoFiles } from '@server/lib/video-file.js'
+import { VideoStatsManager } from '@server/lib/stats/video-stats-manager.js'
+import { VideoDownload } from '@server/lib/video-download.js'
 import { VideoPathManager } from '@server/lib/video-path-manager.js'
-import {
-  MStreamingPlaylist,
-  MStreamingPlaylistVideo,
-  MUserExport,
-  MVideo,
-  MVideoFile,
-  MVideoFullLight
-} from '@server/types/models/index.js'
+import { checkCanManageChannel } from '@server/middlewares/validators/shared/video-channels.js'
+import { VideoFileModel } from '@server/models/video/video-file.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { MStreamingPlaylist, MStreamingPlaylistVideo, MUserExport, MVideo, MVideoFile, MVideoFull } from '@server/types/models/index.js'
 import { MVideoSource } from '@server/types/models/video/video-source.js'
+import { create as createContentDisposition } from 'content-disposition'
 import cors from 'cors'
 import express from 'express'
+import { createReadStream } from 'fs'
+import { stat } from 'fs/promises'
+import { join } from 'path'
 import { DOWNLOAD_PATHS, WEBSERVER } from '../initializers/constants.js'
 import {
-  asyncMiddleware, buildRateLimiter, optionalAuthenticate,
+  asyncMiddleware,
+  buildRateLimiter,
+  optionalAuthenticate,
   originalVideoFileDownloadValidator,
   userExportDownloadValidator,
   videosDownloadValidator,
   videosGenerateDownloadValidator
 } from '../middlewares/index.js'
 
-const lTags = loggerTagsFactory('download')
+const logger = createLogger('download')
 
 const downloadRouter = express.Router()
 
@@ -62,6 +67,7 @@ downloadRouter.use(
 )
 
 const downloadGenerateRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.DOWNLOAD_GENERATE_VIDEO.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.DOWNLOAD_GENERATE_VIDEO.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.DOWNLOAD_GENERATE_VIDEO.MAX,
   skipFailedRequests: true
@@ -100,19 +106,25 @@ export {
 // ---------------------------------------------------------------------------
 
 async function downloadTorrent (req: express.Request, res: express.Response) {
-  const result = await VideoTorrentsSimpleFileCache.Instance.getFilePath(req.params.filename)
-  if (!result) {
-    return res.fail({
-      status: HttpStatusCode.NOT_FOUND_404,
-      message: 'Torrent file not found'
-    })
-  }
+  const file = await VideoFileModel.loadWithVideoOrPlaylistByTorrentFilename(req.params.filename)
+  if (!file) return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+
+  const video = await VideoModel.loadFull(file.getVideo().id)
+  if (!video) return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+
+  const path = video.isLocal()
+    ? join(CONFIG.STORAGE.TORRENTS_DIR, file.torrentFilename)
+    : undefined
+
+  const downloadFilename = `${video.name}-${file.resolution}p.torrent`
 
   const allowParameters = {
     req,
     res,
-    torrentPath: result.path,
-    downloadName: result.downloadName
+    video,
+    torrentFilename: req.params.filename,
+    torrentPath: path,
+    downloadName: downloadFilename
   }
 
   const allowedResult = await Hooks.wrapFun(
@@ -123,144 +135,196 @@ async function downloadTorrent (req: express.Request, res: express.Response) {
 
   if (!checkAllowResult(res, allowParameters, allowedResult)) return
 
-  return res.download(result.path, result.downloadName)
+  if (video.isLocal()) {
+    return res.download(path, downloadFilename)
+  }
+
+  // Proxify remote request without cache
+  res.type('application/x-bittorrent')
+  res.setHeader('Content-disposition', createContentDisposition(downloadFilename))
+
+  const remoteUrl = file.getRemoteTorrentUrl(video)
+
+  await pipelineToResponse({ streams: [ generateRequestStream(remoteUrl) ], res, logLabel: `torrent download of ${remoteUrl}` })
 }
 
 // ---------------------------------------------------------------------------
 
-async function downloadWebVideoFile (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
+function downloadWebVideoFile (req: express.Request, res: express.Response) {
+  const video = res.locals.videoFull
 
-  const videoFile = getVideoFileFromReq(req, video.VideoFiles)
-  if (!videoFile) {
-    return res.fail({
-      status: HttpStatusCode.NOT_FOUND_404,
-      message: 'Video file not found'
+  return logger.withContext([ video.uuid ], async () => {
+    const videoFile = getVideoFileFromReq(req, video.VideoFiles)
+    if (!videoFile) {
+      return res.fail({
+        status: HttpStatusCode.NOT_FOUND_404,
+        message: 'Video file not found'
+      })
+    }
+
+    const allowParameters = {
+      req,
+      res,
+      video,
+      videoFile
+    }
+
+    const allowedResult = await Hooks.wrapFun(
+      isVideoDownloadAllowed,
+      allowParameters,
+      'filter:api.download.video.allowed.result'
+    )
+
+    if (!checkAllowResult(res, allowParameters, allowedResult)) return
+
+    const downloadFilename = buildDownloadFilename({ video, resolution: videoFile.resolution, extname: videoFile.extname })
+
+    VideoStatsManager.Instance.processLocalDownload({ video })
+      .catch(err => logger.error(`Cannot process local download stats for video ${video.uuid}`, { err }))
+
+    if (videoFile.storage === FileStorage.OBJECT_STORAGE) {
+      return redirectVideoDownloadToObjectStorage({ res, video, file: videoFile, downloadFilename })
+    }
+
+    await VideoPathManager.Instance.makeAvailableVideoFile(videoFile.withVideoOrPlaylist(video), path => {
+      return downloadLocalFileWithOptionalThrottle({ req, res, path, downloadFilename })
     })
-  }
-
-  const allowParameters = {
-    req,
-    res,
-    video,
-    videoFile
-  }
-
-  const allowedResult = await Hooks.wrapFun(
-    isVideoDownloadAllowed,
-    allowParameters,
-    'filter:api.download.video.allowed.result'
-  )
-
-  if (!checkAllowResult(res, allowParameters, allowedResult)) return
-
-  const downloadFilename = buildDownloadFilename({ video, resolution: videoFile.resolution, extname: videoFile.extname })
-
-  if (videoFile.storage === FileStorage.OBJECT_STORAGE) {
-    return redirectVideoDownloadToObjectStorage({ res, video, file: videoFile, downloadFilename })
-  }
-
-  await VideoPathManager.Instance.makeAvailableVideoFile(videoFile.withVideoOrPlaylist(video), path => {
-    return res.download(path, downloadFilename)
   })
 }
 
-async function downloadHLSVideoFile (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
-  const streamingPlaylist = getHLSPlaylist(video)
-  if (!streamingPlaylist) return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+function downloadHLSVideoFile (req: express.Request, res: express.Response) {
+  const video = res.locals.videoFull
 
-  const videoFile = getVideoFileFromReq(req, streamingPlaylist.VideoFiles)
-  if (!videoFile) {
-    return res.fail({
-      status: HttpStatusCode.NOT_FOUND_404,
-      message: 'Video file not found'
+  return logger.withContext([ video.uuid ], async () => {
+    const streamingPlaylist = getHLSPlaylist(video)
+    if (!streamingPlaylist) return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+
+    const videoFile = getVideoFileFromReq(req, streamingPlaylist.VideoFiles)
+    if (!videoFile) {
+      return res.fail({
+        status: HttpStatusCode.NOT_FOUND_404,
+        message: 'Video file not found'
+      })
+    }
+
+    const allowParameters = {
+      req,
+      res,
+      video,
+      streamingPlaylist,
+      videoFile
+    }
+
+    const allowedResult = await Hooks.wrapFun(
+      isVideoDownloadAllowed,
+      allowParameters,
+      'filter:api.download.video.allowed.result'
+    )
+
+    if (!checkAllowResult(res, allowParameters, allowedResult)) return
+
+    VideoStatsManager.Instance.processLocalDownload({ video })
+      .catch(err => logger.error(`Cannot process local download stats for video ${video.uuid}`, { err }))
+
+    const downloadFilename = buildDownloadFilename({
+      video,
+      streamingPlaylist,
+      resolution: videoFile.resolution,
+      extname: videoFile.extname
     })
-  }
 
-  const allowParameters = {
-    req,
-    res,
-    video,
-    streamingPlaylist,
-    videoFile
-  }
+    if (videoFile.storage === FileStorage.OBJECT_STORAGE) {
+      return redirectVideoDownloadToObjectStorage({ res, video, streamingPlaylist, file: videoFile, downloadFilename })
+    }
 
-  const allowedResult = await Hooks.wrapFun(
-    isVideoDownloadAllowed,
-    allowParameters,
-    'filter:api.download.video.allowed.result'
-  )
-
-  if (!checkAllowResult(res, allowParameters, allowedResult)) return
-
-  const downloadFilename = buildDownloadFilename({ video, streamingPlaylist, resolution: videoFile.resolution, extname: videoFile.extname })
-
-  if (videoFile.storage === FileStorage.OBJECT_STORAGE) {
-    return redirectVideoDownloadToObjectStorage({ res, video, streamingPlaylist, file: videoFile, downloadFilename })
-  }
-
-  await VideoPathManager.Instance.makeAvailableVideoFile(videoFile.withVideoOrPlaylist(streamingPlaylist), path => {
-    return res.download(path, downloadFilename)
+    await VideoPathManager.Instance.makeAvailableVideoFile(videoFile.withVideoOrPlaylist(streamingPlaylist), path => {
+      return downloadLocalFileWithOptionalThrottle({ req, res, path, downloadFilename })
+    })
   })
 }
 
 // ---------------------------------------------------------------------------
 
-async function downloadGeneratedVideoFile (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
-  const filesToSelect = req.query.videoFileIds
+function downloadGeneratedVideoFile (req: express.Request, res: express.Response) {
+  const video = res.locals.videoFull
 
-  const videoFiles = video.getAllFiles()
-    .filter(f => filesToSelect.includes(f.id))
+  return logger.withContext([ video.uuid ], async () => {
+    const filesToSelect = req.query.videoFileIds
 
-  if (videoFiles.length === 0) {
-    return res.fail({
-      status: HttpStatusCode.NOT_FOUND_404,
-      message: `No files found (${filesToSelect.join(', ')}) to download video ${video.url}`
-    })
-  }
+    const videoFiles = video.getAllFiles()
+      .filter(f => filesToSelect.includes(f.id))
 
-  if (videoFiles.filter(f => f.hasVideo()).length > 1 || videoFiles.filter(f => f.hasAudio()).length > 1) {
-    return res.fail({
-      status: HttpStatusCode.BAD_REQUEST_400,
-      // In theory we could, but ffmpeg-fluent doesn't support multiple input streams so prefer to reject this specific use case
-      message: `Cannot generate a container with multiple video/audio files. PeerTube supports a maximum of 1 audio and 1 video file`
-    })
-  }
+    if (videoFiles.length === 0) {
+      return res.fail({
+        status: HttpStatusCode.NOT_FOUND_404,
+        message: `No files found (${filesToSelect.join(', ')}) to download video ${video.url}`
+      })
+    }
 
-  const allowParameters = {
-    req,
-    res,
-    video,
-    videoFiles
-  }
+    if (videoFiles.filter(f => f.hasVideo()).length > 1 || videoFiles.filter(f => f.hasAudio()).length > 1) {
+      return res.fail({
+        status: HttpStatusCode.BAD_REQUEST_400,
+        // In theory we could, but ffmpeg-fluent doesn't support multiple input streams so prefer to reject this specific use case
+        message: `Cannot generate a container with multiple video/audio files. PeerTube supports a maximum of 1 audio and 1 video file`
+      })
+    }
 
-  const allowedResult = await Hooks.wrapFun(
-    isGeneratedVideoDownloadAllowed,
-    allowParameters,
-    'filter:api.download.generated-video.allowed.result'
-  )
+    const allowParameters = {
+      req,
+      res,
+      video,
+      videoFiles
+    }
 
-  if (!checkAllowResult(res, allowParameters, allowedResult)) return
+    const allowedResult = await Hooks.wrapFun(
+      isGeneratedVideoDownloadAllowed,
+      allowParameters,
+      'filter:api.download.generated-video.allowed.result'
+    )
 
-  const maxResolutionFile = maxBy(videoFiles, 'resolution')
+    if (!checkAllowResult(res, allowParameters, allowedResult)) return
 
-  // Prefer m4a extension for the user if this is a mp4 audio file only
-  const extname = maxResolutionFile.resolution === VideoResolution.H_NOVIDEO && maxResolutionFile.extname === '.mp4'
-    ? '.m4a'
-    : maxResolutionFile.extname
+    if (VideoDownload.totalDownloads >= CONFIG.DOWNLOAD_GENERATE_VIDEO.MAX_PARALLEL_DOWNLOADS) {
+      return res.fail({
+        status: HttpStatusCode.TOO_MANY_REQUESTS_429,
+        message: req.t(`Too many parallel downloads on this server. Please try again later.`)
+      })
+    }
 
-  // If there is the extension, we want to simulate a "raw file" and so not send the content disposition header
-  const urlPath = new URL(req.originalUrl, WEBSERVER.URL).pathname
-  if (!urlPath.endsWith('.mp4') && !urlPath.endsWith('.m4a')) {
-    const downloadFilename = buildDownloadFilename({ video, extname })
-    res.setHeader('Content-disposition', `attachment; filename="${encodeURI(downloadFilename)}`)
-  }
+    const maxResolutionFile = maxBy(videoFiles, 'resolution')
 
-  res.type(extname)
+    // Prefer m4a extension for the user if this is a mp4 audio file only
+    const extname = maxResolutionFile.resolution === VideoResolution.H_NOVIDEO && maxResolutionFile.extname === '.mp4'
+      ? '.m4a'
+      : maxResolutionFile.extname
 
-  await muxToMergeVideoFiles({ video, videoFiles, output: res })
+    // If there is the extension, we want to simulate a "raw file" and so not send the content disposition header
+    const urlPath = new URL(req.originalUrl, WEBSERVER.URL).pathname
+    if (!urlPath.endsWith('.mp4') && !urlPath.endsWith('.m4a')) {
+      const downloadFilename = buildDownloadFilename({ video, extname })
+      res.setHeader('Content-disposition', createContentDisposition(downloadFilename))
+    }
+
+    res.type(extname)
+
+    VideoStatsManager.Instance.processLocalDownload({ video })
+      .catch(err => logger.error(`Cannot process local download stats for video ${video.uuid}`, { err }))
+
+    try {
+      await new VideoDownload({ video, videoFiles }).muxToMergeVideoFiles(res, {
+        totalBytesPerSecond: CONFIG.DOWNLOAD.MAX_TOTAL_BYTES_PER_SECOND,
+        bytesPerIpPerSecond: CONFIG.DOWNLOAD.MAX_BYTES_PER_IP_PER_SECOND,
+        ip: req.ip
+      })
+    } catch (err) {
+      // muxToMergeVideoFiles has already logged the error
+      res.fail({
+        status: HttpStatusCode.SERVICE_UNAVAILABLE_503,
+        title: req.t('Cannot process video download at the moment. Please try again later.'),
+        message: err.message
+      })
+    }
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -274,8 +338,12 @@ function downloadUserExport (req: express.Request, res: express.Response) {
     return redirectUserExportToObjectStorage({ res, userExport, downloadFilename })
   }
 
-  res.download(getFSUserExportFilePath(userExport), downloadFilename)
-  return Promise.resolve()
+  return downloadLocalFileWithOptionalThrottle({
+    req,
+    res,
+    path: getFSUserExportFilePath(userExport),
+    downloadFilename
+  })
 }
 
 function downloadOriginalFile (req: express.Request, res: express.Response) {
@@ -287,8 +355,12 @@ function downloadOriginalFile (req: express.Request, res: express.Response) {
     return redirectOriginalFileToObjectStorage({ res, videoSource, downloadFilename })
   }
 
-  res.download(VideoPathManager.Instance.getFSOriginalVideoFilePath(videoSource.keptOriginalFilename), downloadFilename)
-  return Promise.resolve()
+  return downloadLocalFileWithOptionalThrottle({
+    req,
+    res,
+    path: VideoPathManager.Instance.getFSOriginalVideoFilePath(videoSource.keptOriginalFilename),
+    downloadFilename
+  })
 }
 
 // ---------------------------------------------------------------------------
@@ -298,7 +370,7 @@ function getVideoFileFromReq (req: express.Request, files: MVideoFile[]) {
   return files.find(f => f.resolution === resolution)
 }
 
-function getHLSPlaylist (video: MVideoFullLight) {
+function getHLSPlaylist (video: MVideoFull) {
   const playlist = video.VideoStreamingPlaylists.find(p => p.type === VideoStreamingPlaylistType.HLS)
   if (!playlist) return undefined
 
@@ -310,32 +382,69 @@ type AllowedResult = {
   errorMessage?: string
 }
 
-function isTorrentDownloadAllowed (_object: {
+function isTorrentDownloadAllowed (object: {
+  req: express.Request
+  res: express.Response
+  video: MVideoFull
   torrentPath: string
-}): AllowedResult {
-  return { allowed: true }
+}): Promise<AllowedResult> {
+  return commonDownloadAllowed(object)
 }
 
-function isVideoDownloadAllowed (_object: {
-  video: MVideo
+function isVideoDownloadAllowed (object: {
+  req: express.Request
+  res: express.Response
+  video: MVideoFull
   videoFile: MVideoFile
   streamingPlaylist?: MStreamingPlaylist
-}): AllowedResult {
-  return { allowed: true }
+}): Promise<AllowedResult> {
+  return commonDownloadAllowed(object)
 }
 
-function isGeneratedVideoDownloadAllowed (_object: {
-  video: MVideo
+function isGeneratedVideoDownloadAllowed (object: {
+  req: express.Request
+  res: express.Response
+  video: MVideoFull
   videoFiles: MVideoFile[]
-}): AllowedResult {
-  return { allowed: true }
+}): Promise<AllowedResult> {
+  return commonDownloadAllowed(object)
+}
+
+async function commonDownloadAllowed (object: {
+  req: express.Request
+  res: express.Response
+  video: MVideoFull
+}): Promise<AllowedResult> {
+  const { req, res, video } = object
+
+  const user = getAuthUser(res)
+
+  if (video.downloadEnabled === true) {
+    return { allowed: true }
+  }
+
+  if (
+    await checkCanManageChannel({
+      user,
+      req,
+      res: null, // Don't send a response here, we want to return the result to the caller
+      checkCanManage: true,
+      checkIsOwner: false,
+      channel: video.VideoChannel,
+      specialRight: UserRight.SEE_ALL_VIDEOS
+    })
+  ) {
+    return { allowed: true }
+  }
+
+  return { allowed: false, errorMessage: req.t('Video download is disabled for this video') }
 }
 
 // ---------------------------------------------------------------------------
 
 function checkAllowResult (res: express.Response, allowParameters: any, result?: AllowedResult) {
-  if (!result || result.allowed !== true) {
-    logger.info('Download is not allowed.', { result, allowParameters, ...lTags() })
+  if (result?.allowed !== true) {
+    logger.info('Download is not allowed.', { result, allowParameters })
 
     res.fail({
       status: HttpStatusCode.FORBIDDEN_403,
@@ -345,6 +454,75 @@ function checkAllowResult (res: express.Response, allowParameters: any, result?:
   }
 
   return true
+}
+
+async function downloadLocalFileWithOptionalThrottle (options: {
+  req: express.Request
+  res: express.Response
+  path: string
+  downloadFilename: string
+}) {
+  const { req, res, path, downloadFilename } = options
+
+  const totalBytesPerSecond = CONFIG.DOWNLOAD.MAX_TOTAL_BYTES_PER_SECOND
+  const bytesPerIpPerSecond = CONFIG.DOWNLOAD.MAX_BYTES_PER_IP_PER_SECOND
+
+  if (!totalBytesPerSecond && !bytesPerIpPerSecond) return res.download(path, downloadFilename)
+
+  let size: number
+
+  try {
+    const statResult = await stat(path)
+    size = statResult.size
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+
+    throw err
+  }
+
+  const range = parseRangeHeader(req.headers.range, size)
+  if (range === 'unsatisfiable') {
+    res.setHeader('Content-Range', `bytes */${size}`)
+    return res.sendStatus(HttpStatusCode.RANGE_NOT_SATISFIABLE_416)
+  }
+
+  res.setHeader('Content-Disposition', createContentDisposition(downloadFilename))
+  res.setHeader('Content-Type', 'application/octet-stream')
+  res.setHeader('Accept-Ranges', 'bytes')
+
+  if (range) {
+    res.status(HttpStatusCode.PARTIAL_CONTENT_206)
+    res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${size}`)
+    res.setHeader('Content-Length', range.end - range.start + 1)
+  } else {
+    res.setHeader('Content-Length', size)
+  }
+
+  const readStream = createReadStream(
+    path,
+    range
+      ? { start: range.start, end: range.end }
+      : undefined
+  )
+
+  readStream.on('error', err => {
+    if (res.headersSent) return
+
+    if ((err as any).code === 'ENOENT') return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+
+    logger.error(`Cannot read local file ${path} for download`, { err })
+
+    return res.fail({
+      status: HttpStatusCode.INTERNAL_SERVER_ERROR_500,
+      message: err.message
+    })
+  })
+
+  await pipelineToResponse({
+    streams: [ readStream, new ThrottleStream({ totalBytesPerSecond, bytesPerIpPerSecond, ip: req.ip }) ],
+    res,
+    logLabel: `download of ${path}`
+  })
 }
 
 async function redirectVideoDownloadToObjectStorage (options: {
@@ -360,7 +538,7 @@ async function redirectVideoDownloadToObjectStorage (options: {
     ? await generateHLSFilePresignedUrl({ streamingPlaylist, file, downloadFilename })
     : await generateWebVideoPresignedUrl({ file, downloadFilename })
 
-  logger.debug('Generating pre-signed URL %s for video %s', url, video.uuid, lTags())
+  logger.debug('Generating pre-signed URL %s for video %s', url, video.uuid)
 
   return res.redirect(url)
 }
@@ -374,7 +552,7 @@ async function redirectUserExportToObjectStorage (options: {
 
   const url = await generateUserExportPresignedUrl({ userExport, downloadFilename })
 
-  logger.debug('Generating pre-signed URL %s for user export %s', url, userExport.filename, lTags())
+  logger.debug('Generating pre-signed URL %s for user export %s', url, userExport.filename)
 
   return res.redirect(url)
 }
@@ -388,7 +566,7 @@ async function redirectOriginalFileToObjectStorage (options: {
 
   const url = await generateOriginalFilePresignedUrl({ videoSource, downloadFilename })
 
-  logger.debug('Generating pre-signed URL %s for original video file %s', url, videoSource.keptOriginalFilename, lTags())
+  logger.debug('Generating pre-signed URL %s for original video file %s', url, videoSource.keptOriginalFilename)
 
   return res.redirect(url)
 }

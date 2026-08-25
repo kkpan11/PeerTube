@@ -9,16 +9,22 @@ import {
   VideoImport
 } from '@peertube/peertube-models'
 import { AUDIT_LOG_FILENAME } from '@server/initializers/constants.js'
+import { MUser } from '@server/types/models/index.js'
 import { diff } from 'deep-object-diff'
 import express from 'express'
 import { flatten } from 'flat'
 import { join } from 'path'
 import { addColors, config, createLogger, format, transports } from 'winston'
 import { CONFIG } from '../initializers/config.js'
+import { getAuthUser } from './express-utils.js'
 import { jsonLoggerFormat, labelFormatter } from './logger.js'
 
 function getAuditIdFromRes (res: express.Response) {
-  return res.locals.oauth.token.User.username
+  return getAuditIdFromUser(getAuthUser(res))
+}
+
+function getAuditIdFromUser (user: MUser) {
+  return user.username
 }
 
 enum AUDIT_TYPE {
@@ -66,12 +72,15 @@ function auditLoggerWrapper (domain: string, user: string, action: AUDIT_TYPE, e
     entityInfos = { ...entity.toLogKeys() }
   }
 
-  auditLogger.log('audit', JSON.stringify({
-    user,
-    domain,
-    action,
-    ...entityInfos
-  }))
+  auditLogger.log(
+    'audit',
+    JSON.stringify({
+      user,
+      domain,
+      action,
+      ...entityInfos
+    })
+  )
 }
 
 function auditLoggerFactory (domain: string) {
@@ -89,7 +98,7 @@ function auditLoggerFactory (domain: string) {
 }
 
 abstract class EntityAuditView {
-  constructor (private readonly keysToKeep: Set<string>, private readonly prefix: string, private readonly entityInfos: object) { }
+  constructor (private readonly keysToKeep: Set<string>, private readonly prefix: string, private readonly entityInfos: object) {}
 
   toLogKeys (): object {
     const obj = flatten<object, any>(this.entityInfos, { delimiter: '-', safe: true })
@@ -116,8 +125,6 @@ const videoKeysToKeep = new Set([
   'duration',
   'isLocal',
   'name',
-  'thumbnailPath',
-  'previewPath',
   'nsfw',
   'waitTranscoding',
   'account-id',
@@ -172,7 +179,9 @@ const userKeysToKeep = new Set([
   'email',
   'nsfwPolicy',
   'autoPlayVideo',
-  'role',
+  'role-id',
+  'role-label',
+  'adminFlags',
   'videoQuota',
   'createdAt',
   'account-id',
@@ -243,7 +252,6 @@ const customConfigKeysToKeep = new Set([
   'instance-customizations-javascript',
   'instance-customizations-css',
   'services-twitter-username',
-  'cache-previews-size',
   'cache-captions-size',
   'signup-enabled',
   'signup-limit',
@@ -261,9 +269,9 @@ class CustomConfigAuditView extends EntityAuditView {
     const resolutionsArray = []
 
     Object.entries(resolutionsDict)
-          .forEach(([ resolution, isEnabled ]) => {
-            if (isEnabled) resolutionsArray.push(resolution)
-          })
+      .forEach(([ resolution, isEnabled ]) => {
+        if (isEnabled) resolutionsArray.push(resolution)
+      })
 
     Object.assign({}, infos, { transcoding: { resolutions: resolutionsArray } })
     super(customConfigKeysToKeep, 'config', infos)
@@ -283,15 +291,15 @@ class VideoChannelSyncAuditView extends EntityAuditView {
 }
 
 export {
-  getAuditIdFromRes,
-
+  AbuseAuditView,
   auditLoggerFactory,
-  VideoImportAuditView,
-  VideoChannelAuditView,
   CommentAuditView,
+  CustomConfigAuditView,
+  getAuditIdFromRes,
+  getAuditIdFromUser,
   UserAuditView,
   VideoAuditView,
-  AbuseAuditView,
-  CustomConfigAuditView,
-  VideoChannelSyncAuditView
+  VideoChannelAuditView,
+  VideoChannelSyncAuditView,
+  VideoImportAuditView
 }

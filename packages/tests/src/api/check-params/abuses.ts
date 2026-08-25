@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '@tests/shared/checks.js'
+import { checkBadCountPagination, checkBadSort, checkBadStartPagination } from '@tests/shared/checks.js'
 import { AbuseCreate, AbuseState, HttpStatusCode } from '@peertube/peertube-models'
 import {
   AbusesCommand,
@@ -55,7 +55,7 @@ describe('Test abuses API validators', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, server.accessToken)
+      await checkBadSort(server.url, path, server.accessToken)
     })
 
     it('Should fail with a non authenticated user', async function () {
@@ -122,7 +122,7 @@ describe('Test abuses API validators', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, userToken)
+      await checkBadSort(server.url, path, userToken)
     })
 
     it('Should fail with a non authenticated user', async function () {
@@ -281,10 +281,35 @@ describe('Test abuses API validators', function () {
 
       await makePostBodyRequest({ url: server.url, path, token: userToken, fields, expectedStatus: HttpStatusCode.OK_200 })
     })
+
+    it('Should fail to report a video the reporter owns', async function () {
+      const fields = { video: { id: server.store.videoCreated.id }, reason: 'my super reason' }
+
+      await makePostBodyRequest({
+        url: server.url,
+        path,
+        token: server.accessToken,
+        fields,
+        expectedStatus: HttpStatusCode.FORBIDDEN_403
+      })
+    })
+
+    it('Should fail to report a video the reporter collaborates on', async function () {
+      const collaboratorToken = await server.channelCollaborators.createEditor('abuse_collaborator', 'root_channel')
+
+      const fields = { video: { id: server.store.videoCreated.id }, reason: 'my super reason' }
+
+      await makePostBodyRequest({
+        url: server.url,
+        path,
+        token: collaboratorToken,
+        fields,
+        expectedStatus: HttpStatusCode.FORBIDDEN_403
+      })
+    })
   })
 
   describe('When updating an abuse', function () {
-
     it('Should fail with a non authenticated user', async function () {
       await command.update({ token: 'blabla', abuseId, body: {}, expectedStatus: HttpStatusCode.UNAUTHORIZED_401 })
     })
@@ -339,7 +364,6 @@ describe('Test abuses API validators', function () {
   })
 
   describe('When listing abuse messages', function () {
-
     it('Should fail with an invalid abuse id', async function () {
       await command.listMessages({ token: userToken, abuseId: 888, expectedStatus: HttpStatusCode.NOT_FOUND_404 })
     })
@@ -380,7 +404,6 @@ describe('Test abuses API validators', function () {
   })
 
   describe('When deleting a video abuse', function () {
-
     it('Should fail with a non authenticated user', async function () {
       await command.delete({ token: 'blabla', abuseId, expectedStatus: HttpStatusCode.UNAUTHORIZED_401 })
     })

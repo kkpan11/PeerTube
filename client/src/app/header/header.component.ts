@@ -1,18 +1,9 @@
 import { CommonModule } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, inject, LOCALE_ID, OnDestroy, OnInit, viewChild } from '@angular/core'
 import { NavigationEnd, Router, RouterLink } from '@angular/router'
-import {
-  AuthService,
-  AuthStatus,
-  AuthUser,
-  HotkeysService,
-  MenuService,
-  RedirectService,
-  ScreenService,
-  ServerService
-} from '@app/core'
+import { AuthService, AuthStatus, AuthUser, HotkeysService, MenuService, RedirectService, ScreenService, ServerService } from '@app/core'
 import { NotificationDropdownComponent } from '@app/header/notification-dropdown.component'
-import { LanguageChooserComponent } from '@app/menu/language-chooser.component'
+import { getDevLocale, isOnDevLocale } from '@app/helpers'
 import { QuickSettingsModalComponent } from '@app/menu/quick-settings-modal.component'
 import { ActorAvatarComponent } from '@app/shared/shared-actor-image/actor-avatar.component'
 import { PeertubeModalService } from '@app/shared/shared-main/peertube-modal/peertube-modal.service'
@@ -20,18 +11,21 @@ import { PluginSelectorDirective } from '@app/shared/shared-main/plugins/plugin-
 import { LoginLinkComponent } from '@app/shared/shared-main/users/login-link.component'
 import { SignupLabelComponent } from '@app/shared/shared-main/users/signup-label.component'
 import { NgbDropdown, NgbDropdownModule } from '@ng-bootstrap/ng-bootstrap'
+import { findAppropriateImage, getCompleteLocale, I18N_LOCALES } from '@peertube/peertube-core-utils'
 import { HTMLServerConfig, ServerConfig } from '@peertube/peertube-models'
 import { peertubeLocalStorage } from '@root-helpers/peertube-web-storage'
 import { isAndroid, isIOS, isIphone } from '@root-helpers/web-browser'
 import { Subscription } from 'rxjs'
 import { GlobalIconComponent } from '../shared/shared-icons/global-icon.component'
 import { ButtonComponent } from '../shared/shared-main/buttons/button.component'
+import { HeaderService } from './header.service'
 import { SearchTypeaheadComponent } from './search-typeahead.component'
 
 @Component({
   selector: 'my-header',
   templateUrl: './header.component.html',
   styleUrls: [ './header.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     CommonModule,
     NotificationDropdownComponent,
@@ -39,7 +33,6 @@ import { SearchTypeaheadComponent } from './search-typeahead.component'
     PluginSelectorDirective,
     SignupLabelComponent,
     LoginLinkComponent,
-    LanguageChooserComponent,
     QuickSettingsModalComponent,
     GlobalIconComponent,
     RouterLink,
@@ -59,10 +52,11 @@ export class HeaderComponent implements OnInit, OnDestroy {
   private modalService = inject(PeertubeModalService)
   private router = inject(Router)
   private menu = inject(MenuService)
+  private headerService = inject(HeaderService)
+  private localeId = inject(LOCALE_ID)
 
   private static LS_HIDE_MOBILE_MSG = 'hide-mobile-msg'
 
-  readonly languageChooserModal = viewChild<LanguageChooserComponent>('languageChooserModal')
   readonly quickSettingsModal = viewChild<QuickSettingsModalComponent>('quickSettingsModal')
   readonly dropdown = viewChild<NgbDropdown>('dropdown')
 
@@ -71,21 +65,29 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   hotkeysHelpVisible = false
 
-  currentInterfaceLanguage: string
-
   mobileMsg = false
   androidAppUrl = ''
   iosAppUrl = ''
+
+  searchHidden = false
 
   private config: ServerConfig
   private htmlConfig: HTMLServerConfig
 
   private quickSettingsModalSub: Subscription
+  private getSearchHiddenSub: Subscription
   private hotkeysSub: Subscription
   private authSub: Subscription
 
-  get language () {
-    return this.languageChooserModal().getCurrentLanguage()
+  get currentInterfaceLanguage () {
+    const english = 'English'
+    const locale = isOnDevLocale()
+      ? getDevLocale()
+      : getCompleteLocale(this.localeId)
+
+    if (locale) return I18N_LOCALES[locale as keyof typeof I18N_LOCALES] || english
+
+    return english
   }
 
   get requiresApproval () {
@@ -94,6 +96,10 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   get instanceName () {
     return this.serverService.getHTMLConfig().instance.name
+  }
+
+  isInstanceNameDisplayed () {
+    return this.serverService.getHTMLConfig().client.header.hideInstanceName !== true
   }
 
   isLoaded () {
@@ -108,9 +114,18 @@ export class HeaderComponent implements OnInit, OnDestroy {
     return this.screenService.isInSmallView()
   }
 
+  getLogoUrl () {
+    const logos = this.serverService.getHTMLConfig().instance.logo
+
+    if (this.isInMobileView()) {
+      return findAppropriateImage(logos.filter(l => l.type === 'header-square'), 36)?.fileUrl
+    }
+
+    return findAppropriateImage(logos.filter(l => l.type === 'header-wide'), 36)?.fileUrl
+  }
+
   ngOnInit () {
     this.htmlConfig = this.serverService.getHTMLConfig()
-    this.currentInterfaceLanguage = this.languageChooserModal().getCurrentLanguage()
 
     this.loggedIn = this.authService.isLoggedIn()
     this.updateUserState()
@@ -134,6 +149,14 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.quickSettingsModalSub = this.modalService.openQuickSettingsSubject
       .subscribe(() => this.openQuickSettings())
 
+    this.getSearchHiddenSub = this.headerService.getSearchHiddenObs()
+      .subscribe(hidden => {
+        if (hidden) document.documentElement.classList.add('global-search-hidden')
+        else document.documentElement.classList.remove('global-search-hidden')
+
+        this.searchHidden = hidden
+      })
+
     this.setupMobileMsg()
   }
 
@@ -141,6 +164,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
     if (this.quickSettingsModalSub) this.quickSettingsModalSub.unsubscribe()
     if (this.hotkeysSub) this.hotkeysSub.unsubscribe()
     if (this.authSub) this.authSub.unsubscribe()
+    if (this.getSearchHiddenSub) this.getSearchHiddenSub.unsubscribe()
   }
 
   // ---------------------------------------------------------------------------
@@ -161,21 +185,24 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
     if (!isAndroid() && !isIphone()) return
 
-    this.mobileMsg = true
-    document.body.classList.add('mobile-app-msg')
-
     const host = window.location.host
     const intentConfig = this.htmlConfig.client.openInApp.android.intent
     const iosConfig = this.htmlConfig.client.openInApp.ios
 
+    if (isAndroid() && intentConfig.enabled === false) return
+    if (isIphone() && iosConfig.enabled === false) return
+
+    this.mobileMsg = true
+    document.documentElement.classList.add('mobile-app-msg')
+
     const getVideoId = (url: string) => {
-      const matches = url.match(/^\/w\/([^/]+)$/)
+      const matches = url.match(/^\/w\/([^/?;]+)/)
 
       if (matches) return matches[1]
     }
 
     const getChannelId = (url: string) => {
-      const matches = url.match(/^\/c\/([^/]+)/)
+      const matches = url.match(/^\/c\/([^/?;]+)/)
 
       if (matches) return matches[1]
     }
@@ -207,7 +234,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
         if (isAndroid()) {
           this.androidAppUrl = `${baseAndroid}/video-channel/${channelId}?host=${host}${fallbackAndroid}`
         } else {
-          this.iosAppUrl = `${baseIOS}/video/${videoId}?host=${host}`
+          this.iosAppUrl = `${baseIOS}/video-channel/${channelId}?host=${host}`
         }
 
         return
@@ -223,7 +250,7 @@ export class HeaderComponent implements OnInit, OnDestroy {
 
   hideMobileMsg () {
     this.mobileMsg = false
-    document.body.classList.remove('mobile-app-msg')
+    document.documentElement.classList.remove('mobile-app-msg')
 
     peertubeLocalStorage.setItem(HeaderComponent.LS_HIDE_MOBILE_MSG, 'true')
   }
@@ -251,10 +278,6 @@ export class HeaderComponent implements OnInit, OnDestroy {
     this.authService.logout()
     // Redirect to home page
     this.redirectService.redirectToHomepage()
-  }
-
-  openLanguageChooser () {
-    this.languageChooserModal().show()
   }
 
   openQuickSettings () {

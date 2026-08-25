@@ -3,12 +3,12 @@ import { PeerTubeServer } from '@peertube/peertube-server-commands'
 import { expect } from 'chai'
 import { readFile } from 'fs/promises'
 import type { Instance as MagnetUriInstance } from 'magnet-uri'
+import type { Instance as ParseTorrentInstance } from 'parse-torrent'
 import { basename, join } from 'path'
-import type { Torrent } from 'webtorrent'
-import WebTorrent from 'webtorrent'
+import type { Instance, Torrent, WebTorrent } from 'webtorrent'
 
 export async function checkWebTorrentWorks (magnetUri: string, pathMatch?: RegExp) {
-  let res: { webtorrent: WebTorrent.Instance, torrent: WebTorrent.Torrent }
+  let res: { webtorrent: Instance, torrent: Torrent }
 
   try {
     res = await webtorrentAdd(magnetUri)
@@ -32,7 +32,7 @@ export async function checkWebTorrentWorks (magnetUri: string, pathMatch?: RegEx
   webtorrent.destroy()
 }
 
-export async function parseTorrentVideo (server: PeerTubeServer, file: VideoFile) {
+export async function parseTorrentVideo (server: PeerTubeServer, file: VideoFile): Promise<ParseTorrentInstance> {
   const torrentName = basename(file.torrentUrl)
   const torrentPath = server.servers.buildDirectory(join('torrents', torrentName))
 
@@ -54,13 +54,14 @@ export async function magnetUriEncode (data: MagnetUriInstance) {
 // ---------------------------------------------------------------------------
 
 async function webtorrentAdd (torrentId: string) {
-  const WebTorrent = (await import('webtorrent')).default
+  const WebTorrent: WebTorrent = (await import('webtorrent')).default
 
   const webtorrent = new WebTorrent({
     natUpnp: false,
     natPmp: false,
     utp: false,
-    lsd: false
+    lsd: false,
+    dht: false
   } as any)
 
   webtorrent.on('error', err => console.error('Error in webtorrent', err))

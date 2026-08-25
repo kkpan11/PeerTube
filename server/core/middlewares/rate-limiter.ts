@@ -1,22 +1,43 @@
-import express from 'express'
-import RateLimit, { Options as RateLimitHandlerOptions } from 'express-rate-limit'
 import { UserRole, UserRoleType } from '@peertube/peertube-models'
+import { getAuthUser } from '@server/helpers/express-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { RunnerModel } from '@server/models/runner/runner.js'
+import express from 'express'
+import RateLimit, { ipKeyGenerator, Options as RateLimitHandlerOptions } from 'express-rate-limit'
 import { optionalAuthenticate } from './auth.js'
-import { logger } from '@server/helpers/logger.js'
+
+const logger = createLogger('rate-limit')
 
 const whitelistRoles = new Set<UserRoleType>([ UserRole.ADMINISTRATOR, UserRole.MODERATOR ])
 
 export function buildRateLimiter (options: {
+  enabled?: boolean // Default: true
   windowMs: number
   max: number
   skipFailedRequests?: boolean
+
+  // Key the counter on the authenticated user instead of the source IP
+  perUserKey?: boolean
 }) {
+  if (options.enabled === false) {
+    return (req: express.Request, res: express.Response, next: express.NextFunction) => next()
+  }
+
   return RateLimit({
     windowMs: options.windowMs,
-    max: options.max,
+    limit: options.max,
     skipFailedRequests: options.skipFailedRequests,
+
+    keyGenerator: options.perUserKey === true
+      ? (req: express.Request, res: express.Response) => {
+        const user = getAuthUser(res)
+
+        return user
+          ? 'user-' + user.id
+          : ipKeyGenerator(req.ip)
+      }
+      : undefined,
 
     handler: (req, res, next, options) => {
       // Bypass rate limit for registered runners
@@ -42,11 +63,20 @@ export function buildRateLimiter (options: {
 }
 
 export const apiRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.API.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.API.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.API.MAX
 })
 
+// Endpoints that consume a token sent by email or generated for the user (reset password, verify email, confirm 2FA)
+export const confirmTokenRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.CONFIRM_TOKEN.ENABLED,
+  windowMs: CONFIG.RATES_LIMIT.CONFIRM_TOKEN.WINDOW_MS,
+  max: CONFIG.RATES_LIMIT.CONFIRM_TOKEN.MAX
+})
+
 export const activityPubRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.ACTIVITY_PUB.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.ACTIVITY_PUB.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.ACTIVITY_PUB.MAX
 })
@@ -56,7 +86,7 @@ export const activityPubRateLimiter = buildRateLimiter({
 // ---------------------------------------------------------------------------
 
 function sendRateLimited (req: express.Request, res: express.Response, options: RateLimitHandlerOptions) {
-  logger.debug('Rate limit exceeded for route ' + req.originalUrl)
+  logger.debug('Rate limit exceeded for route ' + req.originalUrl, { route: req.originalUrl, ip: req.ip })
 
   return res.status(options.statusCode).send(options.message)
 }

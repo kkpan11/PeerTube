@@ -1,19 +1,22 @@
-import express from 'express'
-import { body, param, query } from 'express-validator'
 import { HttpStatusCode, ServerFollowCreate } from '@peertube/peertube-models'
 import { isProdInstance } from '@peertube/peertube-node-utils'
 import { isEachUniqueHandleValid, isFollowStateValid, isRemoteHandleValid } from '@server/helpers/custom-validators/follows.js'
+import { hasArrayLength, toArray } from '@server/helpers/custom-validators/misc.js'
 import { loadActorUrlOrGetFromWebfinger } from '@server/lib/activitypub/actors/index.js'
 import { getRemoteNameAndHost } from '@server/lib/activitypub/follow.js'
 import { getServerActor } from '@server/models/application/application.js'
 import { MActorFollowActorsDefault } from '@server/types/models/index.js'
+import express from 'express'
+import { body, param, query } from 'express-validator'
 import { isActorTypeValid, isValidActorHandle } from '../../helpers/custom-validators/activitypub/actor.js'
 import { isEachUniqueHostValid, isHostValid } from '../../helpers/custom-validators/servers.js'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { WEBSERVER } from '../../initializers/constants.js'
 import { ActorFollowModel } from '../../models/actor/actor-follow.js'
 import { ActorModel } from '../../models/actor/actor.js'
 import { areValidationErrors } from './shared/index.js'
+
+const logger = createLogger()
 
 const listFollowsValidator = [
   query('state')
@@ -32,11 +35,13 @@ const listFollowsValidator = [
 
 const followValidator = [
   body('hosts')
-    .toArray()
+    .customSanitizer(toArray)
+    .custom(v => hasArrayLength(v, { max: 100 }))
     .custom(isEachUniqueHostValid).withMessage('Should have an array of unique hosts'),
 
   body('handles')
-    .toArray()
+    .customSanitizer(toArray)
+    .custom(v => hasArrayLength(v, { max: 100 }))
     .custom(isEachUniqueHandleValid).withMessage('Should have an array of handles'),
 
   (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -53,7 +58,6 @@ const followValidator = [
 
     const body: ServerFollowCreate = req.body
     if (body.hosts.length === 0 && body.handles.length === 0) {
-
       return res
         .status(HttpStatusCode.BAD_REQUEST_400)
         .json({
@@ -94,7 +98,7 @@ const removeFollowingValidator = [
 ]
 
 const getFollowerValidator = [
-  param('nameWithHost')
+  param('handle')
     .custom(isValidActorHandle),
 
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
@@ -102,19 +106,19 @@ const getFollowerValidator = [
 
     let follow: MActorFollowActorsDefault
     try {
-      const actorUrl = await loadActorUrlOrGetFromWebfinger(req.params.nameWithHost)
+      const actorUrl = await loadActorUrlOrGetFromWebfinger(req.params.handle)
       const actor = await ActorModel.loadByUrl(actorUrl)
 
       const serverActor = await getServerActor()
       follow = await ActorFollowModel.loadByActorAndTarget(actor.id, serverActor.id)
     } catch (err) {
-      logger.warn('Cannot get actor from handle.', { handle: req.params.nameWithHost, err })
+      logger.warn('Cannot get actor from handle.', { handle: req.params.handle, err })
     }
 
     if (!follow) {
       return res.fail({
         status: HttpStatusCode.NOT_FOUND_404,
-        message: `Follower ${req.params.nameWithHost} not found.`
+        message: `Follower ${req.params.handle} not found.`
       })
     }
 
@@ -148,10 +152,10 @@ const rejectFollowerValidator = [
 // ---------------------------------------------------------------------------
 
 export {
-  followValidator,
-  removeFollowingValidator,
-  getFollowerValidator,
   acceptFollowerValidator,
+  followValidator,
+  getFollowerValidator,
+  listFollowsValidator,
   rejectFollowerValidator,
-  listFollowsValidator
+  removeFollowingValidator
 }

@@ -1,18 +1,18 @@
-import videojs, { VideoJsPlayer } from 'video.js'
-import { ContextMenuPluginOptions } from '../../types'
+import videojs from 'video.js'
+import { ContextMenuPluginOptions, VideojsMenuItemOptions, VideojsPlayer, VideojsPlugin } from '../../types'
 import { ContextMenu } from './context-menu'
 import { getPointerPosition } from './util'
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
 
 class ContextMenuPlugin extends Plugin {
-  declare options_: ContextMenuPluginOptions & videojs.MenuOptions
+  declare options_: ContextMenuPluginOptions & VideojsMenuItemOptions
   declare menu: ContextMenu
 
   declare private onContextMenuBind: (e: TouchEvent & MouseEvent) => void
 
-  constructor (player: videojs.Player, options: ContextMenuPluginOptions & videojs.MenuOptions) {
-    super(player, options)
+  constructor (player: VideojsPlayer, options: ContextMenuPluginOptions & VideojsMenuItemOptions) {
+    super(player)
 
     this.options_ = options
 
@@ -50,42 +50,40 @@ class ContextMenuPlugin extends Plugin {
 
     e.preventDefault()
 
-    const menu = this.menu = new ContextMenu(this.player, {
+    this.menu = new ContextMenu(this.player, {
       content: this.options_.content,
       position: menuPosition
     })
 
-    menu.on('dispose', () => {
+    this.menu.on('dispose', () => {
       for (const event of [ 'click', 'tap' ]) {
-        // eslint-disable-next-line @typescript-eslint/unbound-method
-        videojs.off(documentEl as Element, event, menu.dispose)
+        videojs.off(documentEl, event, this.menu.dispose)
       }
 
-      this.player.removeChild(menu)
+      this.player.removeChild(this.menu)
       this.menu = undefined
     })
 
-    this.player.addChild(menu)
+    this.player.addChild(this.menu)
 
-    const menuEl = menu.el() as HTMLElement
+    const menuEl = this.menu.el() as HTMLElement
     const menuSize = menuEl.getBoundingClientRect()
     const bodySize = document.body.getBoundingClientRect()
 
     if (menuSize.right > bodySize.width || menuSize.bottom > bodySize.height) {
       menuEl.style.left = Math.floor(Math.min(
         menuPosition.left,
-        this.player.currentWidth() - menu.currentWidth()
+        this.player.currentWidth() - this.menu.currentWidth()
       )) + 'px'
 
       menuEl.style.top = Math.floor(Math.min(
         menuPosition.top,
-        this.player.currentHeight() - menu.currentHeight()
+        this.player.currentHeight() - this.menu.currentHeight()
       )) + 'px'
     }
 
     for (const event of [ 'click', 'tap' ]) {
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      videojs.on(documentEl as Element, event, menu.dispose)
+      videojs.on(documentEl, event, this.menu.dispose)
     }
   }
 }
@@ -98,7 +96,7 @@ export { ContextMenuPlugin }
 // Private
 // ---------------------------------------------------------------------------
 
-function hasMenu (player: VideoJsPlayer) {
+function hasMenu (player: VideojsPlayer) {
   if (!player.usingPlugin('contextMenu')) return false
 
   return !!player.contextMenu().menu?.el()

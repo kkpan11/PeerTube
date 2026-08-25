@@ -1,29 +1,44 @@
-import { NgClass, NgIf, NgTemplateOutlet } from '@angular/common'
-import { Component, ElementRef, OnChanges, OnInit, booleanAttribute, inject, input, numberAttribute, viewChild } from '@angular/core'
+import { CommonModule, NgTemplateOutlet } from '@angular/common'
+import {
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  OnChanges,
+  OnInit,
+  booleanAttribute,
+  inject,
+  input,
+  numberAttribute,
+  viewChild
+} from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { objectKeysTyped } from '@peertube/peertube-core-utils'
+import { ActorImage } from '@peertube/peertube-models'
+import { findAppropriateImageFileUrl } from '@root-helpers/images'
 import { Account } from '../shared-main/account/account.model'
-import { Actor } from '../shared-main/account/actor.model'
 import { VideoChannel } from '../shared-main/channel/video-channel.model'
 
 export type ActorAvatarInput = {
   name: string
-  avatars: { width: number, url?: string, path: string }[]
+  avatars: Pick<ActorImage, 'width' | 'fileUrl'>[]
 }
+
+export type ActorAvatarType = 'channel' | 'account' | 'instance' | 'unlogged'
 
 @Component({
   selector: 'my-actor-avatar',
   styleUrls: [ './actor-avatar.component.scss' ],
   templateUrl: './actor-avatar.component.html',
-  imports: [ NgIf, NgClass, NgTemplateOutlet, RouterLink ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ CommonModule, NgTemplateOutlet, RouterLink ]
 })
 export class ActorAvatarComponent implements OnInit, OnChanges {
   private el = inject(ElementRef)
 
   readonly avatarEl = viewChild<ElementRef>('avatarEl')
 
-  readonly actor = input<ActorAvatarInput>(undefined)
-  readonly actorType = input<'channel' | 'account' | 'instance' | 'unlogged'>(undefined)
+  readonly actor = input.required<ActorAvatarInput>()
+  readonly actorType = input.required<ActorAvatarType>()
 
   readonly previewImage = input<string>(undefined)
 
@@ -36,6 +51,9 @@ export class ActorAvatarComponent implements OnInit, OnChanges {
   readonly internalHref = input<string | any[]>(undefined)
 
   readonly title = input<string>()
+
+  // Hide the avatar link from assistive technologies, for example when the parent component renders another link to the same actor
+  readonly ariaHidden = input(false, { transform: booleanAttribute })
 
   getTitle () {
     if (this.title()) return this.title()
@@ -116,7 +134,7 @@ export class ActorAvatarComponent implements OnInit, OnChanges {
     }
 
     if (this.isAccount() || this.isChannel() || this.isInstance()) {
-      this.avatarUrl = Actor.GET_ACTOR_AVATAR_URL(actor, this.getSizeNumber())
+      this.avatarUrl = findAppropriateImageFileUrl(actor.avatars, this.getSizeNumber())
       return
     }
 

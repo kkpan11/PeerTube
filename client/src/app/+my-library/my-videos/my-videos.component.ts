@@ -1,91 +1,101 @@
-import { NgIf } from '@angular/common'
-import { Component, OnInit, inject, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, inject, OnDestroy, OnInit, viewChild } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { ActivatedRoute, Router } from '@angular/router'
-import {
-  AuthService,
-  ComponentPagination,
-  ConfirmService,
-  Notifier,
-  ScreenService,
-  ServerService,
-  updatePaginationOnDelete,
-  User
-} from '@app/core'
-import { DisableForReuseHook } from '@app/core/routing/disable-for-reuse-hook'
-import { formatICU, immutableAssign } from '@app/helpers'
-import { DropdownAction } from '@app/shared/shared-main/buttons/action-dropdown.component'
-import { DeleteButtonComponent } from '@app/shared/shared-main/buttons/delete-button.component'
+import { ActivatedRoute, RouterLink } from '@angular/router'
+import { AuthService, AuthUser, ConfirmService, Notifier, RestPagination, ServerService } from '@app/core'
+import { HeaderService } from '@app/header/header.service'
+import { formatICU } from '@app/helpers'
+import { ChannelToggleComponent } from '@app/shared/shared-channels/channel-toggle.component'
+import { AdvancedFilterDef } from '@app/shared/shared-forms/advanced-input-filter.component'
+import { PeerTubeBadgeService } from '@app/shared/shared-main/common/peertube-badge.service'
 import { Video } from '@app/shared/shared-main/video/video.model'
 import { VideoService } from '@app/shared/shared-main/video/video.service'
-import { LiveStreamInformationComponent } from '@app/shared/shared-video-live/live-stream-information.component'
-import { MiniatureDisplayOptions } from '@app/shared/shared-video-miniature/video-miniature.component'
-import { SelectionType, VideosSelectionComponent } from '@app/shared/shared-video-miniature/videos-selection.component'
+import { TableColumnInfo, TableComponent, TableQueryParams } from '@app/shared/shared-tables/table.component'
+import { BulkUpdateVideosInPlaylistModalComponent } from '@app/shared/shared-video-playlist/bulk-update-videos-in-playlist-modal.component'
 import { VideoPlaylistService } from '@app/shared/shared-video-playlist/video-playlist.service'
-import { VideoChannel, VideoExistInPlaylist, VideosExistInPlaylists, VideoSortField } from '@peertube/peertube-models'
-import { uniqBy } from 'lodash-es'
-import { concat, Observable } from 'rxjs'
-import { tap, toArray } from 'rxjs/operators'
-import { AdvancedInputFilter, AdvancedInputFilterComponent } from '../../shared/shared-forms/advanced-input-filter.component'
-
-import { EditButtonComponent } from '../../shared/shared-main/buttons/edit-button.component'
-import { PeerTubeTemplateDirective } from '../../shared/shared-main/common/peertube-template.directive'
+import { NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap'
+import { arrayify } from '@peertube/peertube-core-utils'
+import { VideoChannel, VideoExistInPlaylist, VideoPrivacy, VideoPrivacyType, VideosExistInPlaylists } from '@peertube/peertube-models'
+import uniqBy from 'lodash-es/uniqBy'
+import { SortMeta } from 'primeng/api'
+import { tap } from 'rxjs/operators'
+import { DropdownAction } from '../../shared/shared-main/buttons/action-dropdown.component'
+import { ButtonComponent } from '../../shared/shared-main/buttons/button.component'
+import { PTDatePipe } from '../../shared/shared-main/common/date.pipe'
+import { NumberFormatterPipe } from '../../shared/shared-main/common/number-formatter.pipe'
+import { VideoCellComponent } from '../../shared/shared-tables/video-cell.component'
 import {
   VideoActionsDisplayType,
   VideoActionsDropdownComponent
 } from '../../shared/shared-video-miniature/video-actions-dropdown.component'
-import { VideoChangeOwnershipComponent } from './modals/video-change-ownership.component'
+import { BulkUpdateVideosModalComponent } from '../../shared/shared-video/bulk-update-videos-modal.component'
+import { PrivacyBadgeComponent } from '../../shared/shared-video/privacy-badge.component'
+import { VideoNSFWBadgeComponent } from '../../shared/shared-video/video-nsfw-badge.component'
+import { VideoStateBadgeComponent } from '../../shared/shared-video/video-state-badge.component'
+
+type ColumnName =
+  | 'duration'
+  | 'name'
+  | 'tags'
+  | 'language'
+  | 'privacy'
+  | 'sensitive'
+  | 'playlists'
+  | 'insights'
+  | 'published'
+  | 'category'
+  | 'licence'
+  | 'state'
+  | 'comments'
+
+type QueryParams = TableQueryParams & {
+  channelNameOneOf?: string[]
+}
+
+type DataLoaderParameter = Parameters<MyVideosComponent['_dataLoader']>[0]
 
 @Component({
+  selector: 'my-videos',
   templateUrl: './my-videos.component.html',
   styleUrls: [ './my-videos.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    DeleteButtonComponent,
-    NgIf,
-    AdvancedInputFilterComponent,
     FormsModule,
-    VideosSelectionComponent,
-    PeerTubeTemplateDirective,
-    EditButtonComponent,
+    ButtonComponent,
+    NgbTooltipModule,
     VideoActionsDropdownComponent,
-    VideoChangeOwnershipComponent
+    VideoCellComponent,
+    RouterLink,
+    NumberFormatterPipe,
+    VideoStateBadgeComponent,
+    ChannelToggleComponent,
+    PTDatePipe,
+    VideoNSFWBadgeComponent,
+    TableComponent,
+    PrivacyBadgeComponent,
+    BulkUpdateVideosInPlaylistModalComponent,
+    BulkUpdateVideosModalComponent
   ]
 })
-export class MyVideosComponent implements OnInit, DisableForReuseHook {
-  protected router = inject(Router)
-  protected serverService = inject(ServerService)
-  protected route = inject(ActivatedRoute)
-  protected authService = inject(AuthService)
-  protected notifier = inject(Notifier)
-  protected screenService = inject(ScreenService)
+export class MyVideosComponent implements OnInit, OnDestroy {
   private confirmService = inject(ConfirmService)
+  private auth = inject(AuthService)
+  private notifier = inject(Notifier)
   private videoService = inject(VideoService)
   private playlistService = inject(VideoPlaylistService)
+  private server = inject(ServerService)
+  private headerService = inject(HeaderService)
+  private badgeService = inject(PeerTubeBadgeService)
+  private route = inject(ActivatedRoute)
 
-  readonly videosSelection = viewChild<VideosSelectionComponent>('videosSelection')
-  readonly videoChangeOwnershipModal = viewChild<VideoChangeOwnershipComponent>('videoChangeOwnershipModal')
-  readonly liveStreamInformationModal = viewChild<LiveStreamInformationComponent>('liveStreamInformationModal')
+  readonly table = viewChild<TableComponent<Video, DataLoaderParameter, ColumnName, QueryParams>>('table')
+  readonly bulkUpdateVideosInPlaylistModal = viewChild<BulkUpdateVideosInPlaylistModalComponent>('bulkUpdateVideosInPlaylistModal')
+  readonly bulkUpdateVideosModal = viewChild<BulkUpdateVideosModalComponent>('bulkUpdateVideosModal')
 
   videosContainedInPlaylists: VideosExistInPlaylists = {}
-  titlePage: string
-  selection: SelectionType = {}
-  pagination: ComponentPagination = {
-    currentPage: 1,
-    itemsPerPage: 10,
-    totalItems: null
-  }
-  miniatureDisplayOptions: MiniatureDisplayOptions = {
-    date: true,
-    views: true,
-    by: true,
-    privacyLabel: false,
-    privacyText: true,
-    state: true,
-    blacklistInfo: true,
-    forceChannelInBy: true,
-    nsfw: true
-  }
-  videoDropdownDisplayOptions: VideoActionsDisplayType = {
+
+  bulkActions: DropdownAction<Video[]>[][] = []
+
+  videoActionsOptions: VideoActionsDisplayType = {
     playlist: true,
     download: true,
     update: false,
@@ -93,109 +103,170 @@ export class MyVideosComponent implements OnInit, DisableForReuseHook {
     delete: true,
     report: false,
     duplicate: false,
-    mute: false,
+    muteByUser: false,
+    muteByServer: false,
     liveInfo: true,
     removeFiles: false,
     transcoding: false,
-    studio: true,
-    stats: true
+    retryFailedImport: true
   }
 
-  moreVideoActions: DropdownAction<{ video: Video }>[][] = []
+  user: AuthUser
+  channels: (VideoChannel & { selected: boolean })[] = []
 
-  videos: Video[] = []
-  getVideosObservableFunction = this.getVideosObservable.bind(this)
+  inputFilters: AdvancedFilterDef<DataLoaderParameter>[] = []
 
-  sort: VideoSortField = '-publishedAt'
+  columns: TableColumnInfo<ColumnName>[] = []
 
-  user: User
-
-  inputFilters: AdvancedInputFilter[] = []
-
-  disabled = false
-
-  private search: string
-  private userChannels: VideoChannel[] = []
+  customUpdateUrl: typeof this._customUpdateUrl
+  customParseQueryParams: typeof this._customParseQueryParams
+  dataLoader: typeof this._dataLoader
 
   constructor () {
-    this.titlePage = $localize`My videos`
+    this.customUpdateUrl = this._customUpdateUrl.bind(this)
+    this.customParseQueryParams = this._customParseQueryParams.bind(this)
+    this.dataLoader = this._dataLoader.bind(this)
+  }
+
+  get serverConfig () {
+    return this.server.getHTMLConfig()
   }
 
   ngOnInit () {
-    this.buildActions()
+    this.headerService.setSearchHidden(true)
 
-    this.user = this.authService.getUser()
+    this.user = this.auth.getUser()
 
-    if (this.route.snapshot.queryParams['search']) {
-      this.search = this.route.snapshot.queryParams['search']
-    }
-
-    this.user = this.authService.getUser()
-    this.userChannels = this.user.videoChannels
-
-    const channelFilters = [ ...this.userChannels ]
-      .sort((a, b) => a.displayName.localeCompare(b.displayName))
-      .map(c => {
-        return {
-          value: 'channel:' + c.name,
-          label: c.displayName
-        }
-      })
+    this.columns = [
+      { id: 'duration', label: $localize`Duration`, selected: true, sortable: true },
+      { id: 'name', label: $localize`Name`, selected: true, sortable: true },
+      { id: 'tags', label: $localize`Tags`, selected: true, sortable: false },
+      { id: 'privacy', label: $localize`Privacy`, selected: true, sortable: false },
+      { id: 'sensitive', label: $localize`Sensitive`, selected: true, sortable: false },
+      { id: 'insights', label: $localize`Insights`, selected: true, sortable: true, sortKey: 'views' },
+      { id: 'comments', label: $localize`Comments`, selected: true, sortable: true },
+      { id: 'published', label: $localize`Published`, selected: true, sortable: true, sortKey: 'publishedAt' },
+      { id: 'state', label: $localize`State`, selected: true, sortable: false },
+      { id: 'category', label: $localize`Category`, selected: false, sortable: false },
+      { id: 'language', label: $localize`Language`, selected: false, sortable: false },
+      { id: 'licence', label: $localize`Licence`, selected: false, sortable: false },
+      { id: 'playlists', label: $localize`Playlists`, selected: true, sortable: false }
+    ]
 
     this.inputFilters = [
       {
-        title: $localize`Advanced filters`,
-        children: [
-          {
-            value: 'isLive:true',
-            label: $localize`Only live videos`
-          }
+        type: 'options',
+        key: 'isLive',
+        title: $localize`Video type`,
+        options: [
+          { value: 'all', label: $localize`All` },
+          { value: true, label: $localize`Lives` },
+          { value: false, label: $localize`VOD` }
         ]
       },
 
       {
-        title: $localize`Channel filters`,
-        children: channelFilters
+        type: 'options',
+        key: 'privacyOneOf',
+        title: $localize`Privacy`,
+        options: [
+          { value: 'all', label: $localize`All` },
+          { value: VideoPrivacy.PUBLIC, label: $localize`Public videos` },
+          { value: VideoPrivacy.INTERNAL, label: $localize`Internal videos` },
+          { value: VideoPrivacy.UNLISTED, label: $localize`Unlisted videos` },
+          { value: VideoPrivacy.PASSWORD_PROTECTED, label: $localize`Password protected videos` },
+          { value: VideoPrivacy.PRIVATE, label: $localize`Private videos` }
+        ]
+      },
+
+      {
+        type: 'tags',
+        key: 'tagsOneOf',
+        title: $localize`One of these tags`
       }
     ]
+
+    this._customParseQueryParams(this.route.snapshot.queryParams)
+
+    this.buildActions()
   }
 
-  onSearch (search: string) {
-    this.search = search
-    this.reloadData()
+  ngOnDestroy () {
+    this.headerService.setSearchHidden(false)
   }
 
-  reloadData () {
-    this.videosSelection().reloadVideos()
+  private _customParseQueryParams (queryParams: QueryParams) {
+    const enabledChannels = queryParams.channelNameOneOf
+      ? new Set(arrayify(queryParams.channelNameOneOf))
+      : new Set<string>()
+
+    this.user = this.auth.getUser()
+    this.channels = [ ...this.user.videoChannels, ...this.user.videoChannelCollaborations ].map(c => ({
+      ...c,
+
+      selected: enabledChannels.has(c.name)
+    }))
   }
 
-  onChangeSortColumn () {
-    this.videosSelection().reloadVideos()
+  // ---------------------------------------------------------------------------
+
+  getNoResults (hasSearchOrFilters?: boolean) {
+    if (hasSearchOrFilters) {
+      return $localize`No videos found matching your filters.`
+    }
+
+    if (this.channels.some(c => c.selected)) {
+      return $localize`No videos found in selected channels.`
+    }
+
+    return $localize`You don't have any videos published yet.`
   }
 
-  disableForReuse () {
-    this.disabled = true
+  // ---------------------------------------------------------------------------
+
+  private _customUpdateUrl (): Partial<Record<keyof QueryParams, any>> {
+    const channelNameOneOf = this.channels.filter(c => c.selected).map(c => c.name)
+
+    return {
+      channelNameOneOf
+    }
   }
 
-  enabledForReuse () {
-    this.disabled = false
+  // ---------------------------------------------------------------------------
+
+  private _dataLoader (options: {
+    pagination: RestPagination
+    sort: SortMeta
+    search?: string
+    isLive?: boolean
+    privacyOneOf?: VideoPrivacyType
+    tagsOneOf?: string[]
+  }) {
+    const { pagination, sort, search, isLive, privacyOneOf, tagsOneOf } = options
+
+    const channelNameOneOf = this.channels.filter(c => c.selected).map(c => c.name)
+
+    return this.videoService.listMyVideos({
+      restPagination: pagination,
+      sort,
+      search,
+      includeCollaborations: true,
+
+      channelNameOneOf: channelNameOneOf.length !== 0
+        ? channelNameOneOf
+        : undefined,
+
+      isLive,
+
+      privacyOneOf: privacyOneOf !== undefined
+        ? [ privacyOneOf ]
+        : undefined,
+
+      tagsOneOf
+    }).pipe(tap(({ data }) => this.fetchVideosContainedInPlaylists(data)))
   }
 
-  getVideosObservable (page: number) {
-    const newPagination = immutableAssign(this.pagination, { currentPage: page })
-
-    return this.videoService.getMyVideos({
-      videoPagination: newPagination,
-      sort: this.sort,
-      userChannels: this.userChannels,
-      search: this.search
-    }).pipe(
-      tap(res => this.pagination.totalItems = res.total),
-      tap(({ data }) => this.fetchVideosContainedInPlaylists(data))
-    )
-  }
-
-  private fetchVideosContainedInPlaylists (videos: Video[]) {
+  fetchVideosContainedInPlaylists (videos: Pick<Video, 'id'>[]) {
     this.playlistService.doVideosExistInPlaylist(videos.map(v => v.id))
       .subscribe(result => {
         this.videosContainedInPlaylists = Object.keys(result).reduce((acc, videoId) => ({
@@ -205,76 +276,64 @@ export class MyVideosComponent implements OnInit, DisableForReuseHook {
       })
   }
 
-  async deleteSelectedVideos () {
-    const toDeleteVideosIds = Object.entries(this.selection)
-      .filter(([ _k, v ]) => v === true)
-      .map(([ k, _v ]) => parseInt(k, 10))
+  getPlaylistBadge (playlistName: string) {
+    return this.badgeService.getRandomBadge('playlist', playlistName)
+  }
 
-    const res = await this.confirmService.confirm(
-      formatICU(
-        $localize`Do you really want to delete {length, plural, =1 {this video} other {{length} videos}}?`,
-        { length: toDeleteVideosIds.length }
-      ),
-      $localize`Delete`
+  async removeVideos (videos: Video[]) {
+    const message = formatICU(
+      $localize`Are you sure you want to delete {count, plural, =1 {this video} other {these {count} videos}}?`,
+      { count: videos.length }
     )
+
+    const res = await this.confirmService.confirm(message, $localize`Delete`)
     if (res === false) return
 
-    const observables: Observable<any>[] = []
-    for (const videoId of toDeleteVideosIds) {
-      const o = this.videoService.removeVideo(videoId)
-        .pipe(tap(() => this.removeVideoFromArray(videoId)))
-
-      observables.push(o)
-    }
-
-    concat(...observables)
-      .pipe(toArray())
+    this.videoService.removeVideo(videos.map(v => v.id))
       .subscribe({
         next: () => {
           this.notifier.success(
             formatICU(
-              $localize`{length, plural, =1 {Video has been deleted} other {{length} videos have been deleted}}`,
-              { length: toDeleteVideosIds.length }
+              $localize`Deleted {count, plural, =1 {1 video} other {{count} videos}}.`,
+              { count: videos.length }
             )
           )
 
-          this.selection = {}
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
-  onVideoRemoved (video: Video) {
-    this.removeVideoFromArray(video.id)
-  }
-
-  changeOwnership (video: Video) {
-    this.videoChangeOwnershipModal().show(video)
-  }
-
-  getTotalTitle () {
-    return formatICU(
-      $localize`${this.pagination.totalItems} {total, plural, =1 {video} other {videos}}`,
-      { total: this.pagination.totalItems }
-    )
-  }
-
-  private removeVideoFromArray (id: number) {
-    this.videos = this.videos.filter(v => v.id !== id)
-
-    updatePaginationOnDelete(this.pagination)
-  }
-
   private buildActions () {
-    this.moreVideoActions = [
+    this.bulkActions = [
       [
         {
-          label: $localize`Change ownership`,
-          handler: ({ video }) => this.changeOwnership(video),
-          iconName: 'ownership-change'
+          label: $localize`Add to playlist...`,
+          handler: videos => {
+            this.bulkUpdateVideosInPlaylistModal().show({ videos, videosContainedInPlaylists: this.videosContainedInPlaylists })
+          },
+          iconName: 'playlist-add'
+        },
+        {
+          label: $localize`Update...`,
+          handler: videos => this.bulkUpdateVideosModal().show({ videos }),
+          iconName: 'edit'
+        }
+      ],
+
+      [
+        {
+          label: $localize`Delete`,
+          handler: videos => this.removeVideos(videos),
+          iconName: 'delete'
         }
       ]
     ]
+  }
+
+  getPrivacyFilterTitle (privacy: string) {
+    return $localize`Filter by privacy: ${privacy}`
   }
 }

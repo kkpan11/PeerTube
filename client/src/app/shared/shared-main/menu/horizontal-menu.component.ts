@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common'
-import { booleanAttribute, Component, OnChanges, OnDestroy, OnInit, inject, input } from '@angular/core'
+import { booleanAttribute, Component, OnChanges, OnDestroy, OnInit, inject, input, ChangeDetectionStrategy } from '@angular/core'
 import { ActivatedRoute, NavigationEnd, Router, RouterModule } from '@angular/router'
 import { GlobalIconComponent, GlobalIconName } from '@app/shared/shared-icons/global-icon.component'
 import { logger } from '@root-helpers/logger'
@@ -7,6 +7,7 @@ import { filter, Subscription } from 'rxjs'
 import { PluginSelectorDirective } from '../plugins/plugin-selector.directive'
 import { ListOverflowComponent } from './list-overflow.component'
 import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
+import { HorizontalMenuService } from './horizontal-menu.service'
 
 export type HorizontalMenuEntry = {
   label: string
@@ -32,6 +33,7 @@ export type HorizontalMenuEntry = {
   selector: 'my-horizontal-menu',
   templateUrl: './horizontal-menu.component.html',
   styleUrls: [ './horizontal-menu.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     CommonModule,
     RouterModule,
@@ -41,6 +43,7 @@ export type HorizontalMenuEntry = {
   ]
 })
 export class HorizontalMenuComponent implements OnInit, OnChanges, OnDestroy {
+  private horizontalMenuService = inject(HorizontalMenuService)
   private router = inject(Router)
   private route = inject(ActivatedRoute)
   private modal = inject(NgbModal)
@@ -76,6 +79,10 @@ export class HorizontalMenuComponent implements OnInit, OnChanges, OnDestroy {
     if (modal) {
       this.modal.dismissAll()
     }
+  }
+
+  isHidden () {
+    return this.horizontalMenuService.isMenuHidden()
   }
 
   private buildChildren () {

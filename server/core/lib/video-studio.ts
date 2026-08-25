@@ -1,22 +1,25 @@
 import { buildAspectRatio } from '@peertube/peertube-core-utils'
 import { getVideoStreamDuration } from '@peertube/peertube-ffmpeg'
 import { VideoStudioEditionPayload, VideoStudioTask, VideoStudioTaskPayload } from '@peertube/peertube-models'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
-import { createTorrentAndSetInfoHashFromPath } from '@server/helpers/webtorrent.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
-import { VideoCaptionModel } from '@server/models/video/video-caption.js'
-import { MUser, MVideoFile, MVideoFullLight, MVideoWithAllFiles, MVideoWithFile } from '@server/types/models/index.js'
+import { sequelizeTypescript } from '@server/initializers/database.js'
+import { buildNonDuplicatedFederateVideoJob } from '@server/lib/activitypub/videos/federate.js'
+import { createTorrentForFileFromPath } from '@server/lib/webtorrent.js'
+import { VideoInfohashModel } from '@server/models/video/video-infohash.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { MUser, MVideoFile, MVideoFull, MVideoWithAllFiles, MVideoWithFile } from '@server/types/models/index.js'
 import { move, remove } from 'fs-extra/esm'
 import { join } from 'path'
 import { JobQueue } from './job-queue/index.js'
 import { VideoStudioTranscodingJobHandler } from './runners/index.js'
 import { getTranscodingJobPriority } from './transcoding/transcoding-priority.js'
-import { createTranscriptionTaskIfNeeded } from './video-captions.js'
+import { regenerateTranscriptionTaskIfNeeded } from './video-captions.js'
 import { buildNewFile, removeHLSPlaylist, removeWebVideoFile } from './video-file.js'
-import { buildStoryboardJobIfNeeded } from './video-jobs.js'
+import { addRemoteStoryboardJobIfNeeded, buildLocalStoryboardJobIfNeeded } from './video-jobs.js'
 import { VideoPathManager } from './video-path-manager.js'
 
-const lTags = loggerTagsFactory('video-studio')
+const logger = createLogger('studio')
 
 export function buildTaskFileFieldname (indice: number, fieldName = 'file') {
   return `tasks[${indice}][options][${fieldName}]`
@@ -31,7 +34,7 @@ export function getStudioTaskFilePath (filename: string) {
 }
 
 export async function safeCleanupStudioTMPFiles (tasks: VideoStudioTaskPayload[]) {
-  logger.info('Removing TMP studio task files', { tasks, ...lTags() })
+  logger.info('Removing TMP studio task files', { tasks })
 
   for (const task of tasks) {
     try {
@@ -49,7 +52,7 @@ export async function safeCleanupStudioTMPFiles (tasks: VideoStudioTaskPayload[]
 // ---------------------------------------------------------------------------
 
 export async function approximateIntroOutroAdditionalSize (
-  video: MVideoFullLight,
+  video: MVideoFull,
   tasks: VideoStudioTask[],
   fileFinder: (i: number) => string
 ) {
@@ -76,7 +79,7 @@ export async function createVideoStudioJob (options: {
 }) {
   const { video, user, payload } = options
 
-  const priority = await getTranscodingJobPriority({ user, type: 'studio', fallback: 0 })
+  const priority = await getTranscodingJobPriority({ user, type: 'studio' })
 
   if (CONFIG.VIDEO_STUDIO.REMOTE_RUNNERS.ENABLED) {
     await new VideoStudioTranscodingJobHandler().create({ video, tasks: payload.tasks, priority })
@@ -89,55 +92,54 @@ export async function createVideoStudioJob (options: {
 export async function onVideoStudioEnded (options: {
   editionResultPath: string
   tasks: VideoStudioTaskPayload[]
-  video: MVideoFullLight
+  video: MVideoFull
 }) {
-  const { video, tasks, editionResultPath } = options
+  const { tasks, editionResultPath } = options
 
   const newFile = await buildNewFile({ path: editionResultPath, mode: 'web-video' })
-  newFile.videoId = video.id
 
-  const outputPath = VideoPathManager.Instance.getFSVideoFileOutputPath(video, newFile)
-  await move(editionResultPath, outputPath)
+  const videoFileMutexReleaser = await VideoPathManager.Instance.lockFiles(options.video.uuid)
 
-  await safeCleanupStudioTMPFiles(tasks)
+  try {
+    const video = await VideoModel.loadFull(options.video.uuid)
+    newFile.videoId = video.id
 
-  await createTorrentAndSetInfoHashFromPath(video, newFile, outputPath)
-  await removeAllFiles(video, newFile)
+    const outputPath = VideoPathManager.Instance.getFSVideoFileOutputPath(video, newFile)
+    await move(editionResultPath, outputPath)
+    videoFileMutexReleaser()
 
-  await newFile.save()
+    await safeCleanupStudioTMPFiles(tasks)
 
-  video.duration = await getVideoStreamDuration(outputPath)
-  video.aspectRatio = buildAspectRatio({ width: newFile.width, height: newFile.height })
-  await video.save()
+    const { infoHash, torrentFilename } = await createTorrentForFileFromPath(video, newFile, outputPath)
+    await removeAllFiles(video, newFile)
 
-  await JobQueue.Instance.createSequentialJobFlow(
-    buildStoryboardJobIfNeeded({ video, federate: false }),
+    await sequelizeTypescript.transaction(async t => {
+      newFile.torrentFilename = torrentFilename
+      await newFile.save({ transaction: t })
 
-    {
-      type: 'federate-video' as 'federate-video',
-      payload: {
-        videoUUID: video.uuid,
-        isNewVideoForFederation: false
-      }
-    },
+      await VideoInfohashModel.replaceFileInfohash(newFile.id, infoHash, t)
+    })
 
-    {
-      type: 'transcoding-job-builder' as 'transcoding-job-builder',
-      payload: {
-        videoUUID: video.uuid,
-        optimizeJob: {
-          isNewVideo: false
+    video.duration = await getVideoStreamDuration(outputPath)
+    video.aspectRatio = buildAspectRatio({ width: newFile.width, height: newFile.height })
+    await video.save()
+
+    await JobQueue.Instance.createSequentialJobFlow(
+      await buildLocalStoryboardJobIfNeeded({ video, federate: false }),
+      buildNonDuplicatedFederateVideoJob({ video }),
+      {
+        type: 'transcoding-job-builder' as 'transcoding-job-builder',
+        payload: {
+          videoUUID: video.uuid,
+          optimizeJob: {}
         }
       }
-    }
-  )
+    )
 
-  if (video.language && CONFIG.VIDEO_TRANSCRIPTION.ENABLED) {
-    const caption = await VideoCaptionModel.loadByVideoIdAndLanguage(video.id, video.language)
-
-    if (caption?.automaticallyGenerated) {
-      await createTranscriptionTaskIfNeeded(video)
-    }
+    await addRemoteStoryboardJobIfNeeded(video)
+    await regenerateTranscriptionTaskIfNeeded(video)
+  } finally {
+    videoFileMutexReleaser()
   }
 }
 

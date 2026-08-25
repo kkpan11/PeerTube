@@ -1,6 +1,6 @@
+import { isUUIDValid, toCompleteUUID } from '@server/helpers/custom-validators/misc.js'
 import { program } from 'commander'
 import { resolve } from 'path'
-import { isUUIDValid, toCompleteUUID } from '@server/helpers/custom-validators/misc.js'
 import { initDatabaseModels } from '../core/initializers/database.js'
 import { JobQueue } from '../core/lib/job-queue/index.js'
 import { VideoModel } from '../core/models/video/video.js'
@@ -37,7 +37,7 @@ async function run () {
 
   const video = await VideoModel.load(uuid)
   if (!video) throw new Error('Video not found.')
-  if (video.isOwned() === false) throw new Error('Cannot import files of a non owned video.')
+  if (video.isLocal() === false) throw new Error('Cannot import files of a non owned video.')
 
   const dataInput = {
     videoUUID: video.uuid,

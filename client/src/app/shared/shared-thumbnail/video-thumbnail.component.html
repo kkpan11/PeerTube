@@ -1,21 +1,45 @@
 @if (videoHref()) {
-  <a [ariaLabel]="ariaLabel()" [href]="videoHref()" [target]="videoTarget()" class="video-thumbnail" tabindex="-1">
+  <a
+    [ariaHidden]="ariaHidden()"
+    [ariaLabel]="ariaLabelText"
+    [href]="videoHref()"
+    [target]="videoTarget()"
+    class="video-thumbnail"
+    [class]="{ 'is-rtl': isRTL() }"
+    tabindex="-1"
+  >
     <ng-container *ngTemplateOutlet="aContent"></ng-container>
   </a>
 } @else {
-  <a [ariaLabel]="ariaLabel()" [routerLink]="getVideoRouterLink()" [queryParams]="queryParams()" class="video-thumbnail" tabindex="-1">
+  <a
+    [ariaHidden]="ariaHidden()"
+    [ariaLabel]="ariaLabelText"
+    [routerLink]="getVideoRouterLink()"
+    [queryParams]="queryParams()"
+    class="video-thumbnail"
+    [class]="{ 'is-rtl': isRTL() }"
+    tabindex="-1"
+  >
     <ng-container *ngTemplateOutlet="aContent"></ng-container>
   </a>
 }
 
-<ng-template #aContent>
-  <img alt="" [attr.src]="getImageUrl()" [ngClass]="{ 'blur-filter': nsfw() }" />
+<!--
+  The overlays below live outside of the thumbnail link on purpose: that link can be aria-hidden (see the "ariaHidden" input),
+  and neither an interactive control nor screen reader only text may live inside an aria-hidden subtree
+-->
 
-  <div *ngIf="displayWatchLaterPlaylist()" class="actions-overlay">
+@if (displayWatchLaterPlaylist()) {
+  <div class="actions-overlay">
     <button
+      type="button"
       class="watch-icon-overlay button-unstyle"
-      placement="left" [ngbTooltip]="getWatchIconText()" container="body" #watchLaterTooltip="ngbTooltip"
-      (click)="onWatchLaterClick($event)" [attr.aria-label]="inWatchLaterPlaylist() ? removeFromWatchLaterText : addToWatchLaterText"
+      placement="left"
+      [ngbTooltip]="getWatchIconText()"
+      container="body"
+      #watchLaterTooltip="ngbTooltip"
+      (click)="onWatchLaterClick($event)"
+      [ariaLabel]="getWatchIconText()"
     >
       @if (inWatchLaterPlaylist()) {
         <my-global-icon iconName="tick"></my-global-icon>
@@ -24,31 +48,49 @@
       }
     </button>
   </div>
+}
 
-  <div class="label-overlay warning"><ng-content select="label-warning"></ng-content></div>
-  <div class="label-overlay danger"><ng-content select="label-danger"></ng-content></div>
+<!-- Duration, live state and watch progress are only rendered inside the (hidden) link, so expose them to screen readers here -->
+@if (ariaHidden()) {
+  <span class="visually-hidden">{{ a11yOverlaysSummary }}</span>
+}
+
+<ng-template #aContent>
+  <img alt="" [attr.src]="src" [srcset]="srcset" [sizes]="sizes()" [ngClass]="{ 'blur-filter': blur() }" />
+
+  <div class="label-overlay pt-badge badge-warning"><ng-content select="label-warning"></ng-content></div>
+  <div class="label-overlay pt-badge badge-danger"><ng-content select="label-danger"></ng-content></div>
 
   @if (video().isLive) {
-    <div  class="live-overlay" [ngClass]="{ 'live-streaming': isLiveStreaming(), 'ended-live': isEndedLive() }">
+    <div class="live-overlay" [ngClass]="{ 'live-streaming': isLiveStreaming(), 'ended-live': isEndedLive() }">
       @if (isLiveStreaming()) {
         <ng-container i18n>LIVE</ng-container>
       } @else if (isEndedLive()) {
         <ng-container i18n>LIVE ENDED</ng-container>
+      } @else if (isScheduledLive()) {
+        <ng-container i18n>SCHEDULED LIVE</ng-container>
+        <span [title]="scheduledLiveDate().toLocaleString()"> {{ scheduledLiveDate() | myFromNow | uppercase }}</span>
       } @else {
         <ng-container i18n>WAIT LIVE</ng-container>
       }
     </div>
-  } @else {
-    <div class="duration-overlay" [ariaLabel]="getDurationOverlayLabel()">{{ video().durationLabel }}</div>
+  } @else if (getDurationLabel()) {
+    <div class="duration-overlay">{{ getDurationLabel() }}</div>
   }
 
-  <div class="play-overlay">
-    <div class="icon"></div>
-  </div>
-
-  <div class="progress-bar" *ngIf="!video().isLive && video().userHistory?.currentTime">
-    <div [ngStyle]="{ 'width.%': getProgressPercent() }">
-      <span class="visually-hidden" i18n>You watched {{ getProgressPercent() }}% of this video</span>
+  @if (playOverlay()) {
+    <div class="play-overlay">
+      <div class="icon"></div>
     </div>
-  </div>
+  }
+
+  @if (!video().isLive && video().userHistory?.currentTime) {
+    <div class="progress-bar">
+      <div [ngStyle]="{ 'width.%': getProgressPercent() }">
+        @if (!ariaHidden()) {
+          <span class="visually-hidden" i18n>You watched {{ getProgressPercent() }}% of this video</span>
+        }
+      </div>
+    </div>
+  }
 </ng-template>

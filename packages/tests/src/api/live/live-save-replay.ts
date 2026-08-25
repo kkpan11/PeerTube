@@ -1,11 +1,11 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import {
   HttpStatusCode,
   HttpStatusCodeType,
-  LiveVideoCreate,
   LiveVideoError,
+  VideoEmbedPrivacyPolicy,
   VideoPrivacy,
   VideoPrivacyType,
   VideoState,
@@ -27,8 +27,8 @@ import {
   waitUntilLiveReplacedByReplayOnAllServers,
   waitUntilLiveWaitingOnAllServers
 } from '@peertube/peertube-server-commands'
-import { testImageGeneratedByFFmpeg } from '@tests/shared/checks.js'
 import { checkLiveCleanup } from '@tests/shared/live.js'
+import { checkThumbnails as _checkVideoThumbnails } from '@tests/shared/videos.js'
 import { expect } from 'chai'
 import { FfmpegCommand } from 'fluent-ffmpeg'
 
@@ -42,7 +42,6 @@ describe('Save replay setting', function () {
     replay: boolean
     replaySettings?: { privacy: VideoPrivacyType }
     thumbnailfile?: string
-    previewfile?: string
   }) {
     if (liveVideoUUID) {
       try {
@@ -51,19 +50,19 @@ describe('Save replay setting', function () {
       } catch {}
     }
 
-    const attributes: LiveVideoCreate = {
-      channelId: servers[0].store.channel.id,
-      privacy: VideoPrivacy.PUBLIC,
-      name: 'live'.repeat(30),
-      tags: [ 'tag1', 'tag2' ],
-      saveReplay: options.replay,
-      replaySettings: options.replaySettings,
-      permanentLive: options.permanent,
-      thumbnailfile: options.thumbnailfile,
-      previewfile: options.previewfile
-    }
+    const { uuid } = await servers[0].live.create({
+      fields: {
+        channelId: servers[0].store.channel.id,
+        privacy: VideoPrivacy.PUBLIC,
+        name: 'live'.repeat(30),
+        tags: [ 'tag1', 'tag2' ],
+        saveReplay: options.replay,
+        replaySettings: options.replaySettings,
+        permanentLive: options.permanent,
+        thumbnailfile: options.thumbnailfile
+      }
+    })
 
-    const { uuid } = await servers[0].live.create({ fields: attributes })
     return uuid
   }
 
@@ -151,12 +150,11 @@ describe('Save replay setting', function () {
     }
   }
 
-  async function checkVideoThumbnail (videoId: string, thumbnailfile: string, previewfile?: string) {
+  async function checkVideoThumbnails (videoId: string, thumbnails: string[]) {
     for (const server of servers) {
       const video = await server.videos.get({ id: videoId })
-      await testImageGeneratedByFFmpeg(server.url, thumbnailfile, video.thumbnailPath, '')
 
-      if (previewfile) await testImageGeneratedByFFmpeg(server.url, previewfile, video.previewPath, '')
+      await _checkVideoThumbnails({ video, server, thumbnails })
     }
   }
 
@@ -292,18 +290,24 @@ describe('Save replay setting', function () {
   })
 
   describe('With save replay enabled on non permanent live', function () {
-
     it('Should correctly create and federate the "waiting for stream" live', async function () {
       this.timeout(120000)
 
       liveVideoUUID = await createLiveWrapper({ permanent: false, replay: true, replaySettings: { privacy: VideoPrivacy.UNLISTED } })
+
+      await servers[0].playerSettings.updateForVideo({ theme: 'lucide', videoId: liveVideoUUID })
+      await servers[0].videoEmbedPrivacy.update({
+        videoId: liveVideoUUID,
+        domains: [ 'example.com' ],
+        policy: VideoEmbedPrivacyPolicy.ALLOWLIST
+      })
 
       await waitJobs(servers)
 
       await checkVideosExist(liveVideoUUID, 0, HttpStatusCode.OK_200)
       await checkVideoState(liveVideoUUID, VideoState.WAITING_FOR_LIVE)
       await checkVideoPrivacy(liveVideoUUID, VideoPrivacy.PUBLIC)
-      await checkVideoThumbnail(liveVideoUUID, 'default-live-thumbnail.jpg', 'default-live-preview.jpg')
+      await checkVideoThumbnails(liveVideoUUID, [ 'default-live-thumbnail-280x157.jpg', 'default-live-thumbnail-850x480.jpg' ])
     })
 
     it('Should correctly have updated the live and federated it when streaming in the live', async function () {
@@ -317,7 +321,7 @@ describe('Save replay setting', function () {
       await checkVideosExist(liveVideoUUID, 1, HttpStatusCode.OK_200)
       await checkVideoState(liveVideoUUID, VideoState.PUBLISHED)
       await checkVideoPrivacy(liveVideoUUID, VideoPrivacy.PUBLIC)
-      await checkVideoThumbnail(liveVideoUUID, 'default-live-thumbnail.jpg', 'default-live-preview.jpg')
+      await checkVideoThumbnails(liveVideoUUID, [ 'default-live-thumbnail-280x157.jpg', 'default-live-thumbnail-850x480.jpg' ])
     })
 
     it('Should correctly have saved the live and federated it after the streaming', async function () {
@@ -340,6 +344,13 @@ describe('Save replay setting', function () {
       await checkVideoState(liveVideoUUID, VideoState.PUBLISHED)
       await checkVideoPrivacy(liveVideoUUID, VideoPrivacy.UNLISTED)
       await checkVideoTags(liveVideoUUID, [ 'tag1', 'tag2' ])
+
+      const playerSettings = await servers[0].playerSettings.getForVideo({ videoId: liveVideoUUID })
+      expect(playerSettings.theme).to.equal('lucide')
+
+      const videoEmbedPrivacy = await servers[0].videoEmbedPrivacy.get({ videoId: liveVideoUUID })
+      expect(videoEmbedPrivacy.policy.id).to.equal(VideoEmbedPrivacyPolicy.ALLOWLIST)
+      expect(videoEmbedPrivacy.domains).to.deep.equal([ 'example.com' ])
     })
 
     it('Should find the replay live session', async function () {
@@ -370,8 +381,7 @@ describe('Save replay setting', function () {
         attributes: {
           name: 'video updated',
           privacy: VideoPrivacy.PUBLIC,
-          thumbnailfile: 'custom-thumbnail.jpg',
-          previewfile: 'custom-preview.jpg'
+          thumbnailfile: 'custom-thumbnail-input.jpg'
         }
       })
       await waitJobs(servers)
@@ -382,7 +392,7 @@ describe('Save replay setting', function () {
         expect(video.isLive).to.be.false
         expect(video.privacy.id).to.equal(VideoPrivacy.PUBLIC)
 
-        await checkVideoThumbnail(liveVideoUUID, 'custom-thumbnail.jpg', 'custom-preview.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'custom-thumbnail-280x157.jpg', 'custom-thumbnail-850x480.jpg' ])
       }
     })
 
@@ -419,7 +429,6 @@ describe('Save replay setting', function () {
     let lastReplayUUID: string
 
     describe('With a first live and its replay', function () {
-
       before(async function () {
         this.timeout(120000)
 
@@ -440,8 +449,14 @@ describe('Save replay setting', function () {
           permanent: true,
           replay: true,
           replaySettings: { privacy: VideoPrivacy.UNLISTED },
-          thumbnailfile: 'custom-thumbnail.jpg',
-          previewfile: 'custom-preview.jpg'
+          thumbnailfile: 'custom-thumbnail-input.jpg'
+        })
+
+        await servers[0].playerSettings.updateForVideo({ theme: 'lucide', videoId: liveVideoUUID })
+        await servers[0].videoEmbedPrivacy.update({
+          videoId: liveVideoUUID,
+          domains: [ 'example.com' ],
+          policy: VideoEmbedPrivacyPolicy.ALLOWLIST
         })
 
         await waitJobs(servers)
@@ -449,7 +464,7 @@ describe('Save replay setting', function () {
         await checkVideosExist(liveVideoUUID, 0, HttpStatusCode.OK_200)
         await checkVideoState(liveVideoUUID, VideoState.WAITING_FOR_LIVE)
         await checkVideoPrivacy(liveVideoUUID, VideoPrivacy.PUBLIC)
-        await checkVideoThumbnail(liveVideoUUID, 'custom-thumbnail.jpg', 'custom-preview.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'custom-thumbnail-280x157.jpg', 'custom-thumbnail-850x480.jpg' ])
       })
 
       it('Should correctly have updated the live and federated it when streaming in the live', async function () {
@@ -491,6 +506,13 @@ describe('Save replay setting', function () {
         await servers[1].videos.get({ id: lastReplayUUID, expectedStatus: HttpStatusCode.OK_200 })
 
         await checkVideoTags(lastReplayUUID, [ 'tag1', 'tag2' ])
+
+        const playerSettings = await servers[0].playerSettings.getForVideo({ videoId: lastReplayUUID })
+        expect(playerSettings.theme).to.equal('lucide')
+
+        const videoEmbedPrivacy = await servers[0].videoEmbedPrivacy.get({ videoId: lastReplayUUID })
+        expect(videoEmbedPrivacy.policy.id).to.equal(VideoEmbedPrivacyPolicy.ALLOWLIST)
+        expect(videoEmbedPrivacy.domains).to.deep.equal([ 'example.com' ])
       })
 
       it('Should have appropriate ended session and replay live session', async function () {
@@ -521,20 +543,19 @@ describe('Save replay setting', function () {
         await checkVideosExist(lastReplayUUID, 1, HttpStatusCode.OK_200)
         await checkVideoState(lastReplayUUID, VideoState.PUBLISHED)
         await checkVideoPrivacy(lastReplayUUID, VideoPrivacy.PUBLIC)
-        await checkVideoThumbnail(lastReplayUUID, 'custom-thumbnail-from-preview.jpg', 'custom-preview.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'custom-thumbnail-280x157.jpg', 'custom-thumbnail-850x480.jpg' ])
       })
 
       it('Should update the live replay thumbnail', async function () {
-        await servers[0].videos.update({ id: lastReplayUUID, attributes: { thumbnailfile: 'custom-thumbnail-2.jpg' } })
+        await servers[0].videos.update({ id: lastReplayUUID, attributes: { thumbnailfile: 'custom-thumbnail-2-850x480.jpg' } })
         await waitJobs(servers)
 
-        await checkVideoThumbnail(liveVideoUUID, 'custom-thumbnail.jpg', 'custom-preview.jpg')
-        await checkVideoThumbnail(lastReplayUUID, 'custom-thumbnail-2.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'custom-thumbnail-280x157.jpg', 'custom-thumbnail-850x480.jpg' ])
+        await checkVideoThumbnails(lastReplayUUID, [ 'custom-thumbnail-2-280x157.jpg', 'custom-thumbnail-2-850x480.jpg' ])
       })
     })
 
     describe('With a second live session', function () {
-
       it('Should update the replay settings', async function () {
         await servers[0].live.update({ videoId: liveVideoUUID, fields: { replaySettings: { privacy: VideoPrivacy.PUBLIC } } })
         await waitJobs(servers)
@@ -620,7 +641,6 @@ describe('Save replay setting', function () {
     })
 
     describe('With terminated sessions', function () {
-
       it('Should correctly terminate the stream on blacklist and blacklist the saved replay video', async function () {
         this.timeout(120000)
 
@@ -662,7 +682,6 @@ describe('Save replay setting', function () {
     })
 
     describe('With a live without custom thumbnail', function () {
-
       it('Should correctly set the default thumbnail to the live replay', async function () {
         this.timeout(120000)
 
@@ -682,18 +701,18 @@ describe('Save replay setting', function () {
         const video = await findExternalSavedVideo(servers[0], liveVideoUUID)
         lastReplayUUID = video.uuid
 
-        await checkVideoThumbnail(liveVideoUUID, 'default-live-thumbnail.jpg', 'default-live-preview.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'default-live-thumbnail-280x157.jpg', 'default-live-thumbnail-850x480.jpg' ])
       })
 
       it('Should update the live replay thumbnail', async function () {
         await servers[0].videos.update({
           id: lastReplayUUID,
-          attributes: { thumbnailfile: 'custom-thumbnail.jpg', previewfile: 'custom-preview.jpg' }
+          attributes: { thumbnailfile: 'custom-thumbnail-input.jpg' }
         })
         await waitJobs(servers)
 
-        await checkVideoThumbnail(liveVideoUUID, 'default-live-thumbnail.jpg', 'default-live-preview.jpg')
-        await checkVideoThumbnail(lastReplayUUID, 'custom-thumbnail.jpg', 'custom-preview.jpg')
+        await checkVideoThumbnails(liveVideoUUID, [ 'default-live-thumbnail-280x157.jpg', 'default-live-thumbnail-850x480.jpg' ])
+        await checkVideoThumbnails(lastReplayUUID, [ 'custom-thumbnail-280x157.jpg', 'custom-thumbnail-850x480.jpg' ])
       })
     })
   })

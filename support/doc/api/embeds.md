@@ -11,10 +11,10 @@ For instance, the playground URL for the above embed URL is `https://my-instance
 ## Quick Start
 
 Given an existing PeerTube embed `<iframe>` **with API enabled** (`https://my-instance.example.com/videos/embed/52a10666-3a18-4e73-93da-e8d3c12c305a?api=1`),
-one can use the PeerTube Embed API to control it by first including the library. You can include it via Yarn with:
+one can use the PeerTube Embed API to control it by first including the library. You can include it via NPM with:
 
 ```
-yarn add @peertube/embed-api
+npm install @peertube/embed-api
 ```
 
 Now just use the `PeerTubePlayer` class exported by the module:
@@ -112,7 +112,7 @@ Default: no subtitle selected and then tries to restore the last subtitle set by
 ### autoplay
 
 Try to automatically play the video.
-Most web browsers disable video autoplay if the user did not interact with the video. You can try to bypass this limitation by muting the video
+Most web browsers disable video autoplay if the user did not interact with the video. You can try to bypass this limitation by muting the video.
 
 Value must be `0` or `1`.
 Default: `0`

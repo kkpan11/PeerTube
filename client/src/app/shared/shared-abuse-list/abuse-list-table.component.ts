@@ -1,29 +1,28 @@
-import { NgClass, NgIf } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, input, viewChild } from '@angular/core'
-import { ActivatedRoute, Router } from '@angular/router'
-import { ConfirmService, HooksService, MarkdownService, Notifier, PluginService, RestPagination, RestTable } from '@app/core'
+import { ChangeDetectionStrategy, Component, inject, input, OnDestroy, OnInit, viewChild } from '@angular/core'
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser'
+import { ConfirmService, HooksService, MarkdownService, Notifier, PluginService } from '@app/core'
 import { formatICU } from '@app/helpers'
 import { NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
-import { AbuseState, AbuseStateType, AdminAbuse } from '@peertube/peertube-models'
+import { AbuseState, AbuseStateType, AdminAbuse, ResultList, UserAbuse } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
 import debug from 'debug'
-import { SharedModule, SortMeta } from 'primeng/api'
-import { TableModule } from 'primeng/table'
-import { lastValueFrom } from 'rxjs'
+import { map, switchMap } from 'rxjs'
 import { ActorAvatarComponent } from '../shared-actor-image/actor-avatar.component'
-import { AdvancedInputFilter, AdvancedInputFilterComponent } from '../shared-forms/advanced-input-filter.component'
+import { AdvancedFilterDef } from '../shared-forms/advanced-input-filter.component'
 import { GlobalIconComponent } from '../shared-icons/global-icon.component'
 import { Account } from '../shared-main/account/account.model'
 import { Actor } from '../shared-main/account/actor.model'
+import { buildDropdownSimpleAndBulkActions, DropdownActionForBuilder } from '../shared-main/buttons/action-dropdown-helpers'
 import { ActionDropdownComponent, DropdownAction } from '../shared-main/buttons/action-dropdown.component'
-import { AutoColspanDirective } from '../shared-main/common/auto-colspan.directive'
 import { PTDatePipe } from '../shared-main/common/date.pipe'
+import { NumberFormatterPipe } from '../shared-main/common/number-formatter.pipe'
 import { Video } from '../shared-main/video/video.model'
 import { VideoService } from '../shared-main/video/video.service'
 import { AbuseService } from '../shared-moderation/abuse.service'
+import { AccountBlockBadgesComponent } from '../shared-moderation/account-block-badges.component'
 import { BlocklistService } from '../shared-moderation/blocklist.service'
 import { VideoBlockService } from '../shared-moderation/video-block.service'
-import { TableExpanderIconComponent } from '../shared-tables/table-expander-icon.component'
+import { TableColumnInfo, TableComponent } from '../shared-tables/table.component'
 import { VideoCellComponent } from '../shared-tables/video-cell.component'
 import { VideoCommentService } from '../shared-video-comment/video-comment.service'
 import { AbuseDetailsComponent } from './abuse-details.component'
@@ -33,32 +32,29 @@ import { ProcessedAbuse } from './processed-abuse.model'
 
 const debugLogger = debug('peertube:moderation:AbuseListTableComponent')
 
+type DataLoaderParameter = Parameters<AbuseListTableComponent['_dataLoader']>[0]
+
 @Component({
   selector: 'my-abuse-list-table',
   templateUrl: './abuse-list-table.component.html',
   styleUrls: [ '../shared-moderation/moderation.scss', './abuse-list-table.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    TableModule,
-    SharedModule,
-    AdvancedInputFilterComponent,
-    NgIf,
     NgbTooltip,
-    TableExpanderIconComponent,
     ActionDropdownComponent,
-    NgClass,
     ActorAvatarComponent,
     VideoCellComponent,
     GlobalIconComponent,
-    AutoColspanDirective,
     AbuseDetailsComponent,
     ModerationCommentModalComponent,
     AbuseMessageModalComponent,
-    PTDatePipe
+    PTDatePipe,
+    TableComponent,
+    NumberFormatterPipe,
+    AccountBlockBadgesComponent
   ]
 })
-export class AbuseListTableComponent extends RestTable implements OnInit, OnDestroy {
-  protected route = inject(ActivatedRoute)
-  protected router = inject(Router)
+export class AbuseListTableComponent implements OnInit, OnDestroy {
   private notifier = inject(Notifier)
   private abuseService = inject(AbuseService)
   private blocklistService = inject(BlocklistService)
@@ -67,56 +63,98 @@ export class AbuseListTableComponent extends RestTable implements OnInit, OnDest
   private videoBlocklistService = inject(VideoBlockService)
   private confirmService = inject(ConfirmService)
   private markdownRenderer = inject(MarkdownService)
+  private domSanitizer = inject(DomSanitizer)
   private hooks = inject(HooksService)
   private pluginService = inject(PluginService)
 
   readonly viewType = input<'admin' | 'user'>(undefined)
 
+  readonly table = viewChild<TableComponent<ProcessedAbuse, DataLoaderParameter>>('table')
   readonly abuseMessagesModal = viewChild<AbuseMessageModalComponent>('abuseMessagesModal')
   readonly moderationCommentModal = viewChild<ModerationCommentModalComponent>('moderationCommentModal')
 
-  abuses: ProcessedAbuse[] = []
-  totalRecords = 0
-  sort: SortMeta = { field: 'createdAt', order: 1 }
-  pagination: RestPagination = { count: this.rowsPerPage, start: 0 }
-
   abuseActions: DropdownAction<ProcessedAbuse>[][] = []
+  bulkActions: DropdownAction<ProcessedAbuse[]>[][] = []
 
-  inputFilters: AdvancedInputFilter[] = [
+  inputFilters: AdvancedFilterDef<DataLoaderParameter>[] = [
     {
-      title: $localize`Advanced filters`,
-      children: [
-        {
-          value: 'state:pending',
-          label: $localize`Unsolved reports`
-        },
-        {
-          value: 'state:accepted',
-          label: $localize`Accepted reports`
-        },
-        {
-          value: 'state:rejected',
-          label: $localize`Refused reports`
-        },
-        {
-          value: 'videoIs:blacklisted',
-          label: $localize`Reports with blocked videos`
-        },
-        {
-          value: 'videoIs:deleted',
-          label: $localize`Reports with deleted videos`
-        }
+      type: 'options',
+      key: 'state',
+      title: $localize`Report state`,
+      options: [
+        { value: 'all', label: $localize`All` },
+        { value: AbuseState.PENDING, label: $localize`Unsolved reports` },
+        { value: AbuseState.ACCEPTED, label: $localize`Accepted reports` },
+        { value: AbuseState.REJECTED, label: $localize`Refused reports` }
       ]
+    },
+    {
+      type: 'options',
+      key: 'videoIs',
+      title: $localize`Video status`,
+      options: [
+        { value: 'all', label: $localize`All` },
+        { value: 'blacklisted', label: $localize`With blocked videos` },
+        { value: 'deleted', label: $localize`With deleted videos` }
+      ]
+    },
+    {
+      type: 'select',
+      title: $localize`Predefined reason`,
+      key: 'predefinedReason',
+      items: this.abuseService.getPredefinedReasons('all')
+        .map(reason => ({ id: reason.id, label: reason.label }))
+    },
+    {
+      type: 'text',
+      key: 'searchReporter',
+      title: $localize`Reporter`,
+      placeholder: $localize`Search by reporter name...`
+    },
+    {
+      type: 'text',
+      key: 'searchReportee',
+      title: $localize`Reportee`,
+      placeholder: $localize`Search by reportee name...`
+    },
+    {
+      type: 'text',
+      constraint: 'numeric',
+      key: 'id',
+      title: $localize`Report ID`,
+      placeholder: $localize`Search by report ID...`
     }
   ]
 
+  columns: TableColumnInfo<string>[] = [
+    { id: 'target', label: $localize`Video/Comment/Account`, sortable: false },
+    { id: 'createdAt', label: $localize`Created`, sortable: true },
+    { id: 'state', label: $localize`State`, sortable: true },
+    { id: 'comment', label: $localize`Messages`, sortable: false }
+  ]
+
+  dataLoader: typeof this._dataLoader
+
+  constructor () {
+    this.dataLoader = this._dataLoader.bind(this)
+  }
+
   async ngOnInit () {
     const viewType = this.viewType()
+
     if (viewType === 'admin') {
-      this.pluginService.addAction('admin-abuse-list:load-data', () => this.reloadDataInternal())
+      this.pluginService.addAction('admin-abuse-list:load-data', () => this.table().loadData())
+
+      this.columns = [
+        { id: 'reporterAccount', label: $localize`Reporter`, sortable: false },
+
+        ...this.columns,
+
+        { id: 'internalNote', label: $localize`Internal note`, sortable: false }
+      ]
     }
 
-    const abuseActions: DropdownAction<ProcessedAbuse>[][] = [
+    const { simpleActions, bulkActions } = buildDropdownSimpleAndBulkActions<ProcessedAbuse>([
       this.buildInternalActions(),
 
       this.buildFlaggedAccountActions(),
@@ -126,13 +164,13 @@ export class AbuseListTableComponent extends RestTable implements OnInit, OnDest
       this.buildVideoActions(),
 
       this.buildAccountActions()
-    ]
+    ])
 
     this.abuseActions = viewType === 'admin'
-      ? await this.hooks.wrapObject(abuseActions, 'admin-comments', 'filter:admin-abuse-list.actions.create.result')
-      : abuseActions
+      ? await this.hooks.wrapObject(simpleActions, 'admin-comments', 'filter:admin-abuse-list.actions.create.result')
+      : simpleActions
 
-    this.initialize()
+    this.bulkActions = bulkActions.filter(actions => actions.length !== 0)
   }
 
   ngOnDestroy () {
@@ -145,16 +183,12 @@ export class AbuseListTableComponent extends RestTable implements OnInit, OnDest
     return this.viewType() === 'admin'
   }
 
-  getIdentifier () {
-    return 'AbuseListTableComponent'
-  }
-
-  openModerationCommentModal (abuse: AdminAbuse) {
-    this.moderationCommentModal().openModal(abuse)
+  openModerationCommentModal (abuses: AdminAbuse[]) {
+    this.moderationCommentModal().openModal(abuses)
   }
 
   onModerationCommentUpdated () {
-    this.reloadData()
+    this.table().loadData()
   }
 
   isAbuseAccepted (abuse: AdminAbuse) {
@@ -177,32 +211,17 @@ export class AbuseListTableComponent extends RestTable implements OnInit, OnDest
     return '/a/' + abuse.flaggedAccount.nameWithHost
   }
 
-  async removeAbuse (abuse: AdminAbuse) {
-    const res = await this.confirmService.confirm($localize`Do you really want to delete this abuse report?`, $localize`Delete`)
-    if (res === false) return
-
-    this.abuseService.removeAbuse(abuse)
-      .subscribe({
-        next: () => {
-          this.notifier.success($localize`Abuse deleted.`)
-          this.reloadData()
-        },
-
-        error: err => this.notifier.error(err.message)
-      })
-  }
-
   updateAbuseState (abuse: AdminAbuse, state: AbuseStateType) {
-    this.abuseService.updateAbuse(abuse, { state })
+    this.abuseService.updateAbuse([ abuse ], { state })
       .subscribe({
-        next: () => this.reloadData(),
+        next: () => this.table().loadData(),
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
   onCountMessagesUpdated (event: { abuseId: number, countMessages: number }) {
-    const abuse = this.abuses.find(a => a.id === event.abuseId)
+    const abuse = this.table().data.find(a => a.id === event.abuseId)
 
     if (!abuse) {
       logger.error(`Cannot find abuse ${event.abuseId}`)
@@ -237,280 +256,476 @@ export class AbuseListTableComponent extends RestTable implements OnInit, OnDest
     )
   }
 
-  protected async reloadDataInternal () {
+  private _dataLoader (options: Parameters<AbuseService['listAdminAbuses']>[0]) {
     debugLogger('Loading data.')
 
-    const options = {
-      pagination: this.pagination,
-      sort: this.sort,
-      search: this.search
-    }
-
     const observable = this.viewType() === 'admin'
-      ? this.abuseService.getAdminAbuses(options)
-      : this.abuseService.getUserAbuses(options)
+      ? this.abuseService.listAdminAbuses(options)
+      : this.abuseService.listUserAbuses(options)
 
-    try {
-      const resultList = await lastValueFrom(observable)
+    return observable.pipe(
+      switchMap(async (resultList: ResultList<UserAbuse | AdminAbuse>) => {
+        const abuses: ProcessedAbuse[] = []
 
-      this.totalRecords = resultList.total
+        for (const abuse of resultList.data) {
+          const video = abuse.video as ProcessedAbuse['video']
 
-      this.abuses = []
-
-      for (const a of resultList.data) {
-        const abuse = a as ProcessedAbuse
-
-        abuse.reasonHtml = await this.toHtml(abuse.reason)
-
-        if (abuse.moderationComment) {
-          abuse.moderationCommentHtml = await this.toHtml(abuse.moderationComment)
-        }
-
-        if (abuse.video) {
-          if (abuse.video.channel?.ownerAccount) {
-            abuse.video.channel.ownerAccount = new Account(abuse.video.channel.ownerAccount)
+          if (abuse.video?.channel?.ownerAccount) {
+            video.channel.ownerAccount = new Account(abuse.video.channel.ownerAccount)
           }
-        }
 
-        if (abuse.comment) {
-          if (abuse.comment.deleted) {
-            abuse.commentHTML = $localize`Deleted comment`
-          } else {
-            abuse.commentHTML = await this.markdownRenderer.textMarkdownToHTML({ markdown: abuse.comment.text, withHtml: true })
+          let commentHTML: SafeHtml
+
+          if (abuse.comment) {
+            if (abuse.comment.deleted) {
+              commentHTML = this.domSanitizer.bypassSecurityTrustHtml($localize`Deleted comment`)
+            } else {
+              // Already sanitized by MarkdownService
+              commentHTML = this.domSanitizer.bypassSecurityTrustHtml(
+                await this.markdownRenderer.textMarkdownToHTML({
+                  markdown: abuse.comment.text,
+                  withHtml: true
+                })
+              )
+            }
           }
+
+          if (abuse.updatedAt === abuse.createdAt) delete abuse.updatedAt
+
+          abuses.push({
+            ...abuse,
+
+            video,
+
+            commentHTML,
+
+            reasonHtml: abuse.reason
+              ? await this.toHtml(abuse.reason)
+              : undefined,
+
+            moderationCommentHtml: (abuse as AdminAbuse).moderationComment
+              ? await this.toHtml((abuse as AdminAbuse).moderationComment)
+              : undefined,
+
+            reporterAccount: (abuse as AdminAbuse).reporterAccount
+              ? new Account((abuse as AdminAbuse).reporterAccount)
+              : undefined,
+
+            flaggedAccount: abuse.flaggedAccount
+              ? new Account(abuse.flaggedAccount)
+              : undefined
+          })
         }
 
-        if (abuse.reporterAccount) {
-          abuse.reporterAccount = new Account(abuse.reporterAccount)
-        }
+        return { total: resultList.total, data: abuses }
+      }),
+      switchMap(({ data, total }) => {
+        const accounts = data.map(abuse => abuse.reporterAccount)
+          .concat(data.map(abuse => abuse.flaggedAccount))
+          .filter((account): account is Account => !!account)
 
-        if (abuse.flaggedAccount) {
-          abuse.flaggedAccount = new Account(abuse.flaggedAccount)
-        }
+        const handlesSet = new Set(accounts.map(account => account.nameWithHostForced))
+        const hostsSet = new Set(accounts.map(account => account.host).filter(host => !!host))
 
-        if (abuse.updatedAt === abuse.createdAt) delete abuse.updatedAt
+        return this.blocklistService.getStatus({ accounts: Array.from(handlesSet), hosts: Array.from(hostsSet) }).pipe(
+          map(blockStatus => {
+            for (const account of accounts) {
+              account.mutedByInstance = blockStatus.accounts[account.nameWithHostForced].blockedByServer
+              account.mutedServerByInstance = blockStatus.hosts[account.host].blockedByServer
+            }
 
-        this.abuses.push(abuse)
-      }
-    } catch (err) {
-      this.notifier.error(err.message)
+            return { total, data }
+          })
+        )
+      })
+    )
+  }
+
+  private buildInternalActions (): DropdownActionForBuilder<ProcessedAbuse>[] {
+    const messagesAction: DropdownActionForBuilder<ProcessedAbuse> = {
+      label: this.isAdminView()
+        ? $localize`Messages with reporter...`
+        : $localize`Messages with moderators...`,
+      handler: abuses => this.openAbuseMessagesModal(abuses[0]),
+      isDisplayed: abuse => this.isLocalAbuse(abuse),
+      enableBulk: false
     }
-  }
 
-  private buildInternalActions (): DropdownAction<ProcessedAbuse>[] {
+    if (!this.isAdminView()) return [ messagesAction ]
+
     return [
       {
-        label: $localize`Internal actions`,
-        isHeader: true
+        label: () => $localize`Accept/Reject`,
+        isHeader: true,
+        enableBulk: true
+      },
+
+      {
+        label: () => $localize`Mark as accepted`,
+        handler: abuses => this.updateAbusesState(abuses, AbuseState.ACCEPTED),
+        isDisplayed: abuse => this.isAdminView() && !this.isAbuseAccepted(abuse),
+        enableBulk: true
       },
       {
-        label: this.isAdminView()
-          ? $localize`Messages with reporter`
-          : $localize`Messages with moderators`,
-        handler: abuse => this.openAbuseMessagesModal(abuse),
-        isDisplayed: abuse => this.isLocalAbuse(abuse)
+        label: () => $localize`Mark as rejected`,
+        handler: abuses => this.updateAbusesState(abuses, AbuseState.REJECTED),
+        isDisplayed: abuse => this.isAdminView() && !this.isAbuseRejected(abuse),
+        enableBulk: true
+      },
+
+      {
+        label: () => $localize`Internal actions`,
+        isHeader: true,
+        enableBulk: true
+      },
+
+      messagesAction,
+
+      {
+        label: () => $localize`Set internal note...`,
+        handler: abuses => this.openModerationCommentModal(abuses),
+        isDisplayed: () => this.isAdminView(),
+        enableBulk: true
       },
       {
-        label: $localize`Update internal note`,
-        handler: abuse => this.openModerationCommentModal(abuse),
-        isDisplayed: abuse => this.isAdminView() && !!abuse.moderationComment
-      },
-      {
-        label: $localize`Mark as accepted`,
-        handler: abuse => this.updateAbuseState(abuse, AbuseState.ACCEPTED),
-        isDisplayed: abuse => this.isAdminView() && !this.isAbuseAccepted(abuse)
-      },
-      {
-        label: $localize`Mark as rejected`,
-        handler: abuse => this.updateAbuseState(abuse, AbuseState.REJECTED),
-        isDisplayed: abuse => this.isAdminView() && !this.isAbuseRejected(abuse)
-      },
-      {
-        label: $localize`Add internal note`,
-        handler: abuse => this.openModerationCommentModal(abuse),
-        isDisplayed: abuse => this.isAdminView() && !abuse.moderationComment
-      },
-      {
-        label: $localize`Delete report`,
-        handler: abuse => this.removeAbuse(abuse),
-        isDisplayed: () => this.isAdminView()
+        label: abuses => formatICU($localize`{count, plural, =1 {Delete report} other {Delete reports}}`, { count: abuses.length }),
+        handler: abuses => this.removeAbuses(abuses),
+        isDisplayed: () => this.isAdminView(),
+        enableBulk: true
       }
     ]
   }
 
-  private buildFlaggedAccountActions (): DropdownAction<ProcessedAbuse>[] {
+  private buildFlaggedAccountActions (): DropdownActionForBuilder<ProcessedAbuse>[] {
     if (!this.isAdminView()) return []
 
     return [
       {
-        label: $localize`Actions for the flagged account`,
+        label: entries => {
+          return formatICU($localize`Actions for the flagged {count, plural, =1 {account} other {accounts}}`, { count: entries.length })
+        },
         isHeader: true,
-        isDisplayed: abuse => abuse.flaggedAccount && !abuse.comment && !abuse.video
+        isDisplayed: abuse => abuse.flaggedAccount && !abuse.comment && !abuse.video,
+        enableBulk: true
       },
 
       {
-        label: $localize`Mute account`,
+        label: entries => formatICU($localize`Mute flagged {count, plural, =1 {account} other {accounts}}`, { count: entries.length }),
         isDisplayed: abuse => abuse.flaggedAccount && !abuse.comment && !abuse.video,
-        handler: abuse => this.muteAccountHelper(abuse.flaggedAccount)
+        handler: abuses => this.muteFlaggedAccounts(abuses),
+        enableBulk: true
       },
 
       {
-        label: $localize`Mute server account`,
+        label: entries => formatICU($localize`Mute flagged {count, plural, =1 {platform} other {platforms}}`, { count: entries.length }),
         isDisplayed: abuse => abuse.flaggedAccount && !abuse.comment && !abuse.video,
-        handler: abuse => this.muteServerHelper(abuse.flaggedAccount.host)
+        handler: abuses => this.muteFlaggedAccountServers(abuses),
+        enableBulk: true
       }
     ]
   }
 
-  private buildAccountActions (): DropdownAction<ProcessedAbuse>[] {
+  private buildAccountActions (): DropdownActionForBuilder<ProcessedAbuse>[] {
     if (!this.isAdminView()) return []
 
     return [
       {
-        label: $localize`Actions for the reporter`,
+        label: entries => formatICU($localize`Actions for the {count, plural, =1 {reporter} other {reporters}}`, { count: entries.length }),
         isHeader: true,
-        isDisplayed: abuse => !!abuse.reporterAccount
-      },
-
-      {
-        label: $localize`Mute reporter`,
         isDisplayed: abuse => !!abuse.reporterAccount,
-        handler: abuse => this.muteAccountHelper(abuse.reporterAccount)
+        enableBulk: true
       },
 
       {
-        label: $localize`Mute server`,
+        label: entries => formatICU($localize`Mute {count, plural, =1 {reporter} other {reporters}}`, { count: entries.length }),
+        isDisplayed: abuse => !!abuse.reporterAccount,
+        handler: abuses => this.muteReporters(abuses),
+        enableBulk: true
+      },
+
+      {
+        label: entries => formatICU($localize`Mute reporter {count, plural, =1 {platform} other {platforms}}`, { count: entries.length }),
         isDisplayed: abuse => abuse.reporterAccount && !abuse.reporterAccount.userId,
-        handler: abuse => this.muteServerHelper(abuse.reporterAccount.host)
+        handler: abuses => this.muteReporterServers(abuses),
+        enableBulk: true
       }
     ]
   }
 
-  private buildVideoActions (): DropdownAction<ProcessedAbuse>[] {
+  private buildVideoActions (): DropdownActionForBuilder<ProcessedAbuse>[] {
     if (!this.isAdminView()) return []
 
     return [
       {
-        label: $localize`Actions for the video`,
+        label: entries => formatICU($localize`Actions for the {count, plural, =1 {video} other {videos}}`, { count: entries.length }),
         isHeader: true,
-        isDisplayed: abuse => abuse.video && !abuse.video.deleted
-      },
-      {
-        label: $localize`Block video`,
-        isDisplayed: abuse => abuse.video && !abuse.video.deleted && !abuse.video.blacklisted,
-        handler: abuse => {
-          this.videoBlocklistService.blockVideo([ { videoId: abuse.video.id, unfederate: abuse.video.channel.isLocal } ])
-            .subscribe({
-              next: () => {
-                this.notifier.success($localize`Video blocked.`)
-
-                this.updateAbuseState(abuse, AbuseState.ACCEPTED)
-              },
-
-              error: err => this.notifier.error(err.message)
-            })
-        }
-      },
-      {
-        label: $localize`Unblock video`,
-        isDisplayed: abuse => abuse.video && !abuse.video.deleted && abuse.video.blacklisted,
-        handler: abuse => {
-          this.videoBlocklistService.unblockVideo(abuse.video.id)
-            .subscribe({
-              next: () => {
-                this.notifier.success($localize`Video unblocked.`)
-
-                this.updateAbuseState(abuse, AbuseState.ACCEPTED)
-              },
-
-              error: err => this.notifier.error(err.message)
-            })
-        }
-      },
-      {
-        label: $localize`Delete video`,
         isDisplayed: abuse => abuse.video && !abuse.video.deleted,
-        handler: async abuse => {
-          const res = await this.confirmService.confirm(
-            $localize`Do you really want to delete this video?`,
-            $localize`Delete`
-          )
-          if (res === false) return
-
-          this.videoService.removeVideo(abuse.video.id)
-            .subscribe({
-              next: () => {
-                this.notifier.success($localize`Video deleted.`)
-
-                this.updateAbuseState(abuse, AbuseState.ACCEPTED)
-              },
-
-              error: err => this.notifier.error(err.message)
-            })
-        }
+        enableBulk: true
+      },
+      {
+        label: entries => formatICU($localize`Block the {count, plural, =1 {video} other {videos}}`, { count: entries.length }),
+        isDisplayed: abuse => abuse.video && !abuse.video.deleted && !abuse.video.blacklisted,
+        handler: abuses => this.blockAbuseVideos(abuses),
+        enableBulk: true
+      },
+      {
+        label: entries => formatICU($localize`Unblock the {count, plural, =1 {video} other {videos}}`, { count: entries.length }),
+        isDisplayed: abuse => abuse.video && !abuse.video.deleted && abuse.video.blacklisted,
+        handler: abuses => this.unblockAbuseVideos(abuses),
+        enableBulk: true
+      },
+      {
+        label: entries => formatICU($localize`Delete the {count, plural, =1 {video} other {videos}}`, { count: entries.length }),
+        isDisplayed: abuse => abuse.video && !abuse.video.deleted,
+        handler: abuses => this.deleteAbuseVideos(abuses),
+        enableBulk: true
       }
     ]
   }
 
-  private buildCommentActions (): DropdownAction<ProcessedAbuse>[] {
+  private buildCommentActions (): DropdownActionForBuilder<ProcessedAbuse>[] {
     if (!this.isAdminView()) return []
 
     return [
       {
-        label: $localize`Actions for the comment`,
+        label: entries => {
+          return formatICU($localize`Actions for {count, plural, =1 {the comment} other {the comments}}`, { count: entries.length })
+        },
         isHeader: true,
-        isDisplayed: abuse => abuse.comment && !abuse.comment.deleted
+        isDisplayed: abuse => abuse.comment && !abuse.comment.deleted,
+        enableBulk: true
       },
 
       {
-        label: $localize`Delete comment`,
+        label: entries => formatICU($localize`Delete {count, plural, =1 {comment} other {comments}}`, { count: entries.length }),
         isDisplayed: abuse => abuse.comment && !abuse.comment.deleted,
-        handler: async abuse => {
-          const res = await this.confirmService.confirm(
-            $localize`Do you really want to delete this comment?`,
-            $localize`Delete`
-          )
-          if (res === false) return
-
-          this.commentService.deleteVideoComment(abuse.comment.video.id, abuse.comment.id)
-            .subscribe({
-              next: () => {
-                this.notifier.success($localize`Comment deleted.`)
-
-                this.updateAbuseState(abuse, AbuseState.ACCEPTED)
-              },
-
-              error: err => this.notifier.error(err.message)
-            })
-        }
+        handler: abuses => this.deleteAbuseComments(abuses),
+        enableBulk: true
       }
     ]
   }
 
-  private muteAccountHelper (account: Account) {
-    this.blocklistService.blockAccountByInstance(account)
+  private async removeAbuses (abuses: AdminAbuse[]) {
+    const message = formatICU(
+      $localize`Do you really want to delete {count, plural, =1 {this report?} other {{count} reports?}}`,
+      { count: abuses.length }
+    )
+
+    const res = await this.confirmService.confirm(message, $localize`Delete`)
+    if (res === false) return
+
+    this.abuseService.removeAbuse(abuses)
       .subscribe({
         next: () => {
-          this.notifier.success($localize`Account ${account.nameWithHost} muted by your platform.`)
-          account.mutedByInstance = true
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Abuse deleted.} other {{count} abuses deleted.}}`,
+              { count: abuses.length }
+            )
+          )
+
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
-  private muteServerHelper (host: string) {
-    this.blocklistService.blockServerByInstance(host)
+  private updateAbusesState (abuses: AdminAbuse[], state: AbuseStateType) {
+    this.abuseService.updateAbuse(abuses, { state })
       .subscribe({
         next: () => {
-          this.notifier.success($localize`${host} muted by your platform.`)
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
-  private toHtml (text: string) {
-    return this.markdownRenderer.textMarkdownToHTML({ markdown: text })
+  private muteFlaggedAccounts (abuses: ProcessedAbuse[]) {
+    const accounts = abuses.map(abuse => abuse.flaggedAccount)
+
+    this.blocklistService.blockAccountByInstance(accounts)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Flagged account muted.} other {{count} flagged accounts muted.}}`,
+              { count: accounts.length }
+            )
+          )
+
+          this.table().loadData()
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private muteFlaggedAccountServers (abuses: ProcessedAbuse[]) {
+    const hosts = abuses.map(abuse => abuse.flaggedAccount.host)
+
+    this.blocklistService.blockServerByInstance(hosts)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Flagged account server muted.} other {{count} flagged account servers muted.}}`,
+              { count: hosts.length }
+            )
+          )
+
+          this.table().loadData()
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private muteReporters (abuses: ProcessedAbuse[]) {
+    const accounts = abuses.map(abuse => abuse.reporterAccount)
+
+    this.blocklistService.blockAccountByInstance(accounts)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Reporter muted.} other {{count} reporters muted.}}`,
+              { count: accounts.length }
+            )
+          )
+
+          for (const account of accounts) {
+            account.mutedByInstance = true
+          }
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private muteReporterServers (abuses: ProcessedAbuse[]) {
+    const hosts = abuses.map(abuse => abuse.reporterAccount.host)
+
+    this.blocklistService.blockServerByInstance(hosts)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Reporter server muted.} other {{count} reporter servers muted.}}`,
+              { count: hosts.length }
+            )
+          )
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private blockAbuseVideos (abuses: ProcessedAbuse[]) {
+    const videos = abuses.map(abuse => ({
+      videoId: abuse.video.id,
+      unfederate: abuse.video.channel.isLocal
+    }))
+
+    this.videoBlocklistService.blockVideos(videos)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Video blocked.} other {{count} videos blocked.}}`,
+              { count: videos.length }
+            )
+          )
+
+          this.updateAbusesState(abuses, AbuseState.ACCEPTED)
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private unblockAbuseVideos (abuses: ProcessedAbuse[]) {
+    const videoIds = abuses.map(abuse => abuse.video.id)
+
+    this.videoBlocklistService.unblockVideos(videoIds)
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Video unblocked.} other {{count} videos unblocked.}}`,
+              { count: videoIds.length }
+            )
+          )
+
+          this.updateAbusesState(abuses, AbuseState.ACCEPTED)
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private async deleteAbuseVideos (abuses: ProcessedAbuse[]) {
+    const res = await this.confirmService.confirm(
+      formatICU(
+        $localize`Do you really want to delete {count, plural, =1 {this video?} other {{count} videos?}}`,
+        { count: abuses.length }
+      ),
+      $localize`Delete`
+    )
+    if (res === false) return
+
+    this.videoService.removeVideo(abuses.map(abuse => abuse.video.id))
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Video deleted.} other {{count} videos deleted.}}`,
+              { count: abuses.length }
+            )
+          )
+
+          this.updateAbusesState(abuses, AbuseState.ACCEPTED)
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private async deleteAbuseComments (abuses: ProcessedAbuse[]) {
+    const res = await this.confirmService.confirm(
+      formatICU(
+        $localize`Do you really want to delete {count, plural, =1 {this comment?} other {{count} comments?}}`,
+        { count: abuses.length }
+      ),
+      $localize`Delete`
+    )
+    if (res === false) return
+
+    this.commentService.deleteComments(
+      abuses.map(abuse => ({
+        videoId: abuse.comment.video.id,
+        commentId: abuse.comment.id
+      }))
+    )
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {Comment deleted.} other {{count} comments deleted.}}`,
+              { count: abuses.length }
+            )
+          )
+
+          this.updateAbusesState(abuses, AbuseState.ACCEPTED)
+        },
+
+        error: err => this.notifier.handleError(err)
+      })
+  }
+
+  private async toHtml (text: string) {
+    // Already sanitized by MarkdownService
+    return this.domSanitizer.bypassSecurityTrustHtml(await this.markdownRenderer.textMarkdownToHTML({ markdown: text }))
   }
 }

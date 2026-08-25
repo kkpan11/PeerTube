@@ -6,6 +6,7 @@ import {
   SettingValue,
   type PluginType_Type
 } from '@peertube/peertube-models'
+import { isStableOrUnstableVersionValid, isStableVersionValid } from '@server/helpers/custom-validators/misc.js'
 import { MPlugin, MPluginFormattable } from '@server/types/models/index.js'
 import { FindAndCountOptions, QueryTypes, json } from 'sequelize'
 import { AllowNull, Column, CreatedAt, DataType, DefaultScope, Is, Table, UpdatedAt } from 'sequelize-typescript'
@@ -13,18 +14,16 @@ import {
   isPluginDescriptionValid,
   isPluginHomepage,
   isPluginNameValid,
-  isPluginStableOrUnstableVersionValid,
-  isPluginStableVersionValid,
   isPluginTypeValid
 } from '../../helpers/custom-validators/plugins.js'
 import { SequelizeModel, getSort, throwIfNotValid } from '../shared/index.js'
+import { CONSTRAINTS_FIELDS } from '@server/initializers/constants.js'
 
 @DefaultScope(() => ({
   attributes: {
     exclude: [ 'storage' ]
   }
 }))
-
 @Table({
   tableName: 'plugin',
   indexes: [
@@ -35,62 +34,61 @@ import { SequelizeModel, getSort, throwIfNotValid } from '../shared/index.js'
   ]
 })
 export class PluginModel extends SequelizeModel<PluginModel> {
-
   @AllowNull(false)
   @Is('PluginName', value => throwIfNotValid(value, isPluginNameValid, 'name'))
   @Column
-  name: string
+  declare name: string
 
   @AllowNull(false)
   @Is('PluginType', value => throwIfNotValid(value, isPluginTypeValid, 'type'))
   @Column
-  type: PluginType_Type
+  declare type: PluginType_Type
 
   @AllowNull(false)
-  @Is('PluginVersion', value => throwIfNotValid(value, isPluginStableOrUnstableVersionValid, 'version'))
+  @Is('PluginVersion', value => throwIfNotValid(value, isStableOrUnstableVersionValid, 'version'))
   @Column
-  version: string
+  declare version: string
 
   @AllowNull(true)
-  @Is('PluginLatestVersion', value => throwIfNotValid(value, isPluginStableVersionValid, 'version'))
+  @Is('PluginLatestVersion', value => throwIfNotValid(value, isStableVersionValid, 'latestVersion'))
   @Column
-  latestVersion: string
+  declare latestVersion: string
 
   @AllowNull(false)
   @Column
-  enabled: boolean
+  declare enabled: boolean
 
   @AllowNull(false)
   @Column
-  uninstalled: boolean
+  declare uninstalled: boolean
 
   @AllowNull(false)
   @Column
-  peertubeEngine: string
+  declare peertubeEngine: string
 
   @AllowNull(true)
   @Is('PluginDescription', value => throwIfNotValid(value, isPluginDescriptionValid, 'description'))
-  @Column
-  description: string
+  @Column(DataType.STRING(CONSTRAINTS_FIELDS.PLUGINS.DESCRIPTION.max))
+  declare description: string
 
   @AllowNull(false)
   @Is('PluginHomepage', value => throwIfNotValid(value, isPluginHomepage, 'homepage'))
-  @Column
-  homepage: string
+  @Column(DataType.STRING(CONSTRAINTS_FIELDS.COMMONS.URL.max))
+  declare homepage: string
 
   @AllowNull(true)
   @Column(DataType.JSONB)
-  settings: any
+  declare settings: any
 
   @AllowNull(true)
   @Column(DataType.JSONB)
-  storage: any
+  declare storage: any
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   static listEnabledPluginsAndThemes (): Promise<MPlugin[]> {
     const query = {
@@ -133,9 +131,9 @@ export class PluginModel extends SequelizeModel<PluginModel> {
 
     return PluginModel.findOne(query)
       .then(p => {
-        if (!p?.settings || p.settings === undefined) {
+        if (p?.settings?.[settingName] === undefined) {
           const registered = registeredSettings.find(s => s.name === settingName)
-          if (!registered || registered.default === undefined) return undefined
+          if (registered?.default === undefined) return undefined
 
           return registered.default
         }
@@ -163,7 +161,7 @@ export class PluginModel extends SequelizeModel<PluginModel> {
         const result: SettingEntries = {}
 
         for (const name of settingNames) {
-          if (!p?.settings || p.settings[name] === undefined) {
+          if (p?.settings?.[name] === undefined) {
             const registered = registeredSettings.find(s => s.name === name)
 
             if (registered?.default !== undefined) {
@@ -219,7 +217,7 @@ export class PluginModel extends SequelizeModel<PluginModel> {
 
   static storeData (pluginName: string, pluginType: PluginType_Type, key: string, data: any) {
     const query = 'UPDATE "plugin" SET "storage" = jsonb_set(coalesce("storage", \'{}\'), :key, :data::jsonb) ' +
-    'WHERE "name" = :pluginName AND "type" = :pluginType'
+      'WHERE "name" = :pluginName AND "type" = :pluginType'
 
     const jsonPath = '{' + key + '}'
 
@@ -229,7 +227,20 @@ export class PluginModel extends SequelizeModel<PluginModel> {
     }
 
     return PluginModel.sequelize.query(query, options)
-                      .then(() => undefined)
+      .then(() => undefined)
+  }
+
+  static deleteData (pluginName: string, pluginType: PluginType_Type, key: string) {
+    const query = 'UPDATE "plugin" SET "storage" = "storage" - :key ' +
+      'WHERE "name" = :pluginName AND "type" = :pluginType'
+
+    const options = {
+      replacements: { pluginName, pluginType, key },
+      type: QueryTypes.UPDATE
+    }
+
+    return PluginModel.sequelize.query(query, options)
+      .then(() => undefined)
   }
 
   static listForApi (options: {
@@ -312,5 +323,4 @@ export class PluginModel extends SequelizeModel<PluginModel> {
       updatedAt: this.updatedAt
     }
   }
-
 }

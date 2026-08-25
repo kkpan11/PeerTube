@@ -1,16 +1,15 @@
 import { RunnerJobState, RunnerJobStateType } from '@peertube/peertube-models'
-import { retryTransactionWrapper } from '@server/helpers/database-utils.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { runInReadCommittedTransaction } from '@server/helpers/database-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { RUNNER_JOBS } from '@server/initializers/constants.js'
-import { sequelizeTypescript } from '@server/initializers/database.js'
 import { MRunner, MRunnerJob } from '@server/types/models/runners/index.js'
 import express from 'express'
 
-const lTags = loggerTagsFactory('runner')
+const logger = createLogger('runner')
 
 const updatingRunner = new Set<number>()
 
-function updateLastRunnerContact (req: express.Request, runner: MRunner) {
+export function updateLastRunnerContact (req: express.Request, runner: MRunner) {
   const now = new Date()
 
   // Don't update last runner contact too often
@@ -22,17 +21,15 @@ function updateLastRunnerContact (req: express.Request, runner: MRunner) {
   runner.lastContact = now
   runner.ip = req.ip
 
-  logger.debug('Updating last runner contact for %s', runner.name, lTags(runner.name))
+  logger.debug('Updating last runner contact for %s', runner.name)
 
-  retryTransactionWrapper(() => {
-    return sequelizeTypescript.transaction(async transaction => {
-      return runner.save({ transaction })
-    })
-  }).catch(err => logger.error('Cannot update last runner contact for %s', runner.name, { err, ...lTags(runner.name) }))
+  runInReadCommittedTransaction(async transaction => {
+    return runner.save({ transaction })
+  }).catch(err => logger.error('Cannot update last runner contact for %s', runner.name, { err }))
     .finally(() => updatingRunner.delete(runner.id))
 }
 
-function runnerJobCanBeCancelled (runnerJob: MRunnerJob) {
+export function runnerJobCanBeCancelled (runnerJob: MRunnerJob) {
   const allowedStates = new Set<RunnerJobStateType>([
     RunnerJobState.PENDING,
     RunnerJobState.PROCESSING,
@@ -40,9 +37,4 @@ function runnerJobCanBeCancelled (runnerJob: MRunnerJob) {
   ])
 
   return allowedStates.has(runnerJob.state)
-}
-
-export {
-  updateLastRunnerContact,
-  runnerJobCanBeCancelled
 }

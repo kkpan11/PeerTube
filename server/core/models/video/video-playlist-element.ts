@@ -1,5 +1,25 @@
-import { AggregateOptions, Op, ScopeOptions, Sequelize, Transaction } from 'sequelize'
 import {
+  PlaylistElementObject,
+  VideoPlaylistElement,
+  VideoPlaylistElementType,
+  VideoPrivacy,
+  VideoPrivacyType
+} from '@peertube/peertube-models'
+import { InternalEventEmitter } from '@server/lib/internal-event-emitter.js'
+import { MUserAccountId } from '@server/types/models/index.js'
+import {
+  type MVideoPlaylistElement,
+  MVideoPlaylistElementAP,
+  MVideoPlaylistElementFormattable,
+  MVideoPlaylistElementVideoThumbnail,
+  MVideoPlaylistElementVideoUrl,
+  MVideoPlaylistElementVideoUrlPlaylistPrivacy
+} from '@server/types/models/video/video-playlist-element.js'
+import { ScopeOptions, Transaction } from 'sequelize'
+import {
+  AfterCreate,
+  AfterDestroy,
+  AfterUpdate,
   AllowNull,
   BelongsTo,
   Column,
@@ -9,33 +29,18 @@ import {
   ForeignKey,
   Is,
   IsInt,
-  Min, Table,
+  Min,
+  Table,
   UpdatedAt
 } from 'sequelize-typescript'
 import validator from 'validator'
-import { forceNumber } from '@peertube/peertube-core-utils'
-import {
-  PlaylistElementObject,
-  VideoPlaylistElement,
-  VideoPlaylistElementType,
-  VideoPrivacy,
-  VideoPrivacyType
-} from '@peertube/peertube-models'
-import { MUserAccountId } from '@server/types/models/index.js'
-import {
-  MVideoPlaylistElement,
-  MVideoPlaylistElementAP,
-  MVideoPlaylistElementFormattable,
-  MVideoPlaylistElementVideoUrlPlaylistPrivacy,
-  MVideoPlaylistElementVideoThumbnail,
-  MVideoPlaylistElementVideoUrl
-} from '@server/types/models/video/video-playlist-element.js'
 import { isActivityPubUrlValid } from '../../helpers/custom-validators/activitypub/misc.js'
 import { CONSTRAINTS_FIELDS, USER_EXPORT_MAX_ITEMS } from '../../initializers/constants.js'
 import { AccountModel } from '../account/account.js'
 import { SequelizeModel, getSort, throwIfNotValid } from '../shared/index.js'
+import { getNextPositionOf, increasePositionOf, reassignPositionOf } from '../shared/position.js'
 import { VideoPlaylistModel } from './video-playlist.js'
-import { ForAPIOptions, ScopeNames as VideoScopeNames, VideoModel } from './video.js'
+import { ForAPIOptions, VideoModel, ScopeNames as VideoScopeNames } from './video.js'
 
 @Table({
   tableName: 'videoPlaylistElement',
@@ -54,38 +59,38 @@ import { ForAPIOptions, ScopeNames as VideoScopeNames, VideoModel } from './vide
 })
 export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistElementModel> {
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @AllowNull(true)
   @Is('VideoPlaylistUrl', value => throwIfNotValid(value, isActivityPubUrlValid, 'url', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.VIDEO_PLAYLISTS.URL.max))
-  url: string
+  declare url: string
 
   @AllowNull(false)
   @Default(1)
   @IsInt
   @Min(1)
   @Column
-  position: number
+  declare position: number
 
   @AllowNull(true)
   @IsInt
   @Min(0)
   @Column
-  startTimestamp: number
+  declare startTimestamp: number
 
   @AllowNull(true)
   @IsInt
   @Min(0)
   @Column
-  stopTimestamp: number
+  declare stopTimestamp: number
 
   @ForeignKey(() => VideoPlaylistModel)
   @Column
-  videoPlaylistId: number
+  declare videoPlaylistId: number
 
   @BelongsTo(() => VideoPlaylistModel, {
     foreignKey: {
@@ -93,11 +98,11 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
     },
     onDelete: 'CASCADE'
   })
-  VideoPlaylist: Awaited<VideoPlaylistModel>
+  declare VideoPlaylist: Awaited<VideoPlaylistModel>
 
   @ForeignKey(() => VideoModel)
   @Column
-  videoId: number
+  declare videoId: number
 
   @BelongsTo(() => VideoModel, {
     foreignKey: {
@@ -105,7 +110,26 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
     },
     onDelete: 'set null'
   })
-  Video: Awaited<VideoModel>
+  declare Video: Awaited<VideoModel>
+
+  // ---------------------------------------------------------------------------
+
+  @AfterCreate
+  static notifyCreate (playlistElement: MVideoPlaylistElement) {
+    InternalEventEmitter.Instance.emit('playlist-element-created', { playlistElement })
+  }
+
+  @AfterUpdate
+  static notifyUpdate (playlistElement: MVideoPlaylistElement) {
+    InternalEventEmitter.Instance.emit('playlist-element-updated', { playlistElement })
+  }
+
+  @AfterDestroy
+  static notifyDestroy (playlistElement: MVideoPlaylistElement) {
+    InternalEventEmitter.Instance.emit('playlist-element-deleted', { playlistElement })
+  }
+
+  // ---------------------------------------------------------------------------
 
   static deleteAllOf (videoPlaylistId: number, transaction?: Transaction) {
     const query = {
@@ -138,7 +162,8 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
     const forApiOptions: ForAPIOptions = { withAccountBlockerIds: accountIds }
     videoScope.push({
       method: [
-        VideoScopeNames.FOR_API, forApiOptions
+        VideoScopeNames.FOR_API,
+        forApiOptions
       ]
     })
 
@@ -180,8 +205,16 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
     return VideoPlaylistElementModel.findOne(query)
   }
 
-  static loadById (playlistElementId: number | string): Promise<MVideoPlaylistElement> {
-    return VideoPlaylistElementModel.findByPk(playlistElementId)
+  static loadByPlaylistAndElement (options: {
+    videoPlaylistId: number
+    elementId: number | string
+  }): Promise<MVideoPlaylistElement> {
+    return VideoPlaylistElementModel.findOne({
+      where: {
+        id: options.elementId,
+        videoPlaylistId: options.videoPlaylistId
+      }
+    })
   }
 
   static loadByPlaylistAndElementIdForAP (
@@ -274,18 +307,26 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
     })
   }
 
+  static listPlaylistIdsForVideoId (videoId: number): Promise<number[]> {
+    return VideoPlaylistElementModel.findAll({
+      attributes: [ 'videoPlaylistId' ],
+      raw: true,
+      where: {
+        videoId
+      },
+      limit: 1000
+    }).then(rows => rows.map(r => r.videoPlaylistId))
+  }
+
   // ---------------------------------------------------------------------------
 
   static getNextPositionOf (videoPlaylistId: number, transaction?: Transaction) {
-    const query: AggregateOptions<number> = {
-      where: {
-        videoPlaylistId
-      },
+    return getNextPositionOf({
+      model: VideoPlaylistElementModel,
+      columnName: 'position',
+      where: { videoPlaylistId },
       transaction
-    }
-
-    return VideoPlaylistElementModel.max('position', query)
-      .then(position => position ? position + 1 : 1)
+    })
   }
 
   static reassignPositionOf (options: {
@@ -297,40 +338,38 @@ export class VideoPlaylistElementModel extends SequelizeModel<VideoPlaylistEleme
   }) {
     const { videoPlaylistId, firstPosition, endPosition, newPosition, transaction } = options
 
-    const query = {
-      where: {
-        videoPlaylistId,
-        position: {
-          [Op.gte]: firstPosition,
-          [Op.lte]: endPosition
-        }
-      },
+    return reassignPositionOf({
+      model: VideoPlaylistElementModel,
+      columnName: 'position',
+      where: { videoPlaylistId },
       transaction,
-      validate: false // We use a literal to update the position
-    }
 
-    const positionQuery = Sequelize.literal(`${forceNumber(newPosition)} + "position" - ${forceNumber(firstPosition)}`)
-    return VideoPlaylistElementModel.update({ position: positionQuery }, query)
+      firstPosition,
+      endPosition,
+      newPosition
+    })
   }
 
-  static increasePositionOf (
-    videoPlaylistId: number,
-    fromPosition: number,
-    by = 1,
+  static increasePositionOf (options: {
+    videoPlaylistId: number
+    fromPosition: number
+    by: number
     transaction?: Transaction
-  ) {
-    const query = {
-      where: {
-        videoPlaylistId,
-        position: {
-          [Op.gte]: fromPosition
-        }
-      },
-      transaction
-    }
+  }) {
+    const { videoPlaylistId, fromPosition, by, transaction } = options
 
-    return VideoPlaylistElementModel.increment({ position: by }, query)
+    return increasePositionOf({
+      model: VideoPlaylistElementModel,
+      columnName: 'position',
+      where: { videoPlaylistId },
+      transaction,
+
+      fromPosition,
+      by
+    })
   }
+
+  // ---------------------------------------------------------------------------
 
   toFormattedJSON (
     this: MVideoPlaylistElementFormattable,

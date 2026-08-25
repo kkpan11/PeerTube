@@ -1,11 +1,6 @@
 import { browserSleep, go, isAndroid } from '../utils'
 
 export class LoginPage {
-
-  constructor (private isMobileDevice: boolean) {
-
-  }
-
   async login (options: {
     username: string
     password: string
@@ -51,8 +46,12 @@ export class LoginPage {
     return $('.alert-danger').getText()
   }
 
-  async loginAsRootUser () {
-    return this.login({ username: 'root', password: 'test' + this.getSuffix() })
+  loginAsRootUser () {
+    return this.login({ username: 'root', password: this.getRootPassword() })
+  }
+
+  getRootPassword () {
+    return 'test' + this.getSuffix()
   }
 
   loginOnPeerTube2 () {
@@ -64,12 +63,12 @@ export class LoginPage {
   }
 
   async logout () {
-    const loggedInDropdown = $('.logged-in-container .logged-in-info')
+    const loggedInDropdown = $('.logged-in-container .dropdown-toggle')
 
     await loggedInDropdown.waitForClickable()
     await loggedInDropdown.click()
 
-    const logout = $('.dropdown-item*=Log out')
+    const logout = $('.dropdown-item.logout')
 
     await logout.waitForClickable()
     await logout.click()

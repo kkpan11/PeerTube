@@ -1,20 +1,19 @@
 import { CONFIG } from '@server/initializers/config.js'
 import { RunnerJobModel } from '@server/models/runner/runner-job.js'
-import { logger, loggerTagsFactory } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { SCHEDULER_INTERVALS_MS } from '../../initializers/constants.js'
 import { getRunnerJobHandlerClass } from '../runners/index.js'
 import { AbstractScheduler } from './abstract-scheduler.js'
 
-const lTags = loggerTagsFactory('runner')
+const logger = createLogger('schedulers', 'runner')
 
 export class RunnerJobWatchDogScheduler extends AbstractScheduler {
-
   private static instance: AbstractScheduler
 
   protected schedulerIntervalMs = SCHEDULER_INTERVALS_MS.RUNNER_JOB_WATCH_DOG
 
   private constructor () {
-    super()
+    super({ randomRunOnEnable: false })
   }
 
   protected async internalExecute () {
@@ -28,14 +27,26 @@ export class RunnerJobWatchDogScheduler extends AbstractScheduler {
       types: [ 'live-rtmp-hls-transcoding' ]
     })
 
-    for (const stalled of [ ...vodStalledJobs, ...liveStalledJobs ]) {
-      logger.info('Abort stalled runner job %s (%s)', stalled.uuid, stalled.type, lTags(stalled.uuid, stalled.type))
+    const transcriptionStalledJobs = await RunnerJobModel.listStalledJobs({
+      staleTimeMS: CONFIG.REMOTE_RUNNERS.STALLED_JOBS.TRANSCRIPTION,
+      types: [ 'video-transcription' ]
+    })
 
-      const Handler = getRunnerJobHandlerClass(stalled)
+    const studioStalledJobs = await RunnerJobModel.listStalledJobs({
+      staleTimeMS: CONFIG.REMOTE_RUNNERS.STALLED_JOBS.STUDIO,
+      types: [ 'video-studio-transcoding' ]
+    })
 
-      await new Handler().abort({
-        runnerJob: stalled,
-        abortNotSupportedErrorMessage: 'Stalled runner job'
+    for (const stalled of [ ...vodStalledJobs, ...liveStalledJobs, ...transcriptionStalledJobs, ...studioStalledJobs ]) {
+      await logger.withContext([ stalled.uuid, stalled.type ], async () => {
+        logger.info('Abort stalled runner job %s (%s)', stalled.uuid, stalled.type)
+
+        const Handler = getRunnerJobHandlerClass(stalled)
+
+        await new Handler().abort({
+          runnerJob: stalled,
+          abortNotSupportedErrorMessage: 'Stalled runner job'
+        })
       })
     }
   }

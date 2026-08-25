@@ -38,7 +38,7 @@ export function getPlaylistSort (value: string, lastSort: OrderItem = [ 'id', 'A
   const { direction, field } = buildSortDirectionAndField(value)
 
   if (field.toLowerCase() === 'name') {
-    return [ [ 'displayName', direction ], lastSort ]
+    return [ [ 'name', direction ], lastSort ]
   }
 
   return getSort(value, lastSort)
@@ -49,7 +49,7 @@ export function getVideoSort (value: string, lastSort: OrderItem = [ 'id', 'ASC'
 
   if (field.toLowerCase() === 'trending') { // Sort by aggregation
     return [
-      [ Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('VideoViews.views')), '0'), direction ],
+      [ Sequelize.fn('COALESCE', Sequelize.fn('SUM', Sequelize.col('VideoStats.views')), '0'), direction ],
 
       [ Sequelize.col('VideoModel.views'), direction ],
 
@@ -134,7 +134,7 @@ export function buildSortDirectionAndField (value: string) {
   let field: string
   let direction: 'ASC' | 'DESC'
 
-  if (value.substring(0, 1) === '-') {
+  if (value.startsWith('-')) {
     direction = 'DESC'
     field = value.substring(1)
   } else {
@@ -143,4 +143,10 @@ export function buildSortDirectionAndField (value: string) {
   }
 
   return { direction, field }
+}
+
+export function throwOnInvalidSortColumnName (columnName: string) {
+  if (columnName.match(/^[a-zA-Z."]+$/) === null) {
+    throw new Error('Invalid sort column ' + columnName)
+  }
 }

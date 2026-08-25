@@ -1,15 +1,16 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { Video, VideoCommentPolicy, VideoPrivacy } from '@peertube/peertube-models'
+import { wait } from '@peertube/peertube-core-utils'
 import { PeerTubeServer, cleanupTests, createMultipleServers, setAccessTokensToServers, waitJobs } from '@peertube/peertube-server-commands'
 import { expectAccountFollows, expectChannelsFollows } from '@tests/shared/actors.js'
 import { testCaptionFile } from '@tests/shared/captions.js'
 import { dateIsValid } from '@tests/shared/checks.js'
+import { SQLCommand } from '@tests/shared/sql-command.js'
 import { completeVideoCheck } from '@tests/shared/videos.js'
 import { expect } from 'chai'
 
 describe('Test follows', function () {
-
   describe('Complex follow', function () {
     let servers: PeerTubeServer[] = []
 
@@ -23,7 +24,6 @@ describe('Test follows', function () {
     })
 
     describe('Data propagation after follow', function () {
-
       it('Should not have followers/followings', async function () {
         for (const server of servers) {
           const bodies = await Promise.all([
@@ -430,12 +430,12 @@ describe('Test follows', function () {
         await expectChannelsFollows({ server: servers[0], handle: 'root_channel@' + servers[1].host, followers: 1, following: 0 })
         await expectAccountFollows({ server: servers[0], handle: 'peertube@' + servers[2].host, followers: 1, following: 0 })
 
-        await expectAccountFollows({ server: servers[1], handle: 'peertube@' + servers[0].host, followers: 0, following: 1 })
+        await expectAccountFollows({ server: servers[1], handle: 'peertube@' + servers[0].host, followers: 0, following: 0 })
         await expectAccountFollows({ server: servers[1], handle: 'peertube@' + servers[1].host, followers: 0, following: 0 })
         await expectAccountFollows({ server: servers[1], handle: 'root@' + servers[1].host, followers: 0, following: 0 })
         await expectChannelsFollows({ server: servers[1], handle: 'root_channel@' + servers[1].host, followers: 1, following: 0 })
 
-        await expectAccountFollows({ server: servers[2], handle: 'peertube@' + servers[0].host, followers: 0, following: 1 })
+        await expectAccountFollows({ server: servers[2], handle: 'peertube@' + servers[0].host, followers: 0, following: 2 })
         await expectAccountFollows({ server: servers[2], handle: 'peertube@' + servers[2].host, followers: 1, following: 0 })
       })
 
@@ -509,8 +509,8 @@ describe('Test follows', function () {
           expect(comment.account.name).to.equal('root')
           expect(comment.account.host).to.equal(servers[2].host)
           expect(comment.totalReplies).to.equal(3)
-          expect(dateIsValid(comment.createdAt as string)).to.be.true
-          expect(dateIsValid(comment.updatedAt as string)).to.be.true
+          expect(dateIsValid(comment.createdAt)).to.be.true
+          expect(dateIsValid(comment.updatedAt)).to.be.true
 
           const threadId = comment.threadId
 
@@ -540,7 +540,7 @@ describe('Test follows', function () {
           expect(deletedComment.inReplyToCommentId).to.be.null
           expect(deletedComment.account).to.be.null
           expect(deletedComment.totalReplies).to.equal(2)
-          expect(dateIsValid(deletedComment.deletedAt as string)).to.be.true
+          expect(dateIsValid(deletedComment.deletedAt)).to.be.true
 
           const tree = await servers[0].comments.getThread({ videoId: video4.id, threadId: deletedComment.threadId })
           const [ commentRoot, deletedChildRoot ] = tree.children
@@ -574,7 +574,7 @@ describe('Test follows', function () {
         const caption1 = body.data[0]
         expect(caption1.language.id).to.equal('ar')
         expect(caption1.language.label).to.equal('Arabic')
-        expect(caption1.captionPath).to.match(new RegExp('^/lazy-static/video-captions/.+-ar.vtt$'))
+        expect(caption1.fileUrl).to.match(new RegExp('^' + servers[0].url + '/lazy-static/video-captions/.+-ar.vtt$'))
         await testCaptionFile(caption1.fileUrl, 'Subtitle good 2.')
       })
 
@@ -638,6 +638,72 @@ describe('Test follows', function () {
 
     after(async function () {
       await cleanupTests(servers)
+    })
+  })
+
+  describe('Periodic stale follow resend', function () {
+    let servers: PeerTubeServer[] = []
+    let sqlCommands: SQLCommand[] = []
+
+    const DAY_IN_MS = 24 * 60 * 60 * 1000
+
+    before(async function () {
+      this.timeout(120000)
+
+      servers = await createMultipleServers(2)
+      await setAccessTokensToServers(servers)
+
+      sqlCommands = servers.map(s => new SQLCommand(s))
+    })
+
+    it('Should resend stale follows and set updatedAt to now', async function () {
+      this.timeout(60000)
+
+      await servers[0].follows.follow({ hosts: [ servers[1].url ] })
+
+      await waitJobs(servers)
+
+      await sqlCommands[0].setActorFollowUpdatedAt(new Date(Date.now() - 8 * DAY_IN_MS).toISOString())
+
+      {
+        await sqlCommands[1].deleteAll('actorFollow')
+
+        const { data } = await servers[1].follows.getFollowers()
+        expect(data).to.have.lengthOf(0)
+      }
+
+      await wait(2500)
+      await waitJobs(servers)
+
+      const updatedAt = await sqlCommands[0].getFirstActorFollowUpdatedAt()
+      expect(updatedAt).to.exist
+
+      expect(new Date(updatedAt).getTime()).to.be.greaterThan(Date.now() - 2 * 60 * 1000)
+
+      const { data } = await servers[1].follows.getFollowers()
+      expect(data).to.have.lengthOf(1)
+    })
+
+    it('Should not resend follows that are fresher than 7 days', async function () {
+      this.timeout(60000)
+
+      await sqlCommands[0].setActorFollowUpdatedAt(new Date(Date.now() - 1 * DAY_IN_MS).toISOString())
+
+      await wait(2500)
+      await waitJobs(servers)
+
+      const updatedAt = await sqlCommands[0].getFirstActorFollowUpdatedAt()
+      expect(updatedAt).to.exist
+
+      expect(new Date(updatedAt).getTime()).to.be.lessThan(Date.now() - 12 * 60 * 60 * 1000)
+    })
+
+    after(async function () {
+      await cleanupTests(servers)
+
+      for (const command of sqlCommands) {
+        await command.cleanup()
+      }
     })
   })
 })

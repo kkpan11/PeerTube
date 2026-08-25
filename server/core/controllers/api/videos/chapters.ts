@@ -1,21 +1,27 @@
+import { HttpStatusCode, VideoChannelActivityAction, VideoChapterUpdate } from '@peertube/peertube-models'
+import { retryTransactionWrapper } from '@server/helpers/database-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { sequelizeTypescript } from '@server/initializers/database.js'
+import { scheduleVideoFederation } from '@server/lib/activitypub/videos/federate.js'
+import { replaceChapters } from '@server/lib/video-chapters.js'
+import { VideoChannelActivityModel } from '@server/models/video/video-channel-activity.js'
+import { VideoChapterModel } from '@server/models/video/video-chapter.js'
 import express from 'express'
 import { asyncMiddleware, asyncRetryTransactionMiddleware, authenticate } from '../../../middlewares/index.js'
-import { updateVideoChaptersValidator, videosCustomGetValidator } from '../../../middlewares/validators/index.js'
-import { VideoChapterModel } from '@server/models/video/video-chapter.js'
-import { HttpStatusCode, VideoChapterUpdate } from '@peertube/peertube-models'
-import { sequelizeTypescript } from '@server/initializers/database.js'
-import { retryTransactionWrapper } from '@server/helpers/database-utils.js'
-import { federateVideoIfNeeded } from '@server/lib/activitypub/videos/federate.js'
-import { replaceChapters } from '@server/lib/video-chapters.js'
+import { updateVideoChaptersValidator, videoGetValidatorFactory } from '../../../middlewares/validators/index.js'
+
+const logger = createLogger('api', 'chapter')
 
 const videoChaptersRouter = express.Router()
 
-videoChaptersRouter.get('/:id/chapters',
-  asyncMiddleware(videosCustomGetValidator('only-video-and-blacklist')),
+videoChaptersRouter.get(
+  '/:id/chapters',
+  asyncMiddleware(videoGetValidatorFactory('with-blacklist')),
   asyncMiddleware(listVideoChapters)
 )
 
-videoChaptersRouter.put('/:videoId/chapters',
+videoChaptersRouter.put(
+  '/:videoId/chapters',
   authenticate,
   asyncMiddleware(updateVideoChaptersValidator),
   asyncRetryTransactionMiddleware(replaceVideoChapters)
@@ -30,22 +36,32 @@ export {
 // ---------------------------------------------------------------------------
 
 async function listVideoChapters (req: express.Request, res: express.Response) {
-  const chapters = await VideoChapterModel.listChaptersOfVideo(res.locals.onlyVideo.id)
+  const chapters = await VideoChapterModel.listChaptersOfVideo(res.locals.videoWithBlacklist.id)
 
   return res.json({ chapters: chapters.map(c => c.toFormattedJSON()) })
 }
 
 async function replaceVideoChapters (req: express.Request, res: express.Response) {
   const body = req.body as VideoChapterUpdate
-  const video = res.locals.videoAll
+  const video = res.locals.videoFull
 
-  await retryTransactionWrapper(() => {
-    return sequelizeTypescript.transaction(async t => {
-      await replaceChapters({ video, chapters: body.chapters, transaction: t })
+  await logger.withContext([ video.uuid ], async () => {
+    await retryTransactionWrapper(() => {
+      return sequelizeTypescript.transaction(async t => {
+        await replaceChapters({ video, chapters: body.chapters, transaction: t })
 
-      await federateVideoIfNeeded(video, false, t)
+        await VideoChannelActivityModel.addVideoActivity({
+          action: VideoChannelActivityAction.UPDATE_CHAPTERS,
+          user: res.locals.oauth.token.User,
+          channel: video.VideoChannel,
+          video,
+          transaction: t
+        })
+
+        scheduleVideoFederation({ video, transaction: t })
+      })
     })
-  })
 
-  return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+    return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
+  })
 }

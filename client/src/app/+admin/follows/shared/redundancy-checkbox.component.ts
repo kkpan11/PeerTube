@@ -1,4 +1,4 @@
-import { Component, inject, input, model } from '@angular/core'
+import { Component, inject, input, model, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { Notifier } from '@app/core'
 import { RedundancyService } from '@app/shared/shared-main/video/redundancy.service'
@@ -7,6 +7,7 @@ import { PeertubeCheckboxComponent } from '../../../shared/shared-forms/peertube
 @Component({
   selector: 'my-redundancy-checkbox',
   templateUrl: './redundancy-checkbox.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [ PeertubeCheckboxComponent, FormsModule ]
 })
 export class RedundancyCheckboxComponent {
@@ -25,7 +26,7 @@ export class RedundancyCheckboxComponent {
           this.notifier.success($localize`Redundancy for ${this.host()} is ${stateLabel}`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 }

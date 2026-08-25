@@ -1,21 +1,20 @@
 import express from 'express'
 import { ContactForm, HttpStatusCode } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { Emailer } from '../../../lib/emailer.js'
 import { Redis } from '../../../lib/redis.js'
 import { asyncMiddleware, contactAdministratorValidator } from '../../../middlewares/index.js'
 
+const logger = createLogger()
+
 const contactRouter = express.Router()
 
-contactRouter.post('/contact',
-  asyncMiddleware(contactAdministratorValidator),
-  asyncMiddleware(contactAdministrator)
-)
+contactRouter.post('/contact', asyncMiddleware(contactAdministratorValidator), asyncMiddleware(contactAdministrator))
 
 async function contactAdministrator (req: express.Request, res: express.Response) {
   const data = req.body as ContactForm
 
-  Emailer.Instance.addContactFormJob(data.fromEmail, data.fromName, data.subject, data.body)
+  Emailer.Instance.addContactFormJob({ fromEmail: data.fromEmail, fromName: data.fromName, subject: data.subject, body: data.body })
 
   try {
     await Redis.Instance.setContactFormIp(req.ip)

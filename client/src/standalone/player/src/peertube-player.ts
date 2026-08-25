@@ -1,20 +1,38 @@
-import './shared/context-menu'
-import './shared/upnext/end-card'
-import './shared/upnext/upnext-plugin'
-import './shared/stats/stats-card'
-import './shared/stats/stats-plugin'
+import { buildVideoLink, decorateVideoLink, findAppropriateThumbnail, isDefaultLocale, pick } from '@peertube/peertube-core-utils'
+import { Thumbnail } from '@peertube/peertube-models'
+import { logger } from '@root-helpers/logger'
+import { PluginsManager } from '@root-helpers/plugins-manager'
+import { TranslationsManager } from '@root-helpers/translations-manager'
+import { copyToClipboard } from '@root-helpers/utils'
+import { buildVideoOrPlaylistEmbed } from '@root-helpers/video'
+import { isMobile } from '@root-helpers/web-browser'
+import videojs from 'video.js'
+import { saveAverageBandwidth } from './peertube-player-local-storage'
 import './shared/bezels/bezels-plugin'
-import './shared/peertube/peertube-plugin'
-import './shared/resolutions/peertube-resolutions-plugin'
+import './shared/context-menu'
 import './shared/control-bar/caption-toggle-button'
-import './shared/control-bar/storyboard-plugin'
 import './shared/control-bar/chapters-plugin'
-import './shared/control-bar/time-tooltip'
 import './shared/control-bar/next-previous-video-button'
 import './shared/control-bar/p2p-info-button'
 import './shared/control-bar/peertube-link-button'
-import './shared/control-bar/theater-button'
 import './shared/control-bar/peertube-live-display'
+import './shared/control-bar/storyboard-plugin'
+import './shared/control-bar/theater-button'
+import './shared/control-bar/time-tooltip'
+import './shared/dock/peertube-dock-component'
+import './shared/dock/peertube-dock-plugin'
+import './shared/hotkeys/peertube-hotkeys-plugin'
+import './shared/metrics/metrics-plugin'
+import './shared/mobile/peertube-mobile-buttons'
+import './shared/mobile/peertube-mobile-plugin'
+import './shared/nsfw/peertube-nsfw-info-component'
+import './shared/nsfw/peertube-nsfw-plugin'
+import './shared/p2p-media-loader/hls-plugin'
+import './shared/p2p-media-loader/p2p-media-loader-plugin'
+import './shared/peertube/peertube-plugin'
+import { ControlBarOptionsBuilder, HLSOptionsBuilder, WebVideoOptionsBuilder } from './shared/player-options-builder'
+import './shared/playlist/playlist-plugin'
+import './shared/resolutions/peertube-resolutions-plugin'
 import './shared/settings/menu-focus-fixed'
 import './shared/settings/resolution-menu-button'
 import './shared/settings/resolution-menu-item'
@@ -23,36 +41,32 @@ import './shared/settings/settings-menu-button'
 import './shared/settings/settings-menu-item'
 import './shared/settings/settings-panel'
 import './shared/settings/settings-panel-child'
-import './shared/playlist/playlist-plugin'
-import './shared/mobile/peertube-mobile-plugin'
-import './shared/mobile/peertube-mobile-buttons'
-import './shared/hotkeys/peertube-hotkeys-plugin'
-import './shared/metrics/metrics-plugin'
-import './shared/p2p-media-loader/hls-plugin'
-import './shared/p2p-media-loader/p2p-media-loader-plugin'
+import './shared/stats/stats-card'
+import './shared/stats/stats-plugin'
+import './shared/upnext/end-card'
+import './shared/upnext/upnext-plugin'
+import './shared/video-filter/video-filter-menu-button'
+import './shared/video-filter/video-flip-horizontally-plugin'
 import './shared/web-video/web-video-plugin'
-import './shared/dock/peertube-dock-component'
-import './shared/dock/peertube-dock-plugin'
-import videojs, { VideoJsPlayer } from 'video.js'
-import { logger } from '@root-helpers/logger'
-import { PluginsManager } from '@root-helpers/plugins-manager'
-import { copyToClipboard } from '@root-helpers/utils'
-import { buildVideoOrPlaylistEmbed } from '@root-helpers/video'
-import { isMobile } from '@root-helpers/web-browser'
-import { buildVideoLink, decorateVideoLink, isDefaultLocale, pick } from '@peertube/peertube-core-utils'
-import { saveAverageBandwidth } from './peertube-player-local-storage'
-import { ControlBarOptionsBuilder, HLSOptionsBuilder, WebVideoOptionsBuilder } from './shared/player-options-builder'
-import { TranslationsManager } from '@root-helpers/translations-manager'
-import { PeerTubePlayerConstructorOptions, PeerTubePlayerLoadOptions, PlayerNetworkInfo, VideoJSPluginOptions } from './types'
-
-// Change 'Playback Rate' to 'Speed' (smaller for our settings menu)
-(videojs.getComponent('PlaybackRateMenuButton') as any).prototype.controlText_ = 'Speed'
+import {
+  PeerTubePlayerConstructorOptions,
+  PeerTubePlayerLoadOptions,
+  PlayerNetworkInfo,
+  VideojsAutoplay,
+  VideojsPlayer,
+  VideojsPlayerOptions,
+  VideoJSPluginOptions
+} from './types'
 
 const CaptionsButton = videojs.getComponent('CaptionsButton') as any
 // Change Captions to Subtitles/CC
 CaptionsButton.prototype.controlText_ = 'Subtitles/CC'
 // We just want to display 'Off' instead of 'captions off', keep a space so the variable == true (hacky I know)
 CaptionsButton.prototype.label_ = ' '
+
+// Change 'Playback Rate' to 'Speed' (smaller for our settings menu)
+const PlaybackRateMenuButton = videojs.getComponent('PlaybackRateMenuButton') as any
+PlaybackRateMenuButton.prototype.controlText_ = 'Speed'
 
 // TODO: remove when https://github.com/videojs/video.js/pull/7598 is merged
 const PlayProgressBar = videojs.getComponent('PlayProgressBar') as any
@@ -67,7 +81,7 @@ export class PeerTubePlayer {
 
   private videojsDecodeErrors = 0
 
-  private player: VideoJsPlayer
+  private player: VideojsPlayer
 
   private currentLoadOptions: PeerTubePlayerLoadOptions
 
@@ -85,12 +99,19 @@ export class PeerTubePlayer {
 
   async load (loadOptions: PeerTubePlayerLoadOptions) {
     this.currentLoadOptions = loadOptions
+    this.videojsDecodeErrors = 0
 
-    this.setPoster('')
+    this.setPoster([])
 
     this.disposeDynamicPluginsIfNeeded()
 
     await this.buildPlayerIfNeeded()
+
+    for (const theme of [ 'galaxy', 'lucide' ]) {
+      this.player.removeClass('vjs-peertube-theme-' + theme)
+    }
+
+    this.player.addClass('vjs-peertube-theme-' + loadOptions.theme)
 
     if (this.currentLoadOptions.mode === 'p2p-media-loader') {
       await this.loadP2PMediaLoader()
@@ -100,13 +121,16 @@ export class PeerTubePlayer {
 
     this.loadDynamicPlugins()
 
-    if (this.options.controlBar === false) this.player.controlBar.hide()
-    else this.player.controlBar.show()
+    if (this.options.controlBar === false) {
+      this.player.controlBar.hide()
+    } else {
+      this.player.controlBar.show()
+    }
 
     this.player.autoplay(this.getAutoPlayValue(this.currentLoadOptions.autoplay))
 
     if (!this.player.autoplay()) {
-      this.setPoster(loadOptions.poster)
+      this.setPoster(loadOptions.thumbnails)
     }
 
     this.player.trigger('video-change')
@@ -117,25 +141,40 @@ export class PeerTubePlayer {
   }
 
   destroy () {
-    if (this.player) this.player.dispose()
+    if (this.player) {
+      this.disposeDynamicPluginsIfNeeded()
+      this.player.dispose()
+    }
+
+    this.player = undefined
+    this.currentLoadOptions = undefined
+    this.pluginsManager = undefined
   }
 
-  setPoster (url: string) {
+  setPoster (thumbnails: Thumbnail[]) {
     // Use HTML video element to display poster
     if (!this.player) {
-      this.options.playerElement().poster = url
+      const playerEl = this.options.playerElement()
+
+      const width = playerEl.clientWidth || this.getScreenWidth()
+
+      this.options.playerElement().poster = findAppropriateThumbnail(thumbnails, width, '16:9')?.fileUrl || ''
       return
     }
 
     // Prefer using player poster API
-    this.player?.poster(url)
+    if (this.player) {
+      const width = this.player.el().clientWidth || this.getScreenWidth()
+
+      this.player.poster(findAppropriateThumbnail(thumbnails, width, '16:9')?.fileUrl || '')
+    }
+
     this.options.playerElement().poster = ''
   }
 
   enable () {
     if (!this.player) return
-
-    (this.player.el() as HTMLElement).style.pointerEvents = 'auto'
+    ;(this.player.el() as HTMLElement).style.pointerEvents = 'auto'
   }
 
   disable () {
@@ -148,13 +187,12 @@ export class PeerTubePlayer {
     // Disable player
     this.player.hasStarted(false)
     this.player.removeClass('vjs-has-autoplay')
-    this.player.bigPlayButton.hide();
-
-    (this.player.el() as HTMLElement).style.pointerEvents = 'none'
+    this.player.bigPlayButton.hide()
+    ;(this.player.el() as HTMLElement).style.pointerEvents = 'none'
   }
 
   setCurrentTime (currentTime: number) {
-    if (this.player.paused()) {
+    if (!this.player.hasStarted_) {
       this.currentLoadOptions.startTime = currentTime
 
       this.player.play()
@@ -176,7 +214,9 @@ export class PeerTubePlayer {
         'isLive',
         'p2pEnabled',
         'liveOptions',
-        'hls'
+        'hls',
+        'duration',
+        'videoUUID'
       ])
     })
 
@@ -206,13 +246,9 @@ export class PeerTubePlayer {
       this.getVideojsOptions()
     )
 
-    this.player = videojs(this.options.playerElement(), videojsOptions)
+    this.player = videojs(this.options.playerElement(), videojsOptions) as VideojsPlayer
 
     this.player.ready(() => {
-      if (!isNaN(+this.options.playbackRate)) {
-        this.player.playbackRate(+this.options.playbackRate)
-      }
-
       let alreadyFallback = false
 
       const handleError = () => {
@@ -229,10 +265,10 @@ export class PeerTubePlayer {
       this.player.on('video-change', () => alreadyFallback = false)
       this.player.on('error', () => handleError())
 
-      this.player.on('network-info', (_, data: PlayerNetworkInfo) => {
+      this.player.on('network-info', (_: any, data: PlayerNetworkInfo) => {
         if (data.source !== 'p2p-media-loader' || isNaN(data.bandwidthEstimate)) return
 
-        saveAverageBandwidth(data.bandwidthEstimate)
+        saveAverageBandwidth(Math.floor(data.bandwidthEstimate))
       })
 
       this.player.contextMenu(this.getContextMenuOptions())
@@ -245,6 +281,7 @@ export class PeerTubePlayer {
     if (!this.player) return
 
     if (this.player.usingPlugin('peertubeMobile')) this.player.peertubeMobile().dispose()
+    if (this.player.usingPlugin('videoFlipHorizontallyPlugin')) this.player.videoFlipHorizontallyPlugin().dispose()
     if (this.player.usingPlugin('peerTubeHotkeysPlugin')) this.player.peerTubeHotkeysPlugin().dispose()
     if (this.player.usingPlugin('playlist')) this.player.playlist().dispose()
     if (this.player.usingPlugin('bezels')) this.player.bezels().dispose()
@@ -252,6 +289,7 @@ export class PeerTubePlayer {
     if (this.player.usingPlugin('stats')) this.player.stats().dispose()
     if (this.player.usingPlugin('storyboard')) this.player.storyboard().dispose()
     if (this.player.usingPlugin('chapters')) this.player.chapters().dispose()
+    if (this.player.usingPlugin('peertubeNSFW')) this.player.peertubeNSFW().dispose()
 
     if (this.player.usingPlugin('peertubeDock')) this.player.peertubeDock().dispose()
 
@@ -269,12 +307,16 @@ export class PeerTubePlayer {
     this.player.stats({
       videoUUID: this.currentLoadOptions.videoUUID,
       videoIsLive: this.currentLoadOptions.isLive,
-      mode: this.currentLoadOptions.mode,
-      p2pEnabled: this.currentLoadOptions.p2pEnabled
+      mode: this.currentLoadOptions.mode
     })
 
+    this.player.videoFlipHorizontallyPlugin()
+
     if (this.options.enableHotkeys === true) {
-      this.player.peerTubeHotkeysPlugin({ isLive: this.currentLoadOptions.isLive })
+      this.player.peerTubeHotkeysPlugin({
+        isLive: this.currentLoadOptions.isLive,
+        liveDvrEnabled: this.currentLoadOptions.liveOptions?.dvrEnabled === true
+      })
     }
 
     if (this.currentLoadOptions.playlist) {
@@ -305,11 +347,14 @@ export class PeerTubePlayer {
     if (this.currentLoadOptions.dock) {
       this.player.peertubeDock(this.currentLoadOptions.dock)
     }
+
+    if (this.currentLoadOptions.nsfwWarning) {
+      this.player.peertubeNSFW(this.currentLoadOptions.nsfwWarning)
+    }
   }
 
   private async tryToRecoverHLSError (err: any) {
     if (err.code === MediaError.MEDIA_ERR_DECODE) {
-
       // Display a notification to user
       if (this.videojsDecodeErrors === 0) {
         this.options.errorNotifier(this.player.localize('The video failed to play, will try to fast forward.'))
@@ -358,12 +403,18 @@ export class PeerTubePlayer {
     })
   }
 
-  getVideojsOptions (): videojs.PlayerOptions {
+  private getVideojsOptions (): VideojsPlayerOptions {
     const html5 = {
       preloadTextTracks: false,
       // Prevent a bug on iOS where the text tracks added by peertube plugin are removed on play
       // See https://github.com/Chocobozzz/PeerTube/issues/6351
       nativeTextTracks: false
+    }
+
+    const getPoster = () => {
+      const posterWidth = this.options.playerElement().clientWidth || this.getScreenWidth()
+
+      return findAppropriateThumbnail(this.currentLoadOptions.thumbnails, posterWidth, '16:9')?.fileUrl || ''
     }
 
     const plugins: VideoJSPluginOptions = {
@@ -381,14 +432,18 @@ export class PeerTubePlayer {
         stopTime: () => this.currentLoadOptions.stopTime,
 
         videoCaptions: () => this.currentLoadOptions.videoCaptions,
+
         isLive: () => this.currentLoadOptions.isLive,
+        liveDvrEnabled: () => this.currentLoadOptions.liveOptions?.dvrEnabled === true,
+
         videoUUID: () => this.currentLoadOptions.videoUUID,
         subtitle: () => this.currentLoadOptions.subtitle,
 
         videoRatio: () => this.currentLoadOptions.videoRatio,
 
-        poster: () => this.currentLoadOptions.poster,
+        poster: () => getPoster(),
 
+        playbackRate: this.options.playbackRate,
         autoPlayerRatio: this.options.autoPlayerRatio
       },
       metrics: {
@@ -410,11 +465,13 @@ export class PeerTubePlayer {
       previousVideo: () => this.currentLoadOptions.previousVideo
     })
 
+    const autoplay = this.getAutoPlayValue(this.currentLoadOptions.autoplay)
+
     const videojsOptions = {
       html5,
 
       // We don't use text track settings for now
-      textTrackSettings: false as any, // FIXME: typings
+      textTrackSettings: false,
       controls: this.options.controls !== undefined ? this.options.controls : true,
       loop: this.options.loop !== undefined ? this.options.loop : false,
 
@@ -422,27 +479,35 @@ export class PeerTubePlayer {
         ? this.options.muted
         : undefined, // Undefined so the player knows it has to check the local storage
 
-      autoplay: this.getAutoPlayValue(this.currentLoadOptions.autoplay),
+      autoplay,
 
-      poster: this.currentLoadOptions.poster,
+      poster: getPoster(),
+      preload: 'none' as 'none',
+
+      // The poster is only worth prioritizing if we actually display it: on autoplay it's hidden as soon as playback
+      // starts, so eagerly fetching it would just compete with the video segments
+      mainContent: this.options.mainContent === true && autoplay === false,
+
       inactivityTimeout: this.options.inactivityTimeout,
-      playbackRates: [ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2 ],
+      playbackRates: [ 0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3 ],
 
       plugins,
 
       controlBar: {
-        children: controlBarOptionsBuilder.getChildrenOptions() as any // FIXME: typings
+        children: controlBarOptionsBuilder.getChildrenOptions()
       },
 
       language: this.options.language && !isDefaultLocale(this.options.language)
         ? this.options.language
-        : undefined
-    }
+        : undefined,
+
+      enableSmoothSeeking: true
+    } satisfies VideojsPlayerOptions
 
     return videojsOptions
   }
 
-  private getAutoPlayValue (autoplay: boolean): videojs.Autoplay {
+  private getAutoPlayValue (autoplay: boolean): VideojsAutoplay {
     if (autoplay !== true) return false
 
     return this.currentLoadOptions.forceAutoplay
@@ -485,20 +550,19 @@ export class PeerTubePlayer {
   }
 
   private getContextMenuOptions () {
-
     const content = () => {
       const self = this
       const player = this.player
 
       const shortUUID = self.currentLoadOptions.videoShortUUID
-      const isLoopEnabled = player.options_['loop']
+      const isLoopEnabled = player.options_.loop
 
       const items = [
         {
           icon: 'repeat',
           label: player.localize('Play in loop') + (isLoopEnabled ? '<span class="vjs-icon-tick-white"></span>' : ''),
           listener: function () {
-            player.options_['loop'] = !isLoopEnabled
+            player.options_.loop = !isLoopEnabled
           }
         },
         {
@@ -542,5 +606,12 @@ export class PeerTubePlayer {
     }
 
     return { content }
+  }
+
+  // window.innerWidth returns sometimes 0 on Firefox if we load the page in background
+  // So we also test screen.availWidth which seems more reliable, at least on desktop
+  // Finally fallback to default embed width if both are 0 (can happen when the embed is hidden or collapsed)
+  private getScreenWidth () {
+    return window.innerWidth || screen.availWidth || 560
   }
 }

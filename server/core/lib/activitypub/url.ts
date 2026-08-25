@@ -1,3 +1,4 @@
+import { buildSUUID } from '@peertube/peertube-node-utils'
 import { REMOTE_SCHEME, WEBSERVER } from '../../initializers/constants.js'
 import {
   MAbuseFull,
@@ -6,7 +7,8 @@ import {
   MActorFollow,
   MActorId,
   MActorUrl,
-  MCommentId, MLocalVideoViewer,
+  MCommentId,
+  MLocalVideoViewer,
   MVideoId,
   MVideoPlaylistElement,
   MVideoUUID,
@@ -38,6 +40,10 @@ export function getLocalVideoCommentActivityPubUrl (video: MVideoUUID, videoComm
 
 export function getLocalVideoChannelActivityPubUrl (videoChannelName: string) {
   return WEBSERVER.URL + '/video-channels/' + videoChannelName
+}
+
+export function getLocalChannelPlayerSettingsActivityPubUrl (videoChannelName: string) {
+  return WEBSERVER.URL + '/video-channels/' + videoChannelName + '/player-settings'
 }
 
 export function getLocalAccountActivityPubUrl (accountName: string) {
@@ -76,6 +82,10 @@ export function getLocalVideoChaptersActivityPubUrl (video: MVideoUrl) {
   return video.url + '/chapters'
 }
 
+export function getLocalVideoPlayerSettingsActivityPubUrl (video: MVideoUrl) {
+  return video.url + '/player-settings'
+}
+
 export function getLocalVideoLikesActivityPubUrl (video: MVideoUrl) {
   return video.url + '/likes'
 }
@@ -112,8 +122,16 @@ export function getUndoActivityPubUrl (originalUrl: string) {
   return originalUrl + '/undo'
 }
 
+export function getLocalActorPlayerSettingsActivityPubUrl (actor: MActorUrl) {
+  return actor.url + '/player-settings'
+}
+
 export function getLocalApproveReplyActivityPubUrl (video: MVideoUUID, comment: MCommentId) {
   return getLocalVideoCommentActivityPubUrl(video, comment) + '/approve-reply'
+}
+
+export function getDownloadsActivityPubUrl (byActor: MActorUrl, video: MVideoId) {
+  return byActor.url + '/downloads/videos/' + video.id + '/' + buildSUUID()
 }
 
 // ---------------------------------------------------------------------------
@@ -143,5 +161,13 @@ export function checkUrlsSameHost (url1: string, url2: string) {
   const idHost = new URL(url1).host
   const actorHost = new URL(url2).host
 
-  return idHost && actorHost && idHost.toLowerCase() === actorHost.toLowerCase()
+  return idHost?.toLowerCase() === actorHost?.toLowerCase()
+}
+
+export function isLocalUrl (url: string) {
+  try {
+    return new URL(url).host?.toLowerCase() === WEBSERVER.HOST.toLowerCase()
+  } catch {
+    return false
+  }
 }

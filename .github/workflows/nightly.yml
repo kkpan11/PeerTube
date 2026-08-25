@@ -14,13 +14,13 @@ jobs:
     steps:
       -
         name: Checkout develop
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           ref: develop
 
       - uses: './.github/actions/reusable-prepare-peertube-build'
         with:
-          node-version: '20.x'
+          node-version: '22.x'
 
       - name: Build
         run: npm run nightly

@@ -4,7 +4,6 @@ import { AboutPeertubeComponent } from '@app/+about/about-peertube/about-peertub
 import { CustomMarkupService } from '@app/shared/shared-custom-markup/custom-markup.service'
 import { DynamicElementService } from '@app/shared/shared-custom-markup/dynamic-element.service'
 import { InstanceFollowService } from '@app/shared/shared-instance/instance-follow.service'
-import { AboutContactComponent } from './about-contact/about-contact.component'
 import { aboutInstanceRoutes } from './about-instance/about-instance.routes'
 import { AboutComponent } from './about.component'
 
@@ -48,12 +47,8 @@ export default [
 
       {
         path: 'contact',
-        component: AboutContactComponent,
-        data: {
-          meta: {
-            title: $localize`Contact`
-          }
-        }
+        redirectTo: 'instance/contact',
+        pathMatch: 'full'
       }
     ]
   }

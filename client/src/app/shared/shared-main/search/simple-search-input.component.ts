@@ -1,17 +1,18 @@
-import { Component, ElementRef, OnInit, input, output, viewChild } from '@angular/core'
-import { NgIf } from '@angular/common'
-import { GlobalIconComponent } from '../../shared-icons/global-icon.component'
+import { Component, ElementRef, OnInit, input, output, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule } from '@angular/forms'
+import { GlobalIconComponent } from '../../shared-icons/global-icon.component'
 
 @Component({
   selector: 'my-simple-search-input',
   templateUrl: './simple-search-input.component.html',
   styleUrls: [ './simple-search-input.component.scss' ],
-  imports: [ FormsModule, GlobalIconComponent, NgIf ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, GlobalIconComponent ]
 })
 export class SimpleSearchInputComponent implements OnInit {
   readonly input = viewChild<ElementRef>('ref')
 
+  readonly initialValue = input('')
   readonly name = input('search')
   readonly placeholder = input($localize`Search`)
   readonly iconTitle = input($localize`Search`)
@@ -20,11 +21,13 @@ export class SimpleSearchInputComponent implements OnInit {
   readonly searchChanged = output<string>()
   readonly inputDisplayChanged = output<boolean>()
 
-  value = ''
   lastSearch = ''
+  value = ''
   inputShown: boolean
 
   ngOnInit () {
+    this.value = this.initialValue()
+
     if (this.isInputShown()) this.showInput(false)
   }
 

@@ -1,17 +1,20 @@
 import {
   RunnerJobVODAudioMergeTranscodingPrivatePayload,
   RunnerJobVODWebVideoTranscodingPrivatePayload,
-  VideoResolution
+  VideoFileStreamType
 } from '@peertube/peertube-models'
-import { logger, LoggerTagsFn } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { onTranscodingEnded } from '@server/lib/transcoding/ended-transcoding.js'
 import { onWebVideoFileTranscoding } from '@server/lib/transcoding/web-transcoding.js'
 import { VideoModel } from '@server/models/video/video.js'
-import { MVideoFullLight } from '@server/types/models/index.js'
+import { MVideoFull } from '@server/types/models/index.js'
 import { MRunnerJob } from '@server/types/models/runners/index.js'
+import { Transaction } from 'sequelize'
+
+const logger = createLogger()
 
 export async function onVODWebVideoOrAudioMergeTranscodingJob (options: {
-  video: MVideoFullLight
+  video: MVideoFull
   videoFilePath: string
   privatePayload: RunnerJobVODWebVideoTranscodingPrivatePayload | RunnerJobVODAudioMergeTranscodingPrivatePayload
   wasAudioFile: boolean
@@ -24,33 +27,39 @@ export async function onVODWebVideoOrAudioMergeTranscodingJob (options: {
 
   await onWebVideoFileTranscoding({ video, videoOutputPath: videoFilePath, deleteWebInputVideoFile, wasAudioFile })
 
-  await onTranscodingEnded({ isNewVideo: privatePayload.isNewVideo, moveVideoToNextState: true, video })
+  await onTranscodingEnded({ moveVideoToNextState: privatePayload.canMoveVideoState, video })
 }
 
-export async function loadRunnerVideo (runnerJob: MRunnerJob, lTags: LoggerTagsFn) {
+export async function loadRunnerVideo (runnerJob: MRunnerJob, transaction?: Transaction) {
   const videoUUID = runnerJob.privatePayload.videoUUID
 
-  const video = await VideoModel.loadFull(videoUUID)
+  const video = await VideoModel.loadFull(videoUUID, transaction)
   if (!video) {
-    logger.info('Video %s does not exist anymore after runner job.', videoUUID, lTags(videoUUID))
+    logger.info('Video %s does not exist anymore after runner job.', videoUUID)
     return undefined
   }
 
   return video
 }
 
-export async function isVideoMissHLSAudio (options: {
-  resolution: number
-  separatedAudio: boolean
+export async function hasMissingHLSStreams (options: {
+  inputStreams: VideoFileStreamType[]
+  transcodingRequestAt: string
   videoId: string | number
 }) {
-  if (!options.separatedAudio) return false
+  const { videoId, inputStreams, transcodingRequestAt } = options
 
-  if (options.resolution !== VideoResolution.H_NOVIDEO) {
-    const video = await VideoModel.loadFull(options.videoId)
+  const video = await VideoModel.loadFull(videoId)
+  const hlsFiles = video.getHLSPlaylist().VideoFiles
 
-    // Video doesn't have audio file yet
-    if (video.hasAudio() !== true) return true
+  for (const inputStream of inputStreams) {
+    const hasStream = hlsFiles.some(f => {
+      // Compare creation dates to avoid using files created before the root job (e.g., from a previous transcoding)
+      return new Date(f.createdAt).getTime() >= new Date(transcodingRequestAt).getTime() &&
+        (f.streams & inputStream)
+    })
+
+    if (!hasStream) return true
   }
 
   return false

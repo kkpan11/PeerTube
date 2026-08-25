@@ -68,8 +68,8 @@ export class CustomMarkupService {
     rootElement.innerHTML = html
 
     for (const selector of Object.keys(this.htmlBuilders)) {
-      rootElement.querySelectorAll(selector)
-        .forEach((e: HTMLElement) => {
+      rootElement.querySelectorAll<HTMLElement>(selector)
+        .forEach(e => {
           try {
             const element = this.execHTMLBuilder(selector, e)
             // Insert as first child
@@ -82,13 +82,16 @@ export class CustomMarkupService {
 
     const loadedPromises: Promise<boolean>[] = []
 
+    const componentRefs: ComponentRef<CustomMarkupComponent>[] = []
+
     for (const selector of Object.keys(this.angularBuilders)) {
-      rootElement.querySelectorAll(selector)
-        .forEach((e: HTMLElement) => {
+      rootElement.querySelectorAll<HTMLElement>(selector)
+        .forEach(e => {
           try {
             const { component, loadedPromise } = this.execAngularBuilder(selector, e)
             if (loadedPromise) loadedPromises.push(loadedPromise)
 
+            componentRefs.push(component)
             this.dynamicElementService.injectElement(e, component)
           } catch (err) {
             logger.error(`Cannot inject component ${selector}`, err)
@@ -96,7 +99,7 @@ export class CustomMarkupService {
         })
     }
 
-    return { rootElement, componentsLoaded: Promise.all(loadedPromises) }
+    return { rootElement, componentsLoaded: Promise.all(loadedPromises), componentRefs }
   }
 
   private getSupportedTags () {
@@ -116,7 +119,23 @@ export class CustomMarkupService {
     const data = el.dataset as EmbedMarkupData
     const { component, loadedPromise } = this.dynamicElementService.createElement(EmbedMarkupComponent)
 
-    this.dynamicElementService.setModel(component, { uuid: data.uuid, type })
+    this.dynamicElementService.setModel(component, {
+      uuid: data.uuid,
+      type,
+      responsive: this.buildBoolean(data.responsive),
+      startAt: data.startAt,
+      stopAt: data.stopAt,
+      subtitle: data.subtitle,
+      autoplay: this.buildBoolean(data.autoplay),
+      muted: this.buildBoolean(data.muted),
+      loop: this.buildBoolean(data.loop),
+      title: this.buildBoolean(data.title),
+      p2p: this.buildBoolean(data.p2p),
+      warningTitle: this.buildBoolean(data.warningTitle),
+      controlBar: this.buildBoolean(data.controlBar),
+      peertubeLink: this.buildBoolean(data.peertubeLink),
+      playlistPosition: this.buildNumber(data.playlistPosition)
+    })
 
     return { component, loadedPromise }
   }

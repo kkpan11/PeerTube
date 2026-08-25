@@ -1,10 +1,10 @@
 import { toSafeHtml } from '@server/helpers/markdown.js'
-import { cacheRouteFactory } from '@server/middlewares/index.js'
 import express from 'express'
 import { CONFIG } from '../../initializers/config.js'
 import { ROUTE_CACHE_LIFETIME, WEBSERVER } from '../../initializers/constants.js'
 import {
   asyncMiddleware,
+  cacheRouteFactory,
   feedsAccountOrChannelFiltersValidator,
   feedsFormatValidator,
   setFeedFormatContentType,
@@ -23,7 +23,8 @@ const { middleware: cacheRouteMiddleware } = cacheRouteFactory({
 
 // ---------------------------------------------------------------------------
 
-commentFeedsRouter.get('/video-comments.:format',
+commentFeedsRouter.get(
+  '/video-comments.:format',
   feedsFormatValidator,
   setFeedFormatContentType,
   cacheRouteMiddleware(ROUTE_CACHE_LIFETIME.FEEDS),
@@ -42,7 +43,7 @@ export {
 
 async function generateVideoCommentsFeed (req: express.Request, res: express.Response) {
   const start = 0
-  const video = res.locals.videoAll
+  const video = res.locals.videoWithRights
   const account = res.locals.account
   const videoChannel = res.locals.videoChannel
 
@@ -56,7 +57,7 @@ async function generateVideoCommentsFeed (req: express.Request, res: express.Res
 
   const { name, description, imageUrl, link } = await buildFeedMetadata({ video, account, videoChannel })
 
-  const feed = initFeed({
+  const feed = await initFeed({
     name,
     description,
     imageUrl,

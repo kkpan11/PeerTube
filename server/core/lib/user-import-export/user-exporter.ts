@@ -2,10 +2,10 @@ import { FileStorage, UserExportState } from '@peertube/peertube-models'
 import { getFileSize } from '@peertube/peertube-node-utils'
 import { activityPubContextify } from '@server/helpers/activity-pub-utils.js'
 import { saveInTransactionWithRetries } from '@server/helpers/database-utils.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { UserModel } from '@server/models/user/user.js'
 import { MUserDefault, MUserExport } from '@server/types/models/index.js'
-import archiver, { Archiver } from 'archiver'
+import type { Archiver } from 'archiver'
 import { createWriteStream } from 'fs'
 import { remove } from 'fs-extra/esm'
 import { join, parse } from 'path'
@@ -33,10 +33,9 @@ import {
   WatchedWordsListsExporter
 } from './exporters/index.js'
 
-const lTags = loggerTagsFactory('user-export')
+const logger = createLogger('user-export')
 
 export class UserExporter {
-
   private archive: Archiver
 
   async export (exportModel: MUserExport) {
@@ -51,7 +50,7 @@ export class UserExporter {
 
       if (exportModel.storage === FileStorage.FILE_SYSTEM) {
         output = createWriteStream(getFSUserExportFilePath(exportModel))
-        endPromise = new Promise<string>(res => output.on('close', () => res('')))
+        endPromise = new Promise<void>(res => output.on('close', () => res()))
       } else {
         output = new PassThrough()
         endPromise = storeUserExportFile(output as PassThrough, exportModel)
@@ -59,10 +58,9 @@ export class UserExporter {
 
       await this.createZip({ exportModel, user, output })
 
-      const fileUrl = await endPromise
+      await endPromise
 
       if (exportModel.storage === FileStorage.OBJECT_STORAGE) {
-        exportModel.fileUrl = fileUrl
         exportModel.size = await getUserExportFileObjectStorageSize(exportModel)
       } else if (exportModel.storage === FileStorage.FILE_SYSTEM) {
         exportModel.size = await getFileSize(getFSUserExportFilePath(exportModel))
@@ -72,7 +70,7 @@ export class UserExporter {
 
       await saveInTransactionWithRetries(exportModel)
     } catch (err) {
-      logger.error('Cannot generate an export', { err, ...lTags() })
+      logger.error('Cannot generate an export', { err })
 
       try {
         exportModel.state = UserExportState.ERRORED
@@ -80,7 +78,7 @@ export class UserExporter {
 
         await saveInTransactionWithRetries(exportModel)
       } catch (innerErr) {
-        logger.error('Cannot set export error state', { err: innerErr, ...lTags() })
+        logger.error('Cannot set export error state', { err: innerErr })
       }
 
       try {
@@ -90,7 +88,7 @@ export class UserExporter {
           await removeUserExportObjectStorage(exportModel)
         }
       } catch (innerErr) {
-        logger.error('Cannot remove archive path after failure', { err: innerErr, ...lTags() })
+        logger.error('Cannot remove archive path after failure', { err: innerErr })
       }
 
       throw err
@@ -106,28 +104,34 @@ export class UserExporter {
 
     let activityPubOutboxStore: ExportResult<any>['activityPubOutbox'] = []
 
-    this.archive = archiver('zip', {
-      zlib: {
-        level: 9
-      }
-    })
-
     return new Promise<void>(async (res, rej) => {
-      this.archive.on('warning', err => {
-        logger.warn('Warning to archive a file in ' + exportModel.filename, { ...lTags(), err })
-      })
+      try {
+        const archiverModule = await import('archiver')
 
-      this.archive.on('error', err => {
-        rej(err)
-      })
+        this.archive = new archiverModule.ZipArchive({
+          zlib: {
+            level: 9
+          }
+        })
 
-      this.archive.pipe(output)
+        this.archive.on('warning', err => {
+          logger.warn('Warning to archive a file in ' + exportModel.filename, { err })
+        })
+
+        this.archive.on('error', err => {
+          rej(err)
+        })
+
+        this.archive.pipe(output)
+      } catch (err) {
+        return rej(err)
+      }
 
       try {
         for (const { exporter, jsonFilename } of this.buildExporters(exportModel, user)) {
           const { json, staticFiles, activityPub, activityPubOutbox } = await exporter.export()
 
-          logger.debug(`Adding JSON file ${jsonFilename} in archive ${exportModel.filename}`, lTags())
+          logger.debug(`Adding JSON file ${jsonFilename} in archive ${exportModel.filename}`)
           this.appendJSON(json, join('peertube', jsonFilename))
 
           if (activityPub) {
@@ -144,12 +148,12 @@ export class UserExporter {
           for (const file of staticFiles) {
             const archivePath = join('files', parse(jsonFilename).name, file.archivePath)
 
-            logger.debug(`Adding static file ${archivePath} in archive`, lTags())
+            logger.debug(`Adding static file ${archivePath} in archive`)
 
             try {
               await this.addToArchiveAndWait(await file.readStreamFactory(), archivePath)
             } catch (err) {
-              logger.error(`Cannot add ${archivePath} in archive`, { err, ...lTags() })
+              logger.error(`Cannot add ${archivePath} in archive`, { err })
             }
           }
         }

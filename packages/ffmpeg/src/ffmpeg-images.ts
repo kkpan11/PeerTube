@@ -10,34 +10,6 @@ export class FFmpegImage {
     this.commandWrapper = new FFmpegCommandWrapper(options)
   }
 
-  convertWebPToJPG (options: {
-    path: string
-    destination: string
-  }): Promise<void> {
-    const { path, destination } = options
-
-    this.commandWrapper.buildCommand(path)
-      .output(destination)
-
-    return this.commandWrapper.runCommand({ silent: true })
-  }
-
-  processGIF (options: {
-    path: string
-    destination: string
-    newSize?: { width: number, height: number }
-  }): Promise<void> {
-    const { path, destination, newSize } = options
-
-    const command = this.commandWrapper.buildCommand(path)
-
-    if (newSize) command.size(`${newSize.width}x${newSize.height}`)
-
-    command.output(destination)
-
-    return this.commandWrapper.runCommand()
-  }
-
   // ---------------------------------------------------------------------------
 
   async generateThumbnailFromVideo (options: {

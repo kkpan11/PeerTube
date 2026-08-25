@@ -1,8 +1,7 @@
-import { CommonModule } from '@angular/common'
-import { Component, OnInit, forwardRef, input, model } from '@angular/core'
+import { Component, OnInit, booleanAttribute, forwardRef, input, model, ChangeDetectionStrategy } from '@angular/core'
 import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms'
 import { isMobile } from '@root-helpers/web-browser'
-import { ChipsModule } from 'primeng/chips'
+import { AutoCompleteModule } from 'primeng/autocomplete'
 
 @Component({
   selector: 'my-select-tags',
@@ -14,11 +13,12 @@ import { ChipsModule } from 'primeng/chips'
       multi: true
     }
   ],
-  imports: [ CommonModule, ChipsModule, FormsModule ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ AutoCompleteModule, FormsModule ]
 })
 export class SelectTagsComponent implements OnInit, ControlValueAccessor {
   readonly inputId = input.required<string>()
-  readonly availableItems = input<string[]>([])
+  readonly small = input(false, { transform: booleanAttribute })
   readonly selectedItems = model<string[]>([])
   readonly placeholder = model($localize`Enter a new tag`)
 

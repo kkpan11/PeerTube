@@ -1,13 +1,12 @@
-import { NgClass, NgFor, NgIf } from '@angular/common'
-import { Component, OnInit, inject, input, output, viewChild } from '@angular/core'
+import { NgClass } from '@angular/common'
+import { ChangeDetectionStrategy, Component, OnInit, inject, input, output, viewChild } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
+import { DomSanitizer, SafeHtml } from '@angular/platform-browser'
 import { AuthService, HtmlRendererService, Notifier } from '@app/core'
 import { FormReactive } from '@app/shared/shared-forms/form-reactive'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
-import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
-import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap/modal/modal-ref'
+import { NgbModal, NgbModalRef } from '@ng-bootstrap/ng-bootstrap'
 import { AbuseMessage, UserAbuse } from '@peertube/peertube-models'
-import { logger } from '@root-helpers/logger'
 import { ABUSE_MESSAGE_VALIDATOR } from '../form-validators/abuse-validators'
 import { GlobalIconComponent } from '../shared-icons/global-icon.component'
 import { PTDatePipe } from '../shared-main/common/date.pipe'
@@ -17,12 +16,14 @@ import { AbuseService } from '../shared-moderation/abuse.service'
   selector: 'my-abuse-message-modal',
   templateUrl: './abuse-message-modal.component.html',
   styleUrls: [ './abuse-message-modal.component.scss' ],
-  imports: [ NgIf, GlobalIconComponent, NgFor, NgClass, FormsModule, ReactiveFormsModule, PTDatePipe ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ GlobalIconComponent, NgClass, FormsModule, ReactiveFormsModule, PTDatePipe ]
 })
 export class AbuseMessageModalComponent extends FormReactive implements OnInit {
   protected formReactiveService = inject(FormReactiveService)
   private modalService = inject(NgbModal)
   private htmlRenderer = inject(HtmlRendererService)
+  private domSanitizer = inject(DomSanitizer)
   private auth = inject(AuthService)
   private notifier = inject(Notifier)
   private abuseService = inject(AbuseService)
@@ -36,7 +37,7 @@ export class AbuseMessageModalComponent extends FormReactive implements OnInit {
     countMessages: number
   }>()
 
-  abuseMessages: (AbuseMessage & { messageHtml: string })[] = []
+  abuseMessages: (AbuseMessage & { messageHtml: SafeHtml })[] = []
   textareaMessage: string
   sendingMessage = false
   noResults = false
@@ -78,8 +79,7 @@ export class AbuseMessageModalComponent extends FormReactive implements OnInit {
 
         error: err => {
           this.sendingMessage = false
-          logger.error(err)
-          this.notifier.error('Sorry but you cannot send this message. Please retry later')
+          this.notifier.handleError(err)
         }
       })
   }
@@ -93,7 +93,7 @@ export class AbuseMessageModalComponent extends FormReactive implements OnInit {
           this.abuseMessages = this.abuseMessages.filter(m => m.id !== abuseMessage.id)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -117,7 +117,8 @@ export class AbuseMessageModalComponent extends FormReactive implements OnInit {
 
           for (const m of res.data) {
             this.abuseMessages.push(Object.assign(m, {
-              messageHtml: this.htmlRenderer.convertToBr(m.message)
+              // Already sanitized by MarkdownService
+              messageHtml: this.domSanitizer.bypassSecurityTrustHtml(this.htmlRenderer.convertToBr(m.message))
             }))
           }
 
@@ -130,7 +131,7 @@ export class AbuseMessageModalComponent extends FormReactive implements OnInit {
           })
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 }

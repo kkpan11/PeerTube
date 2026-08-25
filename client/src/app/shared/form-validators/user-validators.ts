@@ -1,4 +1,4 @@
-import { Validators } from '@angular/forms'
+import { ValidatorFn, Validators } from '@angular/forms'
 import { BuildFormValidator } from './form-validator.model'
 
 export const USER_USERNAME_REGEX_CHARACTERS = '[a-z0-9][a-z0-9._]'
@@ -33,14 +33,6 @@ export const USER_CHANNEL_NAME_VALIDATOR: BuildFormValidator = {
   }
 }
 
-export const USER_EMAIL_VALIDATOR: BuildFormValidator = {
-  VALIDATORS: [ Validators.required, Validators.email ],
-  MESSAGES: {
-    required: $localize`Email is required.`,
-    email: $localize`Email must be valid.`
-  }
-}
-
 export const USER_HANDLE_VALIDATOR: BuildFormValidator = {
   VALIDATORS: [
     Validators.required,
@@ -70,27 +62,33 @@ export const USER_OTP_TOKEN_VALIDATOR: BuildFormValidator = {
   }
 }
 
-export const USER_PASSWORD_VALIDATOR = {
-  VALIDATORS: [
-    Validators.required,
-    Validators.minLength(6),
-    Validators.maxLength(255)
-  ],
-  MESSAGES: {
-    required: $localize`Password is required.`,
-    minlength: $localize`Password must be at least 6 characters long.`,
-    maxlength: $localize`Password cannot be more than 255 characters long.`
+export function getUserNewPasswordValidator (minLength: number, maxLength: number) {
+  const base = getUserNewPasswordOptionalValidator(minLength, maxLength)
+
+  return {
+    VALIDATORS: [
+      Validators.required,
+
+      ...base.VALIDATORS
+    ] as ValidatorFn[],
+    MESSAGES: {
+      required: $localize`Password is required.`,
+
+      ...base.MESSAGES
+    }
   }
 }
 
-export const USER_PASSWORD_OPTIONAL_VALIDATOR: BuildFormValidator = {
-  VALIDATORS: [
-    Validators.minLength(6),
-    Validators.maxLength(255)
-  ],
-  MESSAGES: {
-    minlength: $localize`Password must be at least 6 characters long.`,
-    maxlength: $localize`Password cannot be more than 255 characters long.`
+export function getUserNewPasswordOptionalValidator (minLength: number, maxLength: number) {
+  return {
+    VALIDATORS: [
+      Validators.minLength(minLength),
+      Validators.maxLength(maxLength)
+    ] as ValidatorFn[],
+    MESSAGES: {
+      minlength: $localize`Password must be at least ${minLength} characters long.`,
+      maxlength: $localize`Password cannot be more than ${maxLength} characters long.`
+    }
   }
 }
 

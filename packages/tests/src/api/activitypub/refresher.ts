@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { SQLCommand } from '@tests/shared/sql-command.js'
 import { wait } from '@peertube/peertube-core-utils'
@@ -65,14 +65,14 @@ describe('Test AP refresher', function () {
     await doubleFollow(servers[0], servers[1])
 
     sqlCommandServer2 = new SQLCommand(servers[1])
+
+    // Wait refresh min interval
+    await wait(10000)
   })
 
   describe('Videos refresher', function () {
-
     it('Should remove a deleted remote video', async function () {
       this.timeout(60000)
-
-      await wait(10000)
 
       // Change UUID so the remote server returns a 404
       await sqlCommandServer2.setVideoField(videoUUID1, 'uuid', '304afe4f-39f9-4d49-8ed7-ac57b86b174f')
@@ -107,13 +107,10 @@ describe('Test AP refresher', function () {
   })
 
   describe('Actors refresher', function () {
-
     it('Should remove a deleted actor', async function () {
       this.timeout(60000)
 
       const command = servers[0].accounts
-
-      await wait(10000)
 
       // Change actor name so the remote server returns a 404
       const to = servers[1].url + '/accounts/user2'
@@ -130,11 +127,8 @@ describe('Test AP refresher', function () {
   })
 
   describe('Playlist refresher', function () {
-
     it('Should remove a deleted playlist', async function () {
       this.timeout(60000)
-
-      await wait(10000)
 
       // Change UUID so the remote server returns a 404
       await sqlCommandServer2.setPlaylistField(playlistUUID2, 'uuid', '304afe4f-39f9-4d49-8ed7-ac57b86b178e')

@@ -1,23 +1,28 @@
-import { readJsonSync, writeJSON } from 'fs-extra/esm'
-import { join } from 'path'
-import { I18N_LOCALES, USER_ROLE_LABELS } from '@peertube/peertube-core-utils'
+import { USER_ROLE_LABELS } from '@peertube/peertube-core-utils'
 import { root } from '@peertube/peertube-node-utils'
+import { readJsonSync, writeJSON } from 'fs-extra/esm'
+import { readdir } from 'fs/promises'
+import { join } from 'path'
 import {
   ABUSE_STATES,
   buildLanguages,
+  CHANGE_OWNERSHIP_STATES,
   RUNNER_JOB_STATES,
+  STREAM_SYNC_STATE,
   USER_EXPORT_STATES,
+  USER_IMPORT_STATES,
   USER_REGISTRATION_STATES,
   VIDEO_CATEGORIES,
-  VIDEO_CHANNEL_SYNC_STATE,
+  VIDEO_CHANNEL_ACTIVITY_ACTIONS,
+  VIDEO_CHANNEL_ACTIVITY_TARGETS,
+  VIDEO_EMBED_PRIVACY_POLICIES,
   VIDEO_IMPORT_STATES,
   VIDEO_LICENCES,
   VIDEO_PLAYLIST_PRIVACIES,
   VIDEO_PLAYLIST_TYPES,
   VIDEO_PRIVACIES,
-  USER_IMPORT_STATES,
   VIDEO_STATES
-} from '@peertube/peertube-server/core/initializers/constants.js'
+} from '../../server/core/initializers/constants.js'
 
 const videojs = readJsonSync(join(root(), 'client', 'src', 'locale', 'videojs.en-US.json'))
 const playerKeys = {
@@ -25,8 +30,10 @@ const playerKeys = {
   'Auto': 'Auto',
   'Speed': 'Speed',
   'Subtitles/CC': 'Subtitles/CC',
+  'Peers': 'Peers',
   'peers': 'peers',
   'peer': 'peer',
+  'no peers': 'no peers',
   'Go to the video page': 'Go to the video page',
   'Settings': 'Settings',
   'Watching this video may reveal your IP address to others.': 'Watching this video may reveal your IP address to others.',
@@ -83,7 +90,24 @@ const playerKeys = {
   'Enable {1} subtitle': 'Enable {1} subtitle',
   '{1} (auto-generated)': '{1} (auto-generated)',
   'Go back': 'Go back',
-  'Audio only': 'Audio only'
+  'Audio only': 'Audio only',
+  'Sensitive content': 'Sensitive content',
+  'This video contains sensitive content.': 'This video contains sensitive content.',
+  'This video contains sensitive content, including:': 'This video contains sensitive content, including:',
+  'Learn more': 'Learn more',
+  'Content warning': 'Content warning',
+  'Violence': 'Violence',
+  'Shocking Content': 'Shocking Content',
+  'Explicit Sex': 'Explicit Sex',
+  'Upload speed:': 'Upload speed:',
+  'Download speed:': 'Download speed:',
+  'Uploader note:': 'Uploader note:',
+  'Close': 'Close',
+  '(skipped {1} buffers) ': '(skipped {1} buffers) ',
+  'Video Filter': 'Video Filter',
+  'Mirror Video': 'Mirror Video',
+  'Mirror': 'Mirror',
+  'This playlist is empty': 'This playlist is empty'
 }
 Object.assign(playerKeys, videojs)
 
@@ -97,7 +121,11 @@ Object.values(VIDEO_CATEGORIES)
   .concat(Object.values(VIDEO_PLAYLIST_PRIVACIES))
   .concat(Object.values(VIDEO_PLAYLIST_TYPES))
   .concat(Object.values(USER_ROLE_LABELS))
-  .concat(Object.values(VIDEO_CHANNEL_SYNC_STATE))
+  .concat(Object.values(STREAM_SYNC_STATE))
+  .concat(Object.values(VIDEO_CHANNEL_ACTIVITY_ACTIONS))
+  .concat(Object.values(VIDEO_CHANNEL_ACTIVITY_TARGETS))
+  .concat(Object.values(VIDEO_EMBED_PRIVACY_POLICIES))
+  .concat(Object.values(CHANGE_OWNERSHIP_STATES))
   .concat(Object.values(ABUSE_STATES))
   .concat(Object.values(USER_REGISTRATION_STATES))
   .concat(Object.values(RUNNER_JOB_STATES))
@@ -112,19 +140,22 @@ Object.values(VIDEO_CATEGORIES)
     'We cannot fetch the playlist. Please try again later.',
     'Playlist: {1}',
     'By {1}',
-    'Unavailable video'
+    'Unavailable video',
+    'Audio only',
+    'Unknown',
+    'Embedding is disabled for this video.',
+    'This video is not allowed to be embedded on this domain.'
   ])
-  .forEach(v => { serverKeys[v] = v })
-
-// More keys
-Object.assign(serverKeys, {
-  Unknown: 'Unknown'
-})
+  .forEach(v => {
+    serverKeys[v] = v
+  })
 
 // ISO 639 keys
 const languageKeys: any = {}
-const languages = buildLanguages()
-Object.keys(languages).forEach(k => { languageKeys[languages[k]] = languages[k] })
+const { allLanguages: languages } = await buildLanguages()
+Object.keys(languages).forEach(k => {
+  languageKeys[languages[k]] = languages[k]
+})
 
 Object.assign(serverKeys, languageKeys)
 
@@ -139,17 +170,21 @@ async function writeAll () {
   await writeJSON(join(localePath, 'player.en-US.json'), playerKeys, { spaces: 4 })
   await writeJSON(join(localePath, 'server.en-US.json'), serverKeys, { spaces: 4 })
 
-  for (const key of Object.keys(I18N_LOCALES)) {
-    const playerJsonPath = join(localePath, `player.${key}.json`)
-    const translatedPlayer = readJsonSync(playerJsonPath)
+  for (const file of await readdir(localePath)) {
+    if (file.match(/^player\.[^.]+\.json$/)) {
+      const playerJsonPath = join(localePath, file)
+      const translatedPlayer = readJsonSync(playerJsonPath)
 
-    const newTranslatedPlayer = Object.assign({}, playerKeys, translatedPlayer)
-    await writeJSON(playerJsonPath, newTranslatedPlayer, { spaces: 4 })
+      const newTranslatedPlayer = Object.assign({}, playerKeys, translatedPlayer)
+      await writeJSON(playerJsonPath, newTranslatedPlayer, { spaces: 4 })
+    }
 
-    const serverJsonPath = join(localePath, `server.${key}.json`)
-    const translatedServer = readJsonSync(serverJsonPath)
+    if (file.match(/^server\.[^.]+\.json$/)) {
+      const serverJsonPath = join(localePath, file)
+      const translatedServer = readJsonSync(serverJsonPath)
 
-    const newTranslatedServer = Object.assign({}, serverKeys, translatedServer)
-    await writeJSON(serverJsonPath, newTranslatedServer, { spaces: 4 })
+      const newTranslatedServer = Object.assign({}, serverKeys, translatedServer)
+      await writeJSON(serverJsonPath, newTranslatedServer, { spaces: 4 })
+    }
   }
 }

@@ -1,13 +1,16 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { HttpStatusCode, VideoPrivacy } from '@peertube/peertube-models'
 import { cleanupTests, createSingleServer, PeerTubeServer, setAccessTokensToServers } from '@peertube/peertube-server-commands'
 
 describe('Test video tokens', function () {
   let server: PeerTubeServer
+
   let privateVideoId: string
   let passwordProtectedVideoId: string
+
   let userToken: string
+  let editorToken: string
 
   const videoPassword = 'password'
 
@@ -22,6 +25,7 @@ describe('Test video tokens', function () {
       const { uuid } = await server.videos.quickUpload({ name: 'private video', privacy: VideoPrivacy.PRIVATE })
       privateVideoId = uuid
     }
+
     {
       const { uuid } = await server.videos.quickUpload({
         name: 'password protected video',
@@ -30,7 +34,9 @@ describe('Test video tokens', function () {
       })
       passwordProtectedVideoId = uuid
     }
+
     userToken = await server.users.generateUserAndToken('user1')
+    editorToken = await server.channelCollaborators.createEditor('editor', 'root_channel')
   })
 
   it('Should not generate tokens on private video for unauthenticated user', async function () {
@@ -55,7 +61,9 @@ describe('Test video tokens', function () {
   })
 
   it('Should generate token', async function () {
-    await server.videoToken.create({ videoId: privateVideoId })
+    for (const token of [ server.accessToken, editorToken ]) {
+      await server.videoToken.create({ videoId: privateVideoId, token })
+    }
   })
 
   it('Should generate token on password protected video', async function () {

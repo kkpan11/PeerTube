@@ -1,11 +1,13 @@
 import videojs from 'video.js'
+import { VideojsPlayer, VideojsPlugin } from '../../types'
 
 type KeyHandler = { accept: (event: KeyboardEvent) => boolean, cb: (e: KeyboardEvent) => void }
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
 
 export type HotkeysOptions = {
   isLive: boolean
+  liveDvrEnabled?: boolean
 }
 
 class PeerTubeHotkeysPlugin extends Plugin {
@@ -17,11 +19,13 @@ class PeerTubeHotkeysPlugin extends Plugin {
   declare private readonly handlers: KeyHandler[]
 
   declare private readonly isLive: boolean
+  declare private readonly liveDvrEnabled: boolean
 
-  constructor (player: videojs.Player, options: videojs.PlayerOptions & HotkeysOptions) {
-    super(player, options)
+  constructor (player: VideojsPlayer, options: HotkeysOptions) {
+    super(player)
 
     this.isLive = options.isLive
+    this.liveDvrEnabled = options.liveDvrEnabled === true
 
     this.handlers = this.buildHandlers()
 
@@ -50,7 +54,7 @@ class PeerTubeHotkeysPlugin extends Plugin {
     const handlers: KeyHandler[] = [
       // Play
       {
-        accept: e => (e.key === ' ' || e.key === 'MediaPlayPause'),
+        accept: e => (e.key === ' ' || e.key === 'MediaPlayPause' || this.isNaked(e, 'k')),
         cb: e => {
           e.preventDefault()
           e.stopPropagation()
@@ -150,10 +154,20 @@ class PeerTubeHotkeysPlugin extends Plugin {
           const dist = 1 / 30
           this.player.currentTime(this.player.currentTime() + dist)
         }
+      },
+
+      // Flip horizontally
+      {
+        accept: e => this.isNaked(e, 'h'),
+        cb: () => {
+          if (this.player.usingPlugin('videoFlipHorizontallyPlugin')) {
+            this.player.videoFlipHorizontallyPlugin().toggleFlip()
+          }
+        }
       }
     ]
 
-    if (this.isLive) return handlers
+    if (this.isLive && this.liveDvrEnabled !== true) return handlers
 
     return handlers.concat(this.buildVODHandlers())
   }
@@ -164,7 +178,7 @@ class PeerTubeHotkeysPlugin extends Plugin {
       {
         accept: e => this.isNaked(e, 'ArrowLeft') || this.isNaked(e, 'MediaRewind'),
         cb: e => {
-          if (this.isLive) return
+          if (!this.canSeek()) return
 
           e.preventDefault()
 
@@ -177,7 +191,7 @@ class PeerTubeHotkeysPlugin extends Plugin {
       {
         accept: e => this.isNaked(e, 'ArrowRight') || this.isNaked(e, 'MediaForward'),
         cb: e => {
-          if (this.isLive) return
+          if (!this.canSeek()) return
 
           e.preventDefault()
 
@@ -192,7 +206,7 @@ class PeerTubeHotkeysPlugin extends Plugin {
       handlers.push({
         accept: e => this.isNakedOrShift(e, i + ''),
         cb: e => {
-          if (this.isLive) return
+          if (!this.canSeek()) return
 
           e.preventDefault()
 
@@ -240,16 +254,20 @@ class PeerTubeHotkeysPlugin extends Plugin {
     const isNonLatin = key.charCodeAt(0) >= capitalHetaCode
 
     if (isNonLatin) {
-      if (code.indexOf('Key') === 0 && code.length === 4) { // i.e. 'KeyW'
+      if (code.startsWith('Key') && code.length === 4) { // i.e. 'KeyW'
         return code.charAt(3)
       }
 
-      if (code.indexOf('Digit') === 0 && code.length === 6) { // i.e. 'Digit7'
+      if (code.startsWith('Digit') && code.length === 6) { // i.e. 'Digit7'
         return code.charAt(5)
       }
     }
 
     return key.toUpperCase()
+  }
+
+  private canSeek () {
+    return this.isLive !== true || this.liveDvrEnabled === true
   }
 }
 

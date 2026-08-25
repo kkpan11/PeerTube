@@ -1,5 +1,5 @@
-@use '_variables' as *;
-@use '_mixins' as *;
+@use "_variables" as *;
+@use "_mixins" as *;
 
 $container-radius: 14px;
 
@@ -31,7 +31,7 @@ h1 {
 }
 
 .avatar img {
-  border-radius: $instance-img-radius;;
+  border-radius: $instance-img-radius;
 
   width: 110px;
   height: 110px;
@@ -64,12 +64,11 @@ h1 {
 }
 
 .social-buttons {
-
   .peertube-button-link {
     @include margin-left(0.5rem);
   }
 
-  .media {
+  .external-link {
     color: pvar(--fg-300);
     background-color: pvar(--bg-secondary-450);
     border: 1px solid pvar(--bg-secondary-450);
@@ -81,21 +80,6 @@ h1 {
 
     &:active {
       background-color: pvar(--bg-secondary-350);
-    }
-  }
-
-  .external-link {
-    color: pvar(--bg-secondary-350);
-    background-color: pvar(--fg-350);
-    border: 1px solid pvar(--fg-350);
-
-    &:hover {
-      background-color: pvar(--fg-400);
-      color: pvar(--bg-secondary-400);
-    }
-
-    &:active {
-      background-color: pvar(--fg-450);
     }
   }
 }

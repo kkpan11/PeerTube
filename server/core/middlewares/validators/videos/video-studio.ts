@@ -5,6 +5,7 @@ import {
   isStudioCutTaskValid,
   isStudioTaskAddIntroOutroValid,
   isStudioTaskAddWatermarkValid,
+  isStudioRemoveSegmentsTaskValid,
   isValidStudioTasksArray
 } from '@server/helpers/custom-validators/video-studio.js'
 import { cleanUpReqFiles } from '@server/helpers/express-utils.js'
@@ -12,7 +13,7 @@ import { CONFIG } from '@server/initializers/config.js'
 import { approximateIntroOutroAdditionalSize, getTaskFileFromReq } from '@server/lib/video-studio.js'
 import { isAudioFile } from '@peertube/peertube-ffmpeg'
 import { HttpStatusCode, UserRight, VideoStudioCreateEdition, VideoStudioTask } from '@peertube/peertube-models'
-import { areValidationErrors, checkUserCanManageVideo, checkUserQuota, doesVideoExist } from '../shared/index.js'
+import { areValidationErrors, checkCanManageVideo, checkUserQuota, doesVideoExist } from '../shared/index.js'
 import { checkVideoFileCanBeEdited } from './shared/index.js'
 
 const videoStudioAddEditionValidator = [
@@ -26,7 +27,7 @@ const videoStudioAddEditionValidator = [
     if (CONFIG.VIDEO_STUDIO.ENABLED !== true) {
       res.fail({
         status: HttpStatusCode.BAD_REQUEST_400,
-        message: 'Video studio is disabled on this instance'
+        message: req.t('Video studio is disabled on this instance')
       })
 
       return cleanUpReqFiles(req)
@@ -38,7 +39,7 @@ const videoStudioAddEditionValidator = [
     const body: VideoStudioCreateEdition = req.body
     const files = req.files as Express.Multer.File[]
 
-    const video = res.locals.videoAll
+    const video = res.locals.videoFull
     const videoIsAudio = video.hasAudio() && !video.hasVideo()
 
     for (let i = 0; i < body.tasks.length; i++) {
@@ -47,7 +48,7 @@ const videoStudioAddEditionValidator = [
       if (!checkTask(req, task, i)) {
         res.fail({
           status: HttpStatusCode.BAD_REQUEST_400,
-          message: `Task ${task.name} is invalid`
+          message: req.t('Task {taskName} is invalid', { taskName: task.name })
         })
 
         return cleanUpReqFiles(req)
@@ -57,7 +58,7 @@ const videoStudioAddEditionValidator = [
         if (task.name === 'add-intro' || task.name === 'add-outro' || task.name === 'add-watermark') {
           res.fail({
             status: HttpStatusCode.BAD_REQUEST_400,
-            message: `Task ${task.name} is invalid: video does not contain a video stream`
+            message: req.t('Task {taskName} is invalid: video does not contain a video stream', { taskName: task.name })
           })
 
           return cleanUpReqFiles(req)
@@ -71,7 +72,7 @@ const videoStudioAddEditionValidator = [
         if (await isAudioFile(filePath)) {
           res.fail({
             status: HttpStatusCode.BAD_REQUEST_400,
-            message: `Task ${task.name} is invalid: input file does not contain a video stream`
+            message: req.t('Task {taskName} is invalid: input file does not contain a video stream', { taskName: task.name })
           })
 
           return cleanUpReqFiles(req)
@@ -79,14 +80,17 @@ const videoStudioAddEditionValidator = [
       }
     }
 
-    if (!checkVideoFileCanBeEdited(video, res)) return cleanUpReqFiles(req)
+    if (!checkVideoFileCanBeEdited(video, req, res)) return cleanUpReqFiles(req)
 
     const user = res.locals.oauth.token.User
-    if (!checkUserCanManageVideo(user, video, UserRight.UPDATE_ANY_VIDEO, res)) return cleanUpReqFiles(req)
+    if (!await checkCanManageVideo({ user, video, right: UserRight.UPDATE_ANY_VIDEO, req, res, checkIsLocal: true, checkIsOwner: false })) {
+      return cleanUpReqFiles(req)
+    }
 
     // Try to make an approximation of bytes added by the intro/outro
     const additionalBytes = await approximateIntroOutroAdditionalSize(video, body.tasks, i => getTaskFileFromReq(files, i).path)
-    if (await checkUserQuota(user, additionalBytes, res) === false) return cleanUpReqFiles(req)
+    const channelUser = { id: res.locals.videoFull.VideoChannel.Account.userId }
+    if (await checkUserQuota({ channelUser, uploadSize: additionalBytes, req, res }) === false) return cleanUpReqFiles(req)
 
     return next()
   }
@@ -101,17 +105,18 @@ export {
 // ---------------------------------------------------------------------------
 
 const taskCheckers: {
-  [id in VideoStudioTask['name']]: (task: VideoStudioTask, indice?: number, files?: Express.Multer.File[]) => boolean
+  [id in VideoStudioTask['name']]: (options: { task: VideoStudioTask, indice?: number, files?: Express.Multer.File[] }) => boolean
 } = {
   'cut': isStudioCutTaskValid,
   'add-intro': isStudioTaskAddIntroOutroValid,
   'add-outro': isStudioTaskAddIntroOutroValid,
-  'add-watermark': isStudioTaskAddWatermarkValid
+  'add-watermark': isStudioTaskAddWatermarkValid,
+  'remove-segments': isStudioRemoveSegmentsTaskValid
 }
 
 function checkTask (req: express.Request, task: VideoStudioTask, indice?: number) {
   const checker = taskCheckers[task.name]
   if (!checker) return false
 
-  return checker(task, indice, req.files as Express.Multer.File[])
+  return checker({ task, indice, files: req.files as Express.Multer.File[] })
 }

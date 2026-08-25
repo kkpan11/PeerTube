@@ -1,10 +1,11 @@
 import { catchError } from 'rxjs/operators'
-import { HttpClient } from '@angular/common/http'
+import { HttpClient, HttpParams } from '@angular/common/http'
 import { Injectable, inject } from '@angular/core'
 import { RestExtractor } from '@app/core'
 import { LiveVideo, LiveVideoCreate, LiveVideoSession, LiveVideoUpdate, ResultList, VideoCreateResult } from '@peertube/peertube-models'
 import { environment } from '../../../environments/environment'
 import { VideoService } from '../shared-main/video/video.service'
+import { VideoPasswordService } from '../shared-main/video/video-password.service'
 
 @Injectable()
 export class LiveVideoService {
@@ -19,15 +20,19 @@ export class LiveVideoService {
       .pipe(catchError(err => this.restExtractor.handleError(err)))
   }
 
-  getVideoLive (videoId: number | string) {
+  getVideoLive (videoId: number | string, videoPassword?: string) {
+    const headers = VideoPasswordService.buildVideoPasswordHeader(videoPassword)
+
     return this.authHttp
-      .get<LiveVideo>(LiveVideoService.BASE_VIDEO_LIVE_URL + videoId)
+      .get<LiveVideo>(LiveVideoService.BASE_VIDEO_LIVE_URL + videoId, { headers })
       .pipe(catchError(err => this.restExtractor.handleError(err)))
   }
 
   listSessions (videoId: number | string) {
+    const params = new HttpParams().set('sort', '-startDate')
+
     return this.authHttp
-      .get<ResultList<LiveVideoSession>>(LiveVideoService.BASE_VIDEO_LIVE_URL + videoId + '/sessions')
+      .get<ResultList<LiveVideoSession>>(LiveVideoService.BASE_VIDEO_LIVE_URL + videoId + '/sessions', { params })
       .pipe(catchError(err => this.restExtractor.handleError(err)))
   }
 

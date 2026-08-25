@@ -10,14 +10,14 @@ import { cleanUpReqFiles } from '../../../helpers/express-utils.js'
 import { CONSTRAINTS_FIELDS, MIMETYPES } from '../../../initializers/constants.js'
 import {
   areValidationErrors,
+  checkCanManageVideo,
   checkCanSeeVideo,
-  checkUserCanManageVideo,
   doesVideoCaptionExist,
   doesVideoExist,
   isValidVideoIdParam,
   isValidVideoPasswordHeader
 } from '../shared/index.js'
-import { checkVideoCanBeTranscribedOrTranscripted } from './shared/video-validators.js'
+import { checkVideoCanBeTranscribedOrTranscoded } from './shared/video-validators.js'
 
 export const addVideoCaptionValidator = [
   isValidVideoIdParam('videoId'),
@@ -29,18 +29,30 @@ export const addVideoCaptionValidator = [
     .custom((_, { req }) => isVideoCaptionFile(req.files, 'captionfile'))
     .withMessage(
       'This caption file is not supported or too large. ' +
-      `Please, make sure it is under ${CONSTRAINTS_FIELDS.VIDEO_CAPTIONS.CAPTION_FILE.FILE_SIZE.max} bytes ` +
-      'and one of the following mimetypes: ' +
-      Object.keys(MIMETYPES.VIDEO_CAPTIONS.MIMETYPE_EXT).map(key => `${key} (${MIMETYPES.VIDEO_CAPTIONS.MIMETYPE_EXT[key]})`).join(', ')
+        `Please, make sure it is under ${CONSTRAINTS_FIELDS.VIDEO_CAPTIONS.CAPTION_FILE.FILE_SIZE.max} bytes ` +
+        'and one of the following mime types: ' +
+        Object.keys(MIMETYPES.VIDEO_CAPTIONS.MIMETYPE_EXT).map(key => `${key} (${MIMETYPES.VIDEO_CAPTIONS.MIMETYPE_EXT[key]})`).join(', ')
     ),
 
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (areValidationErrors(req, res)) return cleanUpReqFiles(req)
-    if (!await doesVideoExist(req.params.videoId, res)) return cleanUpReqFiles(req)
+    if (!await doesVideoExist(req.params.videoId, res, 'full')) return cleanUpReqFiles(req)
 
     // Check if the user who did the request is able to update the video
     const user = res.locals.oauth.token.User
-    if (!checkUserCanManageVideo(user, res.locals.videoAll, UserRight.UPDATE_ANY_VIDEO, res)) return cleanUpReqFiles(req)
+    if (
+      !await checkCanManageVideo({
+        user,
+        video: res.locals.videoFull,
+        right: UserRight.UPDATE_ANY_VIDEO,
+        req,
+        res,
+        checkIsLocal: true,
+        checkIsOwner: false
+      })
+    ) {
+      return cleanUpReqFiles(req)
+    }
 
     return next()
   }
@@ -60,19 +72,21 @@ export const generateVideoCaptionValidator = [
     if (CONFIG.VIDEO_TRANSCRIPTION.ENABLED !== true) {
       return res.fail({
         status: HttpStatusCode.BAD_REQUEST_400,
-        message: 'Video transcription is disabled on this instance'
+        message: req.t('Video transcription is disabled on this instance')
       })
     }
 
-    if (!await doesVideoExist(req.params.videoId, res)) return
+    if (!await doesVideoExist(req.params.videoId, res, 'with-rights')) return
 
-    const video = res.locals.videoAll
+    const video = res.locals.videoWithRights
 
-    if (!checkVideoCanBeTranscribedOrTranscripted(video, res)) return
+    if (!checkVideoCanBeTranscribedOrTranscoded({ video, req, res })) return
 
     // Check if the user who did the request is able to update the video
     const user = res.locals.oauth.token.User
-    if (!checkUserCanManageVideo(user, video, UserRight.UPDATE_ANY_VIDEO, res)) return
+    if (!await checkCanManageVideo({ user, video, right: UserRight.UPDATE_ANY_VIDEO, req, res, checkIsLocal: true, checkIsOwner: false })) {
+      return
+    }
 
     // Check the video has not already a caption
     const captions = await VideoCaptionModel.listVideoCaptions(video.id)
@@ -80,7 +94,7 @@ export const generateVideoCaptionValidator = [
       return res.fail({
         status: HttpStatusCode.BAD_REQUEST_400,
         type: ServerErrorCode.VIDEO_ALREADY_HAS_CAPTIONS,
-        message: 'This video already has captions'
+        message: req.t('This video already has captions')
       })
     }
 
@@ -90,7 +104,7 @@ export const generateVideoCaptionValidator = [
       if (user.hasRight(UserRight.UPDATE_ANY_VIDEO) !== true) {
         return res.fail({
           status: HttpStatusCode.FORBIDDEN_403,
-          message: 'Only admins can force transcription'
+          message: req.t('Only admins can force transcription')
         })
       }
 
@@ -102,7 +116,7 @@ export const generateVideoCaptionValidator = [
       return res.fail({
         status: HttpStatusCode.CONFLICT_409,
         type: ServerErrorCode.VIDEO_ALREADY_BEING_TRANSCRIBED,
-        message: 'This video is already being transcribed'
+        message: req.t('This video is already being transcribed')
       })
     }
 
@@ -119,11 +133,21 @@ export const deleteVideoCaptionValidator = [
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (areValidationErrors(req, res)) return
     if (!await doesVideoExist(req.params.videoId, res)) return
-    if (!await doesVideoCaptionExist(res.locals.videoAll, req.params.captionLanguage, res)) return
+    if (!await doesVideoCaptionExist(res.locals.videoFull, req.params.captionLanguage, res)) return
 
     // Check if the user who did the request is able to update the video
     const user = res.locals.oauth.token.User
-    if (!checkUserCanManageVideo(user, res.locals.videoAll, UserRight.UPDATE_ANY_VIDEO, res)) return
+    if (
+      !await checkCanManageVideo({
+        user,
+        video: res.locals.videoFull,
+        right: UserRight.UPDATE_ANY_VIDEO,
+        req,
+        res,
+        checkIsLocal: true,
+        checkIsOwner: false
+      })
+    ) return
 
     return next()
   }
@@ -136,9 +160,9 @@ export const listVideoCaptionsValidator = [
 
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (areValidationErrors(req, res)) return
-    if (!await doesVideoExist(req.params.videoId, res, 'only-video-and-blacklist')) return
+    if (!await doesVideoExist(req.params.videoId, res, 'with-blacklist')) return
 
-    const video = res.locals.onlyVideo
+    const video = res.locals.videoWithBlacklist
     if (!await checkCanSeeVideo({ req, res, video, paramId: req.params.videoId })) return
 
     return next()

@@ -1,21 +1,22 @@
 import { CommonModule } from '@angular/common'
 import {
-  AfterContentInit,
   booleanAttribute,
+  ChangeDetectionStrategy,
   ChangeDetectorRef,
   Component,
+  ContentChild,
   forwardRef,
   HostListener,
-  numberAttribute,
-  TemplateRef,
   inject,
   input,
-  contentChildren
+  numberAttribute,
+  output,
+  TemplateRef
 } from '@angular/core'
 import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms'
-import { PeerTubeTemplateDirective } from '@app/shared/shared-main/common/peertube-template.directive'
-import { DropdownModule } from 'primeng/dropdown'
-import { SelectOptionsItem } from '../../../../types/select-options-item.model'
+import { SelectItemGroup } from 'primeng/api'
+import { SelectModule } from 'primeng/select'
+import { SelectOptionsGroup, SelectOptionsItem } from '../../../../types/select-options-item.model'
 
 @Component({
   selector: 'my-select-options',
@@ -30,36 +31,48 @@ import { SelectOptionsItem } from '../../../../types/select-options-item.model'
       multi: true
     }
   ],
-  imports: [ DropdownModule, FormsModule, CommonModule ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ SelectModule, FormsModule, CommonModule ]
 })
-export class SelectOptionsComponent implements AfterContentInit, ControlValueAccessor {
+export class SelectOptionsComponent implements ControlValueAccessor {
   private cd = inject(ChangeDetectorRef)
 
-  readonly items = input<SelectOptionsItem[]>([])
+  readonly items = input<SelectOptionsItem[] | SelectOptionsGroup[]>([])
 
   readonly inputId = input.required<string>()
 
   readonly clearable = input(false, { transform: booleanAttribute })
   readonly filter = input(false, { transform: booleanAttribute })
+  readonly resetFilterOnHide = input(false, { transform: booleanAttribute })
+  readonly small = input(false, { transform: booleanAttribute })
+  readonly placeholder = input('')
+
+  readonly group = input(false, { transform: booleanAttribute })
+
+  readonly filterPlaceholder = input($localize`Search`)
+  readonly emptyFilterMessage = input($localize`No results found`)
+  readonly emptyMessage = input($localize`No items available`)
+
+  readonly appendTo = input<'body'>()
 
   readonly virtualScroll = input(false, { transform: booleanAttribute })
   readonly virtualScrollItemSize = input(39, { transform: numberAttribute })
 
-  readonly templates = contentChildren(PeerTubeTemplateDirective)
+  // eslint-disable-next-line @angular-eslint/no-output-on-prefix
+  readonly onHide = output()
+  // eslint-disable-next-line @angular-eslint/no-output-on-prefix
+  readonly onFilter = output<{ filter: string }>()
 
-  customItemTemplate: TemplateRef<any>
+  @ContentChild('selectOption', { descendants: false })
+  selectOptionTemplate: TemplateRef<any>
+
+  @ContentChild('itemExtra', { descendants: false })
+  itemExtraTemplate: TemplateRef<any>
 
   selectedId: number | string
   disabled = false
 
   wroteValue: number | string
-
-  ngAfterContentInit () {
-    {
-      const t = this.templates().find(t => t.name() === 'item')
-      if (t) this.customItemTemplate = t.template
-    }
-  }
 
   propagateChange = (_: any) => {
     // empty
@@ -67,11 +80,13 @@ export class SelectOptionsComponent implements AfterContentInit, ControlValueAcc
 
   // Allow plugins to update our value
   @HostListener('change', [ '$event.target' ])
-  handleChange (target: HTMLInputElement) {
-    // Prevent the primeng search input to update our value
-    if (target.role === 'searchbox') return
+  handleChange (target: EventTarget) {
+    const el = target as HTMLInputElement
 
-    this.writeValue(target.value)
+    // Prevent the primeng search input to update our value
+    if (el.role === 'searchbox') return
+
+    this.writeValue(el.value)
     this.onModelChange()
   }
 
@@ -106,6 +121,10 @@ export class SelectOptionsComponent implements AfterContentInit, ControlValueAcc
   }
 
   getSelectedItem () {
-    return this.items().find(i => i.id === this.selectedId)
+    const items = this.group()
+      ? (this.items() as unknown as SelectItemGroup[]).reduce((acc, group) => acc.concat(group.items), [])
+      : this.items()
+
+    return items.find(i => i.id === this.selectedId)
   }
 }

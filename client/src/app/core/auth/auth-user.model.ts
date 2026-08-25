@@ -1,4 +1,5 @@
 import { User } from '@app/core/users/user.model'
+import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
 import { hasUserRight } from '@peertube/peertube-core-utils'
 import {
   MyUserSpecialPlaylist,
@@ -12,12 +13,14 @@ import { OAuthUserTokens } from '@root-helpers/users'
 export class AuthUser extends User implements ServerMyUserModel {
   oauthTokens: OAuthUserTokens
   specialPlaylists: MyUserSpecialPlaylist[]
+  videoChannelCollaborations?: ServerMyUserModel['videoChannelCollaborations']
 
   constructor (userHash: Partial<ServerMyUserModel>, hashTokens: Partial<OAuthUserTokens>) {
     super(userHash)
 
     this.oauthTokens = new OAuthUserTokens(hashTokens)
     this.specialPlaylists = userHash.specialPlaylists
+    this.videoChannelCollaborations = userHash.videoChannelCollaborations
   }
 
   getAccessToken () {
@@ -41,12 +44,28 @@ export class AuthUser extends User implements ServerMyUserModel {
     return hasUserRight(this.role.id, right)
   }
 
-  canManage (user: ServerUserModel) {
+  canManageUser (user: ServerUserModel) {
     const myRole = this.role.id
 
     if (myRole === UserRole.ADMINISTRATOR) return true
 
     // I'm a moderator: I can only manage users
     return user.role.id === UserRole.USER
+  }
+
+  isCollaboratingToChannels () {
+    return this.videoChannelCollaborations.length !== 0
+  }
+
+  isEditorOfChannel (channel?: Pick<VideoChannel, 'id'>) {
+    if (!channel) return false
+
+    return this.videoChannelCollaborations.some(c => c.id === channel.id)
+  }
+
+  isOwnerOfChannel (channel?: Pick<VideoChannel, 'id'>) {
+    if (!channel) return true
+
+    return this.videoChannels.some(c => c.id === channel.id)
   }
 }

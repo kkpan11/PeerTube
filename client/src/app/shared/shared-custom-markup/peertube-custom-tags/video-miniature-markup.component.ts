@@ -1,6 +1,5 @@
-import { NgIf } from '@angular/common'
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit, inject, input, model, output } from '@angular/core'
-import { AuthService, Notifier } from '@app/core'
+import { Notifier, User, UserService } from '@app/core'
 import { Video } from '@app/shared/shared-main/video/video.model'
 import { FindInBulkService } from '@app/shared/shared-search/find-in-bulk.service'
 import { objectKeysTyped } from '@peertube/peertube-core-utils'
@@ -17,12 +16,12 @@ import { CustomMarkupComponent } from './shared'
   templateUrl: 'video-miniature-markup.component.html',
   styleUrls: [ 'video-miniature-markup.component.scss' ],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ NgIf, VideoMiniatureComponent ]
+  imports: [ VideoMiniatureComponent ]
 })
 export class VideoMiniatureMarkupComponent implements CustomMarkupComponent, OnInit {
-  private auth = inject(AuthService)
   private findInBulk = inject(FindInBulkService)
   private notifier = inject(Notifier)
+  private userService = inject(UserService)
   private cd = inject(ChangeDetectorRef)
 
   readonly uuid = input<string>(undefined)
@@ -36,15 +35,10 @@ export class VideoMiniatureMarkupComponent implements CustomMarkupComponent, OnI
     views: true,
     by: true,
     avatar: true,
-    privacyLabel: false,
-    privacyText: false,
-    state: false,
-    blacklistInfo: false
+    privacyLabel: false
   }
 
-  getUser () {
-    return this.auth.getUser()
-  }
+  user: User
 
   ngOnInit () {
     if (this.onlyDisplayTitle()) {
@@ -52,6 +46,9 @@ export class VideoMiniatureMarkupComponent implements CustomMarkupComponent, OnI
         this.displayOptions[key] = false
       }
     }
+
+    this.userService.getAnonymousOrLoggedUser()
+      .subscribe(user => this.user = user)
 
     if (this.video()) return
 

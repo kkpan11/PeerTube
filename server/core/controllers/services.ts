@@ -1,23 +1,42 @@
-import express from 'express'
-import cors from 'cors'
 import { escapeHTML, forceNumber } from '@peertube/peertube-core-utils'
-import { MChannelSummary } from '@server/types/models/index.js'
-import { EMBED_SIZE, PREVIEWS_SIZE, THUMBNAILS_SIZE, WEBSERVER } from '../initializers/constants.js'
+import { HttpStatusCode } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
+import { getOrCreateAPActor } from '@server/lib/activitypub/actors/get.js'
+import { loadActorUrlOrGetFromWebfinger } from '@server/lib/activitypub/actors/webfinger.js'
+import { AccountModel } from '@server/models/account/account.js'
+import { VideoChannelModel } from '@server/models/video/video-channel.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { MChannelSummary, MThumbnail } from '@server/types/models/index.js'
+import cors from 'cors'
+import express from 'express'
+import { EMBED_SIZE, WEBSERVER } from '../initializers/constants.js'
 import { apiRateLimiter, asyncMiddleware, oembedValidator } from '../middlewares/index.js'
-import { accountNameWithHostGetValidator } from '../middlewares/validators/index.js'
+import { accountHandleGetValidatorFactory } from '../middlewares/validators/index.js'
+
+const logger = createLogger()
 
 const servicesRouter = express.Router()
 
-servicesRouter.use('/oembed',
+servicesRouter.use(
+  '/oembed',
   cors(),
   apiRateLimiter,
   asyncMiddleware(oembedValidator),
-  generateOEmbed
+  asyncMiddleware(generateOEmbed)
 )
-servicesRouter.use('/redirect/accounts/:accountName',
+
+// TODO: deprecated, remove in PeerTube 8.1
+servicesRouter.use(
+  '/redirect/accounts/:handle',
   apiRateLimiter,
-  asyncMiddleware(accountNameWithHostGetValidator),
+  asyncMiddleware(accountHandleGetValidatorFactory({ checkIsLocal: false, checkCanManage: false })),
   redirectToAccountUrl
+)
+
+servicesRouter.use(
+  '/redirect/actors/:handle',
+  apiRateLimiter,
+  asyncMiddleware(redirectToActorUrl)
 )
 
 // ---------------------------------------------------------------------------
@@ -28,8 +47,11 @@ export {
 
 // ---------------------------------------------------------------------------
 
-function generateOEmbed (req: express.Request, res: express.Response) {
-  if (res.locals.videoAll) return generateVideoOEmbed(req, res)
+async function generateOEmbed (req: express.Request, res: express.Response) {
+  if (res.locals.videoWithRights) {
+    await generateVideoOEmbed(req, res)
+    return
+  }
 
   return generatePlaylistOEmbed(req, res)
 }
@@ -41,23 +63,22 @@ function generatePlaylistOEmbed (req: express.Request, res: express.Response) {
     channel: playlist.VideoChannel,
     title: playlist.name,
     embedPath: playlist.getEmbedStaticPath() + buildPlayerURLQuery(req.query.url),
-    previewPath: playlist.getThumbnailStaticPath(),
-    previewSize: THUMBNAILS_SIZE,
+    thumbnail: playlist.getBestThumbnail('16:9', 1280),
     req
   })
 
   return res.json(json)
 }
 
-function generateVideoOEmbed (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
+async function generateVideoOEmbed (req: express.Request, res: express.Response) {
+  const video = res.locals.videoWithRights
+  const videoWithThumbnails = await VideoModel.loadWithThumbnails(video.id)
 
   const json = buildOEmbed({
     channel: video.VideoChannel,
     title: video.name,
     embedPath: video.getEmbedStaticPath() + buildPlayerURLQuery(req.query.url),
-    previewPath: video.getPreviewStaticPath(),
-    previewSize: PREVIEWS_SIZE,
+    thumbnail: videoWithThumbnails.getBestThumbnail('16:9', 1280),
     req
   })
 
@@ -106,14 +127,11 @@ function buildOEmbed (options: {
   req: express.Request
   title: string
   channel: MChannelSummary
-  previewPath: string | null
   embedPath: string
-  previewSize: {
-    height: number
-    width: number
-  }
+
+  thumbnail: MThumbnail
 }) {
-  const { req, previewSize, previewPath, title, channel, embedPath } = options
+  const { req, thumbnail, title, channel, embedPath } = options
 
   const webserverUrl = WEBSERVER.URL
   const maxHeight = forceNumber(req.query.maxheight)
@@ -122,26 +140,14 @@ function buildOEmbed (options: {
   const embedUrl = webserverUrl + embedPath
   const embedTitle = escapeHTML(title)
 
-  let thumbnailUrl = previewPath
-    ? webserverUrl + previewPath
-    : undefined
-
   let embedWidth = EMBED_SIZE.width
   if (maxWidth < embedWidth) embedWidth = maxWidth
 
   let embedHeight = EMBED_SIZE.height
   if (maxHeight < embedHeight) embedHeight = maxHeight
 
-  // Our thumbnail is too big for the consumer
-  if (
-    (maxHeight !== undefined && maxHeight < previewSize.height) ||
-    (maxWidth !== undefined && maxWidth < previewSize.width)
-  ) {
-    thumbnailUrl = undefined
-  }
-
   const html = `<iframe width="${embedWidth}" height="${embedHeight}" sandbox="allow-same-origin allow-scripts allow-popups allow-forms" ` +
-    `title="${embedTitle}" src="${embedUrl}" frameborder="0" allowfullscreen></iframe>`
+    `title="${embedTitle}" src="${embedUrl}" style="border: none" allow="fullscreen"></iframe>`
 
   const json: any = {
     type: 'video',
@@ -156,15 +162,41 @@ function buildOEmbed (options: {
     provider_url: webserverUrl
   }
 
-  if (thumbnailUrl !== undefined) {
-    json.thumbnail_url = thumbnailUrl
-    json.thumbnail_width = previewSize.width
-    json.thumbnail_height = previewSize.height
+  if (thumbnail && (!maxHeight || thumbnail.height < maxHeight) && (!maxWidth || thumbnail.width < maxWidth)) {
+    json.thumbnail_url = webserverUrl + thumbnail.getFileStaticPath()
+    json.thumbnail_width = thumbnail.width
+    json.thumbnail_height = thumbnail.height
   }
 
   return json
 }
 
+// ---------------------------------------------------------------------------
 function redirectToAccountUrl (req: express.Request, res: express.Response, next: express.NextFunction) {
   return res.redirect(res.locals.account.Actor.url)
+}
+
+async function redirectToActorUrl (req: express.Request, res: express.Response, next: express.NextFunction) {
+  const handle = req.params.handle
+
+  if (handle.includes('@')) {
+    try {
+      const actorUrl = await loadActorUrlOrGetFromWebfinger(handle)
+      const actor = await getOrCreateAPActor(actorUrl, 'all')
+
+      if (actor) return res.redirect(actor.url)
+    } catch (error) {
+      logger.info('Cannot redirect to actor URL from handle.', { handle, error })
+
+      return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
+    }
+  } else {
+    const account = await AccountModel.loadByHandle(handle)
+    if (account) return res.redirect(account.Actor.url)
+
+    const channel = await VideoChannelModel.loadByHandleAndPopulateAccount(handle)
+    if (channel) return res.redirect(channel.Actor.url)
+  }
+
+  return res.sendStatus(HttpStatusCode.NOT_FOUND_404)
 }

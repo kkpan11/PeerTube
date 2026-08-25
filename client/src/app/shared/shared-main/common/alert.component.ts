@@ -1,12 +1,12 @@
 import { NgClass } from '@angular/common'
-import { booleanAttribute, Component, OnChanges, OnInit, input } from '@angular/core'
+import { booleanAttribute, Component, input, OnChanges, OnInit, ChangeDetectionStrategy } from '@angular/core'
 
 export type AlertType = 'success' | 'info' | 'warning' | 'danger' | 'primary'
 
 @Component({
   selector: 'my-alert',
-  styleUrls: [ './alert.component.scss' ],
   templateUrl: './alert.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [ NgClass ]
 })
 export class AlertComponent implements OnInit, OnChanges {

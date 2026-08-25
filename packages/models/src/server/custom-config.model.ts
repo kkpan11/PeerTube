@@ -1,3 +1,5 @@
+import { PlayerTheme } from '../player/player-theme.type.js'
+import { VideoCommentPolicyType, VideoPrivacyType } from '../videos/index.js'
 import { NSFWPolicyType } from '../videos/nsfw-policy.type.js'
 import { BroadcastMessageLevel } from './broadcast-message-level.type.js'
 
@@ -28,6 +30,8 @@ export interface CustomConfig {
     businessModel: string
     hardwareInformation: string
 
+    defaultLanguage: string
+
     languages: string[]
     categories: number[]
 
@@ -44,6 +48,7 @@ export interface CustomConfig {
       externalLink: string
       mastodonLink: string
       blueskyLink: string
+      xLink: string
     }
 
     defaultClientRoute: string
@@ -56,6 +61,20 @@ export interface CustomConfig {
 
   theme: {
     default: string
+
+    customization: {
+      primaryColor: string
+      onPrimaryColor: string
+      foregroundColor: string
+      backgroundColor: string
+      backgroundSecondaryColor: string
+      menuForegroundColor: string
+      menuBackgroundColor: string
+      menuBorderRadius: string
+      headerForegroundColor: string
+      headerBackgroundColor: string
+      inputBorderRadius: string
+    }
   }
 
   services: {
@@ -65,34 +84,25 @@ export interface CustomConfig {
   }
 
   client: {
+    header: {
+      hideInstanceName: boolean
+    }
+
     videos: {
       miniature: {
         preferAuthorDisplayName: boolean
       }
     }
 
+    browseVideos: {
+      defaultSort: string
+      defaultScope: string
+    }
+
     menu: {
       login: {
         redirectOnSingleExternalAuth: boolean
       }
-    }
-  }
-
-  cache: {
-    previews: {
-      size: number
-    }
-
-    captions: {
-      size: number
-    }
-
-    torrents: {
-      size: number
-    }
-
-    storyboards: {
-      size: number
     }
   }
 
@@ -106,6 +116,16 @@ export interface CustomConfig {
 
   admin: {
     email: string
+  }
+
+  email: {
+    body: {
+      signature: string
+    }
+
+    subject: {
+      prefix: string
+    }
   }
 
   contactForm: {
@@ -149,6 +169,7 @@ export interface CustomConfig {
     resolutions: ConfigResolutions
 
     alwaysTranscodeOriginalResolution: boolean
+    alwaysTranscodePodcastOptimizedAudio: boolean
 
     fps: {
       max: number
@@ -191,6 +212,11 @@ export interface CustomConfig {
       fps: {
         max: number
       }
+    }
+
+    dvr: {
+      // In seconds, 0 means no DVR
+      maxWindow: number
     }
   }
 
@@ -263,10 +289,20 @@ export interface CustomConfig {
     }
   }
 
+  blocklist: {
+    publicLog: {
+      enabled: boolean
+    }
+  }
+
   followers: {
     instance: {
       enabled: boolean
       manualApproval: boolean
+    }
+
+    channels: {
+      enabled: boolean
     }
   }
 
@@ -306,5 +342,40 @@ export interface CustomConfig {
 
   storyboards: {
     enabled: boolean
+    remoteRunners: {
+      enabled: boolean
+    }
+  }
+
+  defaults: {
+    publish: {
+      downloadEnabled: boolean
+      commentsPolicy: VideoCommentPolicyType
+      privacy: VideoPrivacyType
+      licence: number
+    }
+
+    live: {
+      saveReplay: boolean
+    }
+
+    p2p: {
+      webapp: {
+        enabled: boolean
+      }
+
+      embed: {
+        enabled: boolean
+      }
+    }
+
+    player: {
+      theme: PlayerTheme
+      autoPlay: boolean
+    }
+  }
+
+  videoComments: {
+    acceptRemoteComments: boolean
   }
 }

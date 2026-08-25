@@ -1,5 +1,5 @@
 import { forceNumber } from '@peertube/peertube-core-utils'
-import { FileStorageType, RunnerJobPayload } from '@peertube/peertube-models'
+import { FileStorageType, RunnerJobPayload, VideoImportStateType } from '@peertube/peertube-models'
 import { PeerTubeServer } from '@peertube/peertube-server-commands'
 import { QueryTypes, Sequelize } from 'sequelize'
 
@@ -7,7 +7,6 @@ export class SQLCommand {
   private sequelize: Sequelize
 
   constructor (private readonly server: PeerTubeServer) {
-
   }
 
   deleteAll (table: string) {
@@ -23,6 +22,15 @@ export class SQLCommand {
     if (total === null) return 0
 
     return parseInt(total, 10)
+  }
+
+  async getVideoField (uuid: string, field: string) {
+    const rows = await this.selectQuery<{ value: any }>(
+      `SELECT ${this.escapeColumnName(field)} AS value FROM "video" WHERE uuid = :uuid`,
+      { uuid }
+    )
+
+    return rows[0]?.value
   }
 
   async getInternalFileUrl (fileId: number) {
@@ -43,8 +51,8 @@ export class SQLCommand {
   }
 
   async countVideoViewsOf (uuid: string) {
-    const query = 'SELECT SUM("videoView"."views") AS "total" FROM "videoView" ' +
-      `INNER JOIN "video" ON "video"."id" = "videoView"."videoId" WHERE "video"."uuid" = :uuid`
+    const query = 'SELECT SUM("videoStat"."views") AS "total" FROM "videoStat" ' +
+      `INNER JOIN "video" ON "video"."id" = "videoStat"."videoId" WHERE "video"."uuid" = :uuid`
 
     const [ { total } ] = await this.selectQuery<{ total: number }>(query, { uuid })
     if (!total) return 0
@@ -62,17 +70,17 @@ export class SQLCommand {
   async setVideoFileStorageOf (uuid: string, storage: FileStorageType) {
     await this.updateQuery(
       `UPDATE "videoFile" SET storage = :storage ` +
-      `WHERE "videoId" IN (SELECT id FROM "video" WHERE uuid = :uuid) OR ` +
-      `"videoStreamingPlaylistId" IN (` +
+        `WHERE "videoId" IN (SELECT id FROM "video" WHERE uuid = :uuid) OR ` +
+        `"videoStreamingPlaylistId" IN (` +
         `SELECT "videoStreamingPlaylist".id FROM "videoStreamingPlaylist" ` +
         `INNER JOIN video ON video.id = "videoStreamingPlaylist"."videoId" AND "video".uuid = :uuid` +
-      `)`,
+        `)`,
       { storage, uuid }
     )
 
     await this.updateQuery(
       `UPDATE "videoStreamingPlaylist" SET storage = :storage ` +
-      `WHERE "videoId" IN (SELECT id FROM "video" WHERE uuid = :uuid)`,
+        `WHERE "videoId" IN (SELECT id FROM "video" WHERE uuid = :uuid)`,
       { storage, uuid }
     )
 
@@ -99,6 +107,31 @@ export class SQLCommand {
     await this.updateQuery(`UPDATE "user" SET email = :email WHERE "username" = :username`, { email, username })
   }
 
+  async getUserExternalId (username: string) {
+    const rows = await this.selectQuery<{ pluginAuthExternalId: string }>(
+      `SELECT "pluginAuthExternalId" FROM "user" WHERE "username" = :username`,
+      { username }
+    )
+
+    return rows[0]?.pluginAuthExternalId
+  }
+
+  // ---------------------------------------------------------------------------
+
+  async setImportUrl (videoImportId: number, importUrl: string) {
+    await this.updateQuery(
+      `UPDATE "videoImport" SET "targetUrl" = :importUrl WHERE id = :videoImportId`,
+      { importUrl, videoImportId }
+    )
+  }
+
+  async setImportState (videoImportId: number, state: VideoImportStateType) {
+    await this.updateQuery(
+      `UPDATE "videoImport" SET "state" = :state WHERE id = :videoImportId`,
+      { state, videoImportId }
+    )
+  }
+
   // ---------------------------------------------------------------------------
 
   setPluginVersion (pluginName: string, newVersion: string) {
@@ -118,7 +151,7 @@ export class SQLCommand {
 
   // ---------------------------------------------------------------------------
 
-  selectQuery <T extends object> (query: string, replacements: { [id: string]: string | number } = {}) {
+  selectQuery<T extends object> (query: string, replacements: { [id: string]: string | number } = {}) {
     const seq = this.getSequelize()
     const options = {
       type: QueryTypes.SELECT as QueryTypes.SELECT,
@@ -138,12 +171,13 @@ export class SQLCommand {
   // ---------------------------------------------------------------------------
 
   async getPlaylistInfohash (playlistId: number) {
-    const query = 'SELECT "p2pMediaLoaderInfohashes" FROM "videoStreamingPlaylist" WHERE id = :playlistId'
+    const query = `SELECT CONVERT_FROM("infohash", 'SQL_ASCII') AS "infohash" ` +
+      `FROM "videoInfohash" WHERE "videoStreamingPlaylistId" = :playlistId`
 
-    const result = await this.selectQuery<{ p2pMediaLoaderInfohashes: string }>(query, { playlistId })
+    const result = await this.selectQuery<{ infohash: string }>(query, { playlistId })
     if (!result || result.length === 0) return []
 
-    return result[0].p2pMediaLoaderInfohashes
+    return result.map(r => r.infohash)
   }
 
   // ---------------------------------------------------------------------------
@@ -151,6 +185,20 @@ export class SQLCommand {
   setActorFollowScores (newScore: number) {
     return this.updateQuery(`UPDATE "actorFollow" SET "score" = :newScore`, { newScore })
   }
+
+  setActorFollowUpdatedAt (updatedAt: string) {
+    return this.updateQuery(`UPDATE "actorFollow" SET "updatedAt" = :updatedAt`, { updatedAt })
+  }
+
+  async getFirstActorFollowUpdatedAt () {
+    const rows = await this.selectQuery<{ updatedAt: string }>(
+      `SELECT "updatedAt" FROM "actorFollow" ORDER BY "id" ASC LIMIT 1`
+    )
+
+    return rows[0]?.updatedAt
+  }
+
+  // ---------------------------------------------------------------------------
 
   setTokenField (accessToken: string, field: string, value: string) {
     return this.updateQuery(

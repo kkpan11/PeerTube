@@ -1,19 +1,19 @@
-import { Component, ElementRef, OnInit, inject, viewChild } from '@angular/core'
+import { Component, ElementRef, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
+import { FormsModule } from '@angular/forms'
 import { HtmlRendererService } from '@app/core'
 import { ConfirmService } from '@app/core/confirm/confirm.service'
 import { POP_STATE_MODAL_DISMISS } from '@app/helpers'
-import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
-import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap/modal/modal-ref'
+import { NgbModal, NgbModalRef } from '@ng-bootstrap/ng-bootstrap'
 import { InputTextComponent } from '../shared/shared-forms/input-text.component'
-import { FormsModule } from '@angular/forms'
-import { NgIf } from '@angular/common'
+
 import { GlobalIconComponent } from '../shared/shared-icons/global-icon.component'
 
 @Component({
   selector: 'my-confirm',
   templateUrl: './confirm.component.html',
   styleUrls: [ './confirm.component.scss' ],
-  imports: [ GlobalIconComponent, NgIf, FormsModule, InputTextComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ GlobalIconComponent, FormsModule, InputTextComponent ]
 })
 export class ConfirmComponent implements OnInit {
   private modalService = inject(NgbModal)
@@ -28,6 +28,10 @@ export class ConfirmComponent implements OnInit {
   inputLabel = ''
 
   inputValue = ''
+
+  moreInfo: { title: string, content: string }
+
+  cancelButtonText = ''
   confirmButtonText = ''
 
   errorMessage = ''
@@ -45,13 +49,15 @@ export class ConfirmComponent implements OnInit {
         this.expectedInputValue = ''
         this.inputLabel = ''
         this.inputValue = ''
+        this.moreInfo = undefined
         this.confirmButtonText = ''
         this.isPasswordInput = false
         this.errorMessage = ''
 
-        const { type, title, message, confirmButtonText, errorMessage } = payload
+        const { type, title, message, confirmButtonText, cancelButtonText, errorMessage, moreInfo } = payload
 
         this.title = title
+        this.moreInfo = moreInfo
 
         if (type === 'confirm-expected-input') {
           this.inputLabel = payload.inputLabel
@@ -63,8 +69,9 @@ export class ConfirmComponent implements OnInit {
         }
 
         this.confirmButtonText = confirmButtonText || $localize`Confirm`
+        this.cancelButtonText = cancelButtonText || $localize`Cancel`
 
-        this.html.toSimpleSafeHtml(message)
+        this.html.toSimpleSafeHtmlWithLinks(message)
           .then(html => {
             this.message = html
 

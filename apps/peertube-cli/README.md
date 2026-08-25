@@ -10,8 +10,7 @@ See https://docs.joinpeertube.org/maintain/tools#remote-tools
 
 ```bash
 cd peertube-root
-yarn install --pure-lockfile
-cd apps/peertube-cli && yarn install --pure-lockfile
+npm run install-node-dependencies
 ```
 
 ## Develop
@@ -32,12 +31,12 @@ npm run build:peertube-cli
 
 ```bash
 cd peertube-root
-node apps/peertube-cli/dist/peertube-cli.js --help
+node apps/peertube-cli/dist/peertube.js --help
 ```
 
 ## Publish on NPM
 
 ```bash
 cd peertube-root
-(cd apps/peertube-cli && npm version patch) && npm run build:peertube-cli && (cd apps/peertube-cli && npm publish --access=public)
+(cd apps/peertube-cli && npm version patch) && npm run build:peertube-cli && (cd apps/peertube-cli && npm login && npm publish --access=public)
 ```

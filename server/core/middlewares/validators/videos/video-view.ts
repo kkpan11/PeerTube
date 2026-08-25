@@ -1,11 +1,19 @@
 import { HttpStatusCode } from '@peertube/peertube-models'
-import { isVideoTimeValid } from '@server/helpers/custom-validators/video-view.js'
+import {
+  isVideoTimeValid,
+  isVideoViewEvent,
+  isVideoViewUAInfo,
+  toVideoViewUADeviceOrNull
+} from '@server/helpers/custom-validators/video-view.js'
 import { getCachedVideoDuration } from '@server/lib/video.js'
-import { LocalVideoViewerModel } from '@server/models/view/local-video-viewer.js'
+import { LocalVideoViewerModel } from '@server/models/stat/local-video-viewer.js'
 import express from 'express'
 import { body, param } from 'express-validator'
 import { isIdValid, toIntOrNull } from '../../../helpers/custom-validators/misc.js'
 import { areValidationErrors, doesVideoExist, isValidVideoIdParam } from '../shared/index.js'
+import { createLogger } from '@server/helpers/logger.js'
+
+const logger = createLogger()
 
 const tags = [ 'views' ]
 
@@ -42,20 +50,35 @@ export const videoViewValidator = [
     .optional()
     .isAlphanumeric(undefined, { ignore: '-' }),
 
+  body('viewEvent')
+    .optional()
+    .custom(isVideoViewEvent),
+
+  body('client')
+    .optional()
+    .custom(isVideoViewUAInfo),
+  body('device')
+    .optional()
+    .customSanitizer(toVideoViewUADeviceOrNull),
+  body('operatingSystem')
+    .optional()
+    .custom(isVideoViewUAInfo),
+
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (areValidationErrors(req, res, { tags })) return
-    if (!await doesVideoExist(req.params.videoId, res, 'unsafe-only-immutable-attributes')) return
+    if (!await doesVideoExist(req.params.videoId, res, 'unsafe-immutable-only')) return
 
-    const video = res.locals.onlyImmutableVideo
+    const video = res.locals.videoImmutable
     const { duration } = await getCachedVideoDuration(video.id)
 
     const currentTime = req.body.currentTime
     if (!isVideoTimeValid(currentTime, duration)) {
+      logger.warn(`Current time ${currentTime} is invalid (video ${video.uuid} duration: ${duration})`, { tags: [ ...tags, video.uuid ] })
+
       return res.fail({
         status: HttpStatusCode.BAD_REQUEST_400,
-        message: `Current time ${currentTime} is invalid (video ${video.uuid} duration: ${duration})`,
-        logLevel: 'warn',
-        tags
+        message: `Current time ${currentTime} is invalid for this video`,
+        tags: [ ...tags, video.uuid ]
       })
     }
 

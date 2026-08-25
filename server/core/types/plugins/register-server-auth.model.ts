@@ -1,10 +1,10 @@
-import express from 'express'
 import { UserAdminFlagType, UserRoleType } from '@peertube/peertube-models'
-import { MOAuthToken, MUser } from '../models/index.js'
+import express from 'express'
+import { MOAuthTokenLight, MUser } from '../models/index.js'
 
 export type RegisterServerAuthOptions = RegisterServerAuthPassOptions | RegisterServerAuthExternalOptions
 
-export type AuthenticatedResultUpdaterFieldName = 'displayName' | 'role' | 'adminFlags' | 'videoQuota' | 'videoQuotaDaily'
+export type AuthenticatedResultUpdaterFieldName = 'displayName' | 'role' | 'adminFlags' | 'videoQuota' | 'videoQuotaDaily' | 'language'
 
 export interface RegisterServerAuthenticatedResult {
   // Update the user profile if it already exists
@@ -21,6 +21,13 @@ export interface RegisterServerAuthenticatedResult {
   role?: UserRoleType
   displayName?: string
 
+  // Stable identifier of this user at the identity provider (OIDC `sub` claim, SAML `NameID`, LDAP `uid`/`entryUUID`...)
+  // When provided, PeerTube links/looks up the local account using this id instead of relying only on the email
+  // address, which is more robust across identity provider email changes and avoids account confusion from
+  // email collisions. Optional for backward compatibility.
+  // PeerTube >= 8.3
+  externalId?: string
+
   // PeerTube >= 5.1
   adminFlags?: UserAdminFlagType
 
@@ -28,11 +35,17 @@ export interface RegisterServerAuthenticatedResult {
   videoQuota?: number
   // PeerTube >= 5.1
   videoQuotaDaily?: number
+
+  // Interface/email language of the user (must be one of PeerTube's available locales)
+  // PeerTube >= 8.3
+  language?: string
 }
 
 export interface RegisterServerExternalAuthenticatedResult extends RegisterServerAuthenticatedResult {
   req: express.Request
   res: express.Response
+  // Redirect the user to this external URI after the external auth has been verified.
+  externalRedirectUri?: string
 }
 
 interface RegisterServerAuthBase {
@@ -45,7 +58,11 @@ interface RegisterServerAuthBase {
 
   // Your plugin can hook PeerTube access/refresh token validity
   // So you can control for your plugin the user session lifetime
-  hookTokenValidity?(options: { token: MOAuthToken, type: 'access' | 'refresh' }): Promise<{ valid: boolean }>
+  hookTokenValidity?(options: {
+    token: MOAuthTokenLight
+    user: MUser
+    type: 'access' | 'refresh'
+  }): Promise<{ valid: boolean }>
 }
 
 export interface RegisterServerAuthPassOptions extends RegisterServerAuthBase {

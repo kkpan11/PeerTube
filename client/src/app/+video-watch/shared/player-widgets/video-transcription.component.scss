@@ -1,0 +1,54 @@
+@use "_variables" as *;
+@use "_mixins" as *;
+@use "_form-mixins" as *;
+
+.widget-root {
+  display: flex;
+  flex-direction: column;
+  overflow-y: hidden;
+}
+
+.widget-top {
+  flex: 0 0 auto;
+}
+
+.widget-root .widget-content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+
+  // Don't hide the last segments behind the re-sync button
+  &.has-resync-button {
+    padding-bottom: 3.5rem;
+  }
+}
+
+.segment {
+  &.active,
+  &:hover {
+    background: pvar(--bg-secondary-400);
+  }
+}
+
+input[type="text"] {
+  @include peertube-input-text(100%);
+}
+
+.settings-button my-global-icon {
+  @include global-icon-size(18px);
+}
+
+.settings-panel {
+  position: absolute;
+  width: 100%;
+  padding: 0 1.5rem;
+  left: 0;
+  right: 0;
+}
+
+.resync-button {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+}

@@ -1,13 +1,18 @@
 import { ActivityPubActor, ActorImageType } from '@peertube/peertube-models'
 import { resetSequelizeInstance, runInReadCommittedTransaction } from '@server/helpers/database-utils.js'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { AccountModel } from '@server/models/account/account.js'
 import { VideoChannelModel } from '@server/models/video/video-channel.js'
+import { VideoPlaylistModel } from '@server/models/video/video-playlist.js'
 import { MAccount, MActor, MActorFull, MChannel } from '@server/types/models/index.js'
+import { upsertAPPlayerSettings } from '../player-settings.js'
+import { checkUrlsSameHost, isLocalUrl } from '../url.js'
 import { getOrCreateAPOwner } from './get.js'
 import { updateActorImages } from './image.js'
 import { fetchActorFollowsCount } from './shared/index.js'
 import { getImagesInfoFromObject } from './shared/object-to-model-attributes.js'
+
+const logger = createLogger()
 
 export class APActorUpdater {
   private readonly accountOrChannel: MAccount | MChannel
@@ -21,6 +26,8 @@ export class APActorUpdater {
   }
 
   async update () {
+    this.checkActorIdentityBindingOrThrow()
+
     const avatarsInfo = getImagesInfoFromObject(this.actorObject, ActorImageType.AVATAR)
     const bannersInfo = getImagesInfoFromObject(this.actorObject, ActorImageType.BANNER)
 
@@ -30,12 +37,38 @@ export class APActorUpdater {
       this.accountOrChannel.name = this.actorObject.name || this.actorObject.preferredUsername
       this.accountOrChannel.description = this.actorObject.summary
 
-      if (this.accountOrChannel instanceof VideoChannelModel) {
-        const owner = await getOrCreateAPOwner(this.actorObject, this.actorObject.id)
-        this.accountOrChannel.accountId = owner.Account.id
-        this.accountOrChannel.Account = owner.Account as AccountModel
+      const accountOrChannel = this.accountOrChannel
 
-        this.accountOrChannel.support = this.actorObject.support
+      if (accountOrChannel instanceof VideoChannelModel) {
+        const channel = accountOrChannel as MChannel
+
+        const owner = await getOrCreateAPOwner(this.actorObject, this.actorObject.id)
+
+        if (owner.accountId !== channel.accountId) {
+          logger.info(`Updating owner of channel ${channel.name} to ${owner.preferredUsername}`)
+
+          await runInReadCommittedTransaction(async t => {
+            await VideoPlaylistModel.updateOwnerOfChannelPlaylists({
+              currentOwnerId: channel.accountId,
+              nextOwnerId: owner.Account.id,
+              videoChannelId: channel.id,
+              transaction: t
+            })
+          })
+        }
+
+        channel.accountId = owner.Account.id
+        channel.support = this.actorObject.support
+        channel.publicEmail = this.actorObject.email
+
+        if (typeof this.actorObject.playerSettings === 'string') {
+          await upsertAPPlayerSettings({
+            settingsObject: this.actorObject.playerSettings,
+            video: undefined,
+            channel: Object.assign(channel, { Account: owner.Account, Actor: this.actor }),
+            contextUrl: this.actor.url
+          })
+        }
       }
 
       await runInReadCommittedTransaction(async t => {
@@ -44,8 +77,17 @@ export class APActorUpdater {
       })
 
       await runInReadCommittedTransaction(async t => {
-        await this.actor.save({ transaction: t })
         await this.accountOrChannel.save({ transaction: t })
+
+        if (accountOrChannel instanceof VideoChannelModel) {
+          this.actor.videoChannelId = accountOrChannel.id
+          this.actor.accountId = null
+        } else if (accountOrChannel instanceof AccountModel) {
+          this.actor.accountId = accountOrChannel.id
+          this.actor.videoChannelId = null
+        }
+
+        await this.actor.save({ transaction: t })
       })
 
       // Update the following line to template string
@@ -62,6 +104,25 @@ export class APActorUpdater {
       // This is just a debug because we will retry the insert
       logger.debug('Cannot update the remote account.', { err })
       throw err
+    }
+  }
+
+  // An actor can only update itself: its new AP id must stay on the host it is already associated to
+  private checkActorIdentityBindingOrThrow () {
+    const { id, publicKey } = this.actorObject
+    const currentUrl = this.actor.url
+
+    if (!checkUrlsSameHost(currentUrl, id)) {
+      throw new Error(`Actor ${currentUrl} cannot be updated with object id ${id} that is not on the same host`)
+    }
+
+    // A remote actor must never claim our own host
+    if (!this.actor.isLocal() && isLocalUrl(id)) {
+      throw new Error(`Remote actor ${currentUrl} cannot be updated with local URL ${id}`)
+    }
+
+    if (publicKey.owner !== id) {
+      throw new Error(`Public key owner ${publicKey.owner} of actor ${id} does not match the actor id`)
     }
   }
 

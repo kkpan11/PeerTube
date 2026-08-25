@@ -1,11 +1,13 @@
-import httpSignature from '@peertube/http-signature'
+import { ParsedDraftSignature, parseRequestSignature, verifyDraftSignature } from '@misskey-dev/node-http-message-signatures'
 import { sha256 } from '@peertube/peertube-node-utils'
-import { createCipheriv, createDecipheriv } from 'crypto'
+import { CipherGCM, createCipheriv, createDecipheriv, DecipherGCM, timingSafeEqual } from 'crypto'
 import { Request } from 'express'
-import { BCRYPT_SALT_SIZE, ENCRYPTION, HTTP_SIGNATURE, PRIVATE_RSA_KEY_SIZE } from '../initializers/constants.js'
+import { BCRYPT_SALT_SIZE, ENCRYPTION, PRIVATE_RSA_KEY_SIZE } from '../initializers/constants.js'
 import { MActor } from '../types/models/index.js'
 import { generateRSAKeyPairPromise, randomBytesPromise, scryptPromise } from './core-utils.js'
-import { logger } from './logger.js'
+import { createLogger } from './logger.js'
+
+const logger = createLogger()
 
 function createPrivateAndPublicKeys () {
   logger.info('Generating a RSA key...')
@@ -19,6 +21,10 @@ function createPrivateAndPublicKeys () {
 
 async function comparePassword (plainPassword: string, hashPassword: string) {
   if (!plainPassword) return false
+
+  if (Buffer.byteLength(plainPassword, 'utf8') > 72) {
+    throw new Error('Cannot compare more than 72 bytes with bcrypt')
+  }
 
   const { compare } = await import('bcrypt')
 
@@ -34,29 +40,66 @@ async function cryptPassword (password: string) {
 }
 
 // ---------------------------------------------------------------------------
+// Secret comparison
+// ---------------------------------------------------------------------------
+
+// Prevent timing attacks when comparing secret tokens (email verification, password reset etc.)
+function isSecretEqual (a: string, b: string) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+
+  const aBuffer = Buffer.from(a)
+  const bBuffer = Buffer.from(b)
+
+  if (aBuffer.length !== bBuffer.length) return false
+
+  return timingSafeEqual(aBuffer, bBuffer)
+}
+
+// ---------------------------------------------------------------------------
 // HTTP Signature
 // ---------------------------------------------------------------------------
 
 function isHTTPSignatureDigestValid (rawBody: Buffer, req: Request): boolean {
-  if (req.headers[HTTP_SIGNATURE.HEADER_NAME] && req.headers['digest']) {
+  if (req.headers['signature'] && req.headers['digest']) {
     return buildDigest(rawBody.toString()) === req.headers['digest']
   }
 
   return true
 }
 
-function isHTTPSignatureVerified (httpSignatureParsed: any, actor: MActor): boolean {
-  return httpSignature.verifySignature(httpSignatureParsed, actor.publicKey) === true
+async function isHTTPSignatureVerified (httpSignatureParsed: ParsedDraftSignature, actor: MActor): Promise<boolean> {
+  const result = await verifyDraftSignature(
+    httpSignatureParsed.value,
+    actor.publicKey,
+    msg => logger.debug('Error in verify draft signature: ' + msg)
+  )
+
+  return result === true
 }
 
-function parseHTTPSignature (req: Request, clockSkew?: number) {
+function parseHTTPSignature (req: Request, clockSkewSeconds?: number): ParsedDraftSignature {
   const requiredHeaders = req.method === 'POST'
     ? [ '(request-target)', 'host', 'digest' ]
     : [ '(request-target)', 'host' ]
 
-  const parsed = httpSignature.parse(req, { clockSkew, headers: requiredHeaders })
+  const clockSkew = clockSkewSeconds
+    ? clockSkewSeconds * 1000
+    : undefined
 
-  const parsedHeaders = parsed.params.headers
+  const parsed = parseRequestSignature(req, {
+    requiredComponents: {
+      draft: requiredHeaders
+    },
+    clockSkew: {
+      delay: clockSkew
+    }
+  })
+
+  if (parsed.version !== 'draft') {
+    throw new Error(`Only draft version of HTTP signature is supported`)
+  }
+
+  const parsedHeaders = parsed.value.params.headers
   if (!parsedHeaders.includes('date') && !parsedHeaders.includes('(created)')) {
     throw new Error(`date or (created) must be included in signature`)
   }
@@ -76,41 +119,66 @@ function buildDigest (body: any) {
 // Encryption
 // ---------------------------------------------------------------------------
 
+// Format: salt:iv:authTag:ciphertext in hex format
+// AES-256-GCM authenticates the ciphertext, so decrypt() returns exactly the bytes that were encrypted or throws
 async function encrypt (str: string, secret: string) {
+  const salt = await randomBytesPromise(ENCRYPTION.SALT)
   const iv = await randomBytesPromise(ENCRYPTION.IV)
 
-  const key = await scryptPromise(secret, ENCRYPTION.SALT, 32)
-  const cipher = createCipheriv(ENCRYPTION.ALGORITHM, key, iv)
+  const key = await scryptPromise(secret, salt.toString(ENCRYPTION.ENCODING), ENCRYPTION.KEY_LENGTH)
+  const cipher = createCipheriv(ENCRYPTION.ALGORITHM, key, iv) as CipherGCM
 
-  let encrypted = iv.toString(ENCRYPTION.ENCODING) + ':'
-  encrypted += cipher.update(str, 'utf8', ENCRYPTION.ENCODING)
-  encrypted += cipher.final(ENCRYPTION.ENCODING)
+  let cipherText = cipher.update(str, 'utf8', ENCRYPTION.ENCODING)
+  cipherText += cipher.final(ENCRYPTION.ENCODING)
 
-  return encrypted
+  // The auth tag is only available after final()
+  const authTag = cipher.getAuthTag()
+
+  return [
+    salt.toString(ENCRYPTION.ENCODING),
+    iv.toString(ENCRYPTION.ENCODING),
+    authTag.toString(ENCRYPTION.ENCODING),
+    cipherText
+  ].join(':')
 }
 
 async function decrypt (encryptedArg: string, secret: string) {
-  const [ ivStr, encryptedStr ] = encryptedArg.split(':')
+  const parts = encryptedArg.split(':')
 
-  const iv = Buffer.from(ivStr, 'hex')
-  const key = await scryptPromise(secret, ENCRYPTION.SALT, 32)
+  // Pre-GCM values (2-part CBC) are re-encrypted at boot by the 1090-otp-secret-gcm migration,
+  // so decrypt() only ever sees the GCM format at runtime
+  if (parts.length !== 4) {
+    throw new Error(`Unrecognized encrypted value format (${parts.length} parts)`)
+  }
 
-  const decipher = createDecipheriv(ENCRYPTION.ALGORITHM, key, iv)
+  const [ saltStr, ivStr, authTagStr, cipherText ] = parts
 
-  return decipher.update(encryptedStr, ENCRYPTION.ENCODING, 'utf8') + decipher.final('utf8')
+  // Pin the auth tag to its expected length
+  const authTag = Buffer.from(authTagStr, ENCRYPTION.ENCODING)
+  if (authTag.length !== ENCRYPTION.AUTH_TAG) {
+    throw new Error(`Invalid auth tag length (${authTag.length} bytes)`)
+  }
+
+  const key = await scryptPromise(secret, saltStr, ENCRYPTION.KEY_LENGTH)
+
+  const decipher = createDecipheriv(ENCRYPTION.ALGORITHM, key, Buffer.from(ivStr, ENCRYPTION.ENCODING)) as DecipherGCM
+  decipher.setAuthTag(authTag)
+
+  // final() throws if the auth tag does not match
+  return decipher.update(cipherText, ENCRYPTION.ENCODING, 'utf8') + decipher.final('utf8')
 }
 
 // ---------------------------------------------------------------------------
 
 export {
-  isHTTPSignatureDigestValid,
-  parseHTTPSignature,
-  isHTTPSignatureVerified,
   buildDigest,
   comparePassword,
   createPrivateAndPublicKeys,
   cryptPassword,
-
+  decrypt,
   encrypt,
-  decrypt
+  isHTTPSignatureDigestValid,
+  isHTTPSignatureVerified,
+  isSecretEqual,
+  parseHTTPSignature
 }

@@ -1,9 +1,10 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { hasAudioStream, hasVideoStream } from '@peertube/peertube-ffmpeg'
 import {
-  AccountExportJSON, ActivityPubActor,
+  AccountExportJSON,
+  ActivityPubActor,
   ActivityPubOrderedCollection,
   AutoTagPoliciesJSON,
   BlocklistExportJSON,
@@ -22,7 +23,8 @@ import {
   VideoChapterObject,
   VideoCommentObject,
   VideoCreateResult,
-  VideoExportJSON, VideoPlaylistCreateResult,
+  VideoExportJSON,
+  VideoPlaylistCreateResult,
   VideoPlaylistPrivacy,
   VideoPlaylistsExportJSON,
   VideoPlaylistType,
@@ -31,7 +33,9 @@ import {
 } from '@peertube/peertube-models'
 import { areMockObjectStorageTestsDisabled } from '@peertube/peertube-node-utils'
 import {
-  cleanupTests, getRedirectionUrl, makeActivityPubRawRequest,
+  cleanupTests,
+  getRedirectionUrl,
+  makeActivityPubRawRequest,
   makeRawRequest,
   ObjectStorageCommand,
   PeerTubeServer,
@@ -49,7 +53,7 @@ import {
   probeZIPFile,
   regenerateExport
 } from '@tests/shared/import-export.js'
-import { MockSmtpServer } from '@tests/shared/mock-servers/index.js'
+import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 import { expect } from 'chai'
 
 function runTest (withObjectStorage: boolean) {
@@ -81,9 +85,8 @@ function runTest (withObjectStorage: boolean) {
 
     objectStorage = withObjectStorage
       ? new ObjectStorageCommand()
-      : undefined;
-
-    ({
+      : undefined
+    ;({
       rootId,
       noahId,
       remoteRootId,
@@ -97,6 +100,16 @@ function runTest (withObjectStorage: boolean) {
       server,
       remoteServer
     } = await prepareImportExportTests({ emails, objectStorage, withBlockedServer: false }))
+
+    // Create collaboration to ensure we don't export them
+    const userToken = await server.users.generateUserAndToken('user')
+    const { id } = await server.channelCollaborators.invite({ target: 'noah', channel: 'user_channel', token: userToken })
+    await server.channelCollaborators.accept({ id, channel: 'user_channel', token: noahToken })
+    await server.videos.quickUpload({
+      name: 'collab video',
+      token: userToken,
+      channelId: await server.channels.getIdOf({ channelName: 'user_channel' })
+    })
   })
 
   it('Should export root account', async function () {
@@ -285,7 +298,11 @@ function runTest (withObjectStorage: boolean) {
         // Subtitles
         expect(video.subtitleLanguage).to.have.lengthOf(2)
         for (const subtitle of video.subtitleLanguage) {
-          await checkFileExistsInZIP(zip, subtitle.url, '/activity-pub')
+          const subtitleUrl = typeof subtitle.url === 'string'
+            ? subtitle.url
+            : subtitle.url.find(u => u.mediaType === 'text/vtt').href
+
+          await checkFileExistsInZIP(zip, subtitleUrl, '/activity-pub')
         }
 
         // Chapters
@@ -448,6 +465,7 @@ function runTest (withObjectStorage: boolean) {
         expect(secondaryChannel.displayName).to.equal('noah display name')
         expect(secondaryChannel.description).to.equal('noah description')
         expect(secondaryChannel.support).to.equal('noah support')
+        expect(secondaryChannel.playerSettings.theme).to.equal('galaxy')
 
         expect(secondaryChannel.avatars).to.have.lengthOf(4)
         expect(secondaryChannel.banners).to.have.lengthOf(2)
@@ -547,6 +565,8 @@ function runTest (withObjectStorage: boolean) {
         expect(publicVideo.source.metadata?.streams).to.exist
         expect(publicVideo.source.resolution).to.equal(720)
         expect(publicVideo.source.size).to.equal(218910)
+
+        expect(publicVideo.playerSettings.theme).to.equal('lucide')
       }
 
       {
@@ -558,7 +578,10 @@ function runTest (withObjectStorage: boolean) {
         expect(liveVideo.live.saveReplay).to.be.true
         expect(liveVideo.live.permanentLive).to.be.true
         expect(liveVideo.live.streamKey).to.exist
+        expect(liveVideo.live.dvrWindow).to.equal(15)
         expect(liveVideo.live.replaySettings.privacy).to.equal(VideoPrivacy.PUBLIC)
+        expect(liveVideo.live.schedules).to.have.lengthOf(1)
+        expect(liveVideo.live.schedules[0].startAt).to.exist
 
         expect(liveVideo.channel.name).to.equal('noah_second_channel')
         expect(liveVideo.privacy).to.equal(VideoPrivacy.PASSWORD_PROTECTED)
@@ -898,14 +921,13 @@ function runTest (withObjectStorage: boolean) {
   })
 
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests([ server, remoteServer ])
   })
 }
 
 describe('Test user export', function () {
-
   describe('From filesystem', function () {
     runTest(false)
   })

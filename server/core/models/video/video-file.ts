@@ -8,21 +8,22 @@ import {
   type VideoFileStreamType,
   VideoResolution
 } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { extractVideo } from '@server/helpers/video.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { buildRemoteUrl } from '@server/lib/activitypub/url.js'
 import {
-  getHLSPrivateFileUrl,
-  getObjectStoragePublicFileUrl,
-  getWebVideoPrivateFileUrl
+  buildObjectStorageHLSPrivateFileUrl,
+  buildObjectStoragePublicFileUrl,
+  buildObjectStorageWebVideoPrivateFileUrl,
+  generateHLSObjectStorageKey,
+  generateWebVideoObjectStorageKey
 } from '@server/lib/object-storage/index.js'
 import { getFSTorrentFilePath } from '@server/lib/paths.js'
 import { getVideoFileMimeType } from '@server/lib/video-file.js'
 import { isVideoInPrivateDirectory } from '@server/lib/video-privacy.js'
 import { MStreamingPlaylistVideo, MVideo, MVideoWithHost, isStreamingPlaylist } from '@server/types/models/index.js'
 import { remove } from 'fs-extra/esm'
-import memoizee from 'memoizee'
 import { join } from 'path'
 import { FindOptions, Op, Transaction, WhereOptions } from 'sequelize'
 import {
@@ -34,7 +35,9 @@ import {
   Default,
   DefaultScope,
   ForeignKey,
-  Is, Scopes,
+  HasOne,
+  Is,
+  Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
@@ -42,22 +45,17 @@ import validator from 'validator'
 import {
   isVideoFPSResolutionValid,
   isVideoFileExtnameValid,
-  isVideoFileInfoHashValid,
   isVideoFileResolutionValid,
   isVideoFileSizeValid
 } from '../../helpers/custom-validators/videos.js'
-import {
-  DOWNLOAD_PATHS,
-  LAZY_STATIC_PATHS,
-  MEMOIZE_LENGTH,
-  MEMOIZE_TTL,
-  STATIC_PATHS,
-  WEBSERVER
-} from '../../initializers/constants.js'
-import { MVideoFile, MVideoFileStreamingPlaylistVideo, MVideoFileVideo } from '../../types/models/video/video-file.js'
+import { DOWNLOAD_PATHS, LAZY_STATIC_PATHS, STATIC_PATHS, WEBSERVER } from '../../initializers/constants.js'
+import { MVideoFile, MVideoFileInfoHash, MVideoFileStreamingPlaylistVideo, MVideoFileVideo } from '../../types/models/video/video-file.js'
 import { SequelizeModel, doesExist, parseAggregateResult, throwIfNotValid } from '../shared/index.js'
+import { VideoInfohashModel } from './video-infohash.js'
 import { VideoStreamingPlaylistModel } from './video-streaming-playlist.js'
 import { VideoModel } from './video.js'
+
+const logger = createLogger()
 
 export enum ScopeNames {
   WITH_VIDEO = 'WITH_VIDEO',
@@ -111,10 +109,6 @@ export enum ScopeNames {
   tableName: 'videoFile',
   indexes: [
     {
-      fields: [ 'infoHash' ]
-    },
-
-    {
       fields: [ 'torrentFilename' ],
       unique: true
     },
@@ -146,89 +140,82 @@ export enum ScopeNames {
 })
 export class VideoFileModel extends SequelizeModel<VideoFileModel> {
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @AllowNull(false)
   @Is('VideoFileResolution', value => throwIfNotValid(value, isVideoFileResolutionValid, 'resolution'))
   @Column
-  resolution: number
+  declare resolution: number
 
   @AllowNull(true)
   @Column
-  width: number
+  declare width: number
 
   @AllowNull(true)
   @Column
-  height: number
+  declare height: number
 
   @AllowNull(false)
   @Is('VideoFileSize', value => throwIfNotValid(value, isVideoFileSizeValid, 'size'))
   @Column(DataType.BIGINT)
-  size: number
+  declare size: number
 
   @AllowNull(false)
   @Is('VideoFileExtname', value => throwIfNotValid(value, isVideoFileExtnameValid, 'extname'))
   @Column
-  extname: string
-
-  @AllowNull(true)
-  @Is('VideoFileInfohash', value => throwIfNotValid(value, isVideoFileInfoHashValid, 'info hash', true))
-  @Column
-  infoHash: string
+  declare extname: string
 
   @AllowNull(false)
   @Default(-1)
   @Is('VideoFileFPS', value => throwIfNotValid(value, isVideoFPSResolutionValid, 'fps'))
   @Column
-  fps: number
+  declare fps: number
 
   @AllowNull(false)
   @Column
-  formatFlags: VideoFileFormatFlagType
+  declare formatFlags: VideoFileFormatFlagType
 
   @AllowNull(false)
   @Column
-  streams: VideoFileStreamType
+  declare streams: VideoFileStreamType
 
   @AllowNull(true)
   @Column(DataType.JSONB)
-  metadata: any
+  declare metadata: any
 
   @AllowNull(true)
   @Column
-  metadataUrl: string
+  declare metadataUrl: string
 
-  // Could be null for remote files
   @AllowNull(true)
   @Column
-  fileUrl: string
+  declare fileUrl: string
 
-  // Could be null for live files
+  // Can be null for live files
   @AllowNull(true)
   @Column
-  filename: string
+  declare filename: string
 
-  // Could be null for remote files
   @AllowNull(true)
   @Column
-  torrentUrl: string
+  declare torrentUrl: string
 
-  // Could be null for live files
+  // Can be null for live files
   @AllowNull(true)
   @Column
-  torrentFilename: string
+  declare torrentFilename: string
 
   @ForeignKey(() => VideoModel)
   @Column
-  videoId: number
+  declare videoId: number
 
   @AllowNull(false)
   @Default(FileStorage.FILE_SYSTEM)
   @Column
-  storage: FileStorageType
+  declare storage: FileStorageType
 
   @BelongsTo(() => VideoModel, {
     foreignKey: {
@@ -236,11 +223,11 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
     },
     onDelete: 'CASCADE'
   })
-  Video: Awaited<VideoModel>
+  declare Video: Awaited<VideoModel>
 
   @ForeignKey(() => VideoStreamingPlaylistModel)
   @Column
-  videoStreamingPlaylistId: number
+  declare videoStreamingPlaylistId: number
 
   @BelongsTo(() => VideoStreamingPlaylistModel, {
     foreignKey: {
@@ -248,19 +235,15 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
     },
     onDelete: 'CASCADE'
   })
-  VideoStreamingPlaylist: Awaited<VideoStreamingPlaylistModel>
+  declare VideoStreamingPlaylist: Awaited<VideoStreamingPlaylistModel>
 
-  static doesInfohashExistCached = memoizee(VideoFileModel.doesInfohashExist.bind(VideoFileModel), {
-    promise: true,
-    max: MEMOIZE_LENGTH.INFO_HASH_EXISTS,
-    maxAge: MEMOIZE_TTL.INFO_HASH_EXISTS
+  @HasOne(() => VideoInfohashModel, {
+    foreignKey: {
+      allowNull: true
+    },
+    onDelete: 'CASCADE'
   })
-
-  static doesInfohashExist (infoHash: string) {
-    const query = 'SELECT 1 FROM "videoFile" WHERE "infoHash" = $infoHash LIMIT 1'
-
-    return doesExist({ sequelize: this.sequelize, query, bind: { infoHash } })
-  }
+  declare InfoHash: Awaited<VideoInfohashModel>
 
   static async doesVideoExistForVideoFile (id: number, videoIdOrUUID: number | string) {
     const videoFile = await VideoFileModel.loadWithVideoOrPlaylist(id, videoIdOrUUID)
@@ -270,10 +253,10 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
 
   static async doesOwnedTorrentFileExist (filename: string) {
     const query = 'SELECT 1 FROM "videoFile" ' +
-                  'LEFT JOIN "video" "webvideo" ON "webvideo"."id" = "videoFile"."videoId" AND "webvideo"."remote" IS FALSE ' +
-                  'LEFT JOIN "videoStreamingPlaylist" ON "videoStreamingPlaylist"."id" = "videoFile"."videoStreamingPlaylistId" ' +
-                  'LEFT JOIN "video" "hlsVideo" ON "hlsVideo"."id" = "videoStreamingPlaylist"."videoId" AND "hlsVideo"."remote" IS FALSE ' +
-                  'WHERE "torrentFilename" = $filename AND ("hlsVideo"."id" IS NOT NULL OR "webvideo"."id" IS NOT NULL) LIMIT 1'
+      'LEFT JOIN "video" "webvideo" ON "webvideo"."id" = "videoFile"."videoId" AND "webvideo"."remote" IS FALSE ' +
+      'LEFT JOIN "videoStreamingPlaylist" ON "videoStreamingPlaylist"."id" = "videoFile"."videoStreamingPlaylistId" ' +
+      'LEFT JOIN "video" "hlsVideo" ON "hlsVideo"."id" = "videoStreamingPlaylist"."videoId" AND "hlsVideo"."remote" IS FALSE ' +
+      'WHERE "torrentFilename" = $filename AND ("hlsVideo"."id" IS NOT NULL OR "webvideo"."id" IS NOT NULL) LIMIT 1'
 
     return doesExist({ sequelize: this.sequelize, query, bind: { filename } })
   }
@@ -327,7 +310,7 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
     return VideoFileModel.scope(ScopeNames.WITH_VIDEO).findByPk<MVideoFileVideo>(id, { transaction })
   }
 
-  static loadWithVideoOrPlaylist (id: number, videoIdOrUUID: number | string) {
+  static loadWithVideoOrPlaylist (id: number, videoIdOrUUID: number | string): Promise<MVideoFileVideo | MVideoFileStreamingPlaylistVideo> {
     const whereVideo = validator.default.isUUID(videoIdOrUUID + '')
       ? { uuid: videoIdOrUUID }
       : { id: videoIdOrUUID }
@@ -425,7 +408,11 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
       ? await VideoFileModel.loadHLSFile({ ...baseFind, playlistId: videoFile.videoStreamingPlaylistId })
       : await VideoFileModel.loadWebVideoFile({ ...baseFind, videoId: videoFile.videoId })
 
-    if (!element) return videoFile.save({ transaction })
+    if (!element) {
+      videoFile.isNewRecord = true
+
+      return videoFile.save({ transaction })
+    }
 
     for (const k of Object.keys(videoFile.toJSON())) {
       element.set(k, videoFile[k])
@@ -473,7 +460,12 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
   }
 
   hasTorrent () {
-    return this.infoHash && this.torrentFilename
+    return !!this.torrentFilename
+  }
+
+  // A magnet URI also needs the infohash, which is not fetched by every video query
+  canBuildMagnetUri (this: MVideoFile): this is MVideoFileInfoHash {
+    return !!this.torrentFilename && !!(this as MVideoFileInfoHash).InfoHash
   }
 
   getVideoOrStreamingPlaylist (this: MVideoFileVideo | MVideoFileStreamingPlaylistVideo): MVideo | MStreamingPlaylistVideo {
@@ -512,32 +504,38 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
 
   getObjectStorageUrl (video: MVideo) {
     if (video.hasPrivateStaticPath() && CONFIG.OBJECT_STORAGE.PROXY.PROXIFY_PRIVATE_FILES === true) {
-      return this.getPrivateObjectStorageUrl(video)
+      return this.buildPrivateObjectStorageUrl(video)
     }
 
-    return this.getPublicObjectStorageUrl()
+    return this.buildPublicObjectStorageUrl(video)
   }
 
-  private getPrivateObjectStorageUrl (video: MVideo) {
+  private buildPrivateObjectStorageUrl (video: MVideo) {
     if (this.isHLS()) {
-      return getHLSPrivateFileUrl(video, this.filename)
+      return buildObjectStorageHLSPrivateFileUrl(video, this.filename)
     }
 
-    return getWebVideoPrivateFileUrl(this.filename)
+    return buildObjectStorageWebVideoPrivateFileUrl(this.filename)
   }
 
-  private getPublicObjectStorageUrl () {
+  private buildPublicObjectStorageUrl (video: MVideo) {
     if (this.isHLS()) {
-      return getObjectStoragePublicFileUrl(this.fileUrl, CONFIG.OBJECT_STORAGE.STREAMING_PLAYLISTS)
+      return buildObjectStoragePublicFileUrl({
+        bucket: CONFIG.OBJECT_STORAGE.STREAMING_PLAYLISTS,
+        key: generateHLSObjectStorageKey(video, this.filename)
+      })
     }
 
-    return getObjectStoragePublicFileUrl(this.fileUrl, CONFIG.OBJECT_STORAGE.WEB_VIDEOS)
+    return buildObjectStoragePublicFileUrl({
+      bucket: CONFIG.OBJECT_STORAGE.WEB_VIDEOS,
+      key: generateWebVideoObjectStorageKey(this.filename)
+    })
   }
 
   // ---------------------------------------------------------------------------
 
   getFileUrl (video: MVideo) {
-    if (video.isOwned()) {
+    if (video.isLocal()) {
       if (this.storage === FileStorage.OBJECT_STORAGE) {
         return this.getObjectStorageUrl(video)
       }
@@ -579,14 +577,14 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
       ? join(DOWNLOAD_PATHS.HLS_VIDEOS, `${video.uuid}-${this.resolution}-fragmented${this.extname}`)
       : join(DOWNLOAD_PATHS.WEB_VIDEOS, `${video.uuid}-${this.resolution}${this.extname}`)
 
-    if (video.isOwned()) return WEBSERVER.URL + path
+    if (video.isLocal()) return WEBSERVER.URL + path
 
     // FIXME: don't guess remote URL
     return buildRemoteUrl(video, path)
   }
 
   getRemoteTorrentUrl (video: MVideo) {
-    if (video.isOwned()) throw new Error(`Video ${video.url} is not a remote video`)
+    if (video.isLocal()) throw new Error(`Video ${video.url} is not a remote video`)
 
     return this.torrentUrl
   }
@@ -595,13 +593,7 @@ export class VideoFileModel extends SequelizeModel<VideoFileModel> {
   getTorrentUrl () {
     if (!this.torrentFilename) return null
 
-    return WEBSERVER.URL + this.getTorrentStaticPath()
-  }
-
-  getTorrentStaticPath () {
-    if (!this.torrentFilename) return null
-
-    return join(LAZY_STATIC_PATHS.TORRENTS, this.torrentFilename)
+    return WEBSERVER.URL + join(LAZY_STATIC_PATHS.TORRENTS, this.torrentFilename)
   }
 
   getTorrentDownloadUrl () {

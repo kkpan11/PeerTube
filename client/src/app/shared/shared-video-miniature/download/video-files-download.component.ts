@@ -1,17 +1,12 @@
-import { KeyValuePipe, NgFor, NgIf, NgTemplateOutlet } from '@angular/common'
-import { Component, LOCALE_ID, OnInit, inject, input, output } from '@angular/core'
+import { KeyValuePipe, NgTemplateOutlet } from '@angular/common'
+import { ChangeDetectionStrategy, Component, OnInit, inject, input, output } from '@angular/core'
 import { FormsModule } from '@angular/forms'
 import { AlertComponent } from '@app/shared/shared-main/common/alert.component'
-import {
-  NgbCollapse,
-  NgbNavModule,
-  NgbTooltip
-} from '@ng-bootstrap/ng-bootstrap'
+import { NgbCollapse, NgbNavModule, NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
 import { objectKeysTyped, pick } from '@peertube/peertube-core-utils'
 import { VideoFile, VideoFileMetadata, VideoSource } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
 import { videoRequiresFileToken } from '@root-helpers/video'
-import { mapValues } from 'lodash-es'
 import { firstValueFrom } from 'rxjs'
 import { tap } from 'rxjs/operators'
 import { InputTextComponent } from '../../shared-forms/input-text.component'
@@ -27,11 +22,10 @@ type FileMetadata = { [key: string]: { label: string, value: string | number } }
   selector: 'my-video-files-download',
   templateUrl: './video-files-download.component.html',
   styleUrls: [ './video-files-download.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     FormsModule,
     GlobalIconComponent,
-    NgFor,
     NgbNavModule,
     InputTextComponent,
     NgbCollapse,
@@ -42,7 +36,6 @@ type FileMetadata = { [key: string]: { label: string, value: string | number } }
   ]
 })
 export class VideoFilesDownloadComponent implements OnInit {
-  private localeId = inject(LOCALE_ID)
   private videoService = inject(VideoService)
 
   readonly video = input.required<VideoDetails>()
@@ -66,24 +59,13 @@ export class VideoFilesDownloadComponent implements OnInit {
 
   constructor () {
     this.bytesPipe = new BytesPipe()
-    this.numbersPipe = new NumberFormatterPipe(this.localeId)
+    this.numbersPipe = new NumberFormatterPipe()
   }
 
   ngOnInit () {
     if (this.hasFiles()) {
-      this.onResolutionIdChange(this.getVideoFiles()[0].resolution.id)
+      this.onResolutionIdChange(this.video().getFilesForDownload()[0].resolution.id)
     }
-  }
-
-  getVideoFiles () {
-    const video = this.video()
-    if (!video) return []
-    if (video.files.length !== 0) return video.files
-
-    const hls = video.getHlsPlaylist()
-    if (hls) return hls.files
-
-    return []
   }
 
   // ---------------------------------------------------------------------------
@@ -124,13 +106,13 @@ export class VideoFilesDownloadComponent implements OnInit {
   // ---------------------------------------------------------------------------
 
   hasFiles () {
-    return this.getVideoFiles().length !== 0
+    return this.video().getFilesForDownload().length !== 0
   }
 
   getVideoFile () {
     if (this.activeResolutionId === 'original') return undefined
 
-    const file = this.getVideoFiles()
+    const file = this.video().getFilesForDownload()
       .find(f => f.resolution.id === this.activeResolutionId)
 
     if (!file) {
@@ -189,9 +171,9 @@ export class VideoFilesDownloadComponent implements OnInit {
     const sanitizedFormat = Object.assign(format, format.tags)
     delete sanitizedFormat.tags
 
-    return mapValues(
-      pick(sanitizedFormat, objectKeysTyped(keyToTranslateFunction)),
-      (val: string, key: keyof typeof keyToTranslateFunction) => keyToTranslateFunction[key](val)
+    return Object.fromEntries(
+      Object.entries(pick(sanitizedFormat, objectKeysTyped(keyToTranslateFunction)))
+        .map(([ key, val ]) => [ key, keyToTranslateFunction[key as keyof typeof keyToTranslateFunction](val as string) ])
     )
   }
 
@@ -224,9 +206,9 @@ export class VideoFilesDownloadComponent implements OnInit {
       })
     }
 
-    return mapValues(
-      pick(stream, Object.keys(keyToTranslateFunction)),
-      (val: string, key: keyof typeof keyToTranslateFunction) => keyToTranslateFunction[key](val)
+    return Object.fromEntries(
+      Object.entries(pick(stream, Object.keys(keyToTranslateFunction)))
+        .map(([ key, val ]) => [ key, keyToTranslateFunction[key as keyof typeof keyToTranslateFunction](val as string) ])
     )
   }
 

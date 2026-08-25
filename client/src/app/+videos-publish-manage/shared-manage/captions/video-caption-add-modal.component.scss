@@ -1,0 +1,11 @@
+@use "_variables" as *;
+@use "_mixins" as *;
+
+.caption-file {
+  margin-top: 20px;
+}
+
+.warning-replace-caption {
+  color: pvar(--red);
+  margin-top: 10px;
+}

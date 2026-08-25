@@ -3,10 +3,12 @@ import { refreshVideoPlaylistIfNeeded } from '@server/lib/activitypub/playlists/
 import { refreshVideoIfNeeded } from '@server/lib/activitypub/videos/index.js'
 import { loadVideoByUrl, VideoLoadByUrlType } from '@server/lib/model-loaders/index.js'
 import { Job } from 'bullmq'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { ActorModel } from '../../../models/actor/actor.js'
 import { VideoPlaylistModel } from '../../../models/video/video-playlist.js'
 import { refreshActorIfNeeded } from '../../activitypub/actors/index.js'
+
+const logger = createLogger()
 
 async function refreshAPObject (job: Job) {
   const payload = job.data as RefreshPayload
@@ -27,7 +29,7 @@ export {
 // ---------------------------------------------------------------------------
 
 async function refreshVideo (videoUrl: string) {
-  const fetchType = 'all'
+  const fetchType = 'full'
   const syncParam = { rates: true, shares: true, comments: true }
 
   const videoFromDatabase = await loadVideoByUrl(videoUrl, fetchType)

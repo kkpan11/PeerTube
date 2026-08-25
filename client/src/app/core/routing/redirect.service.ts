@@ -4,9 +4,9 @@ import { VideoSortField } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
 import { PluginsManager } from '@root-helpers/plugins-manager'
 import debug from 'debug'
-import { environment } from 'src/environments/environment'
 import { ServerService } from '../server'
 import { SessionStorageService } from '../wrappers/storage.service'
+import { environment } from '../../../environments/environment'
 
 const debugLogger = debug('peertube:router:RedirectService')
 
@@ -89,27 +89,43 @@ export class RedirectService {
     }
   }
 
-  redirectToLatestSessionRoute () {
-    return this.doRedirect(this.latestSessionUrl)
+  redirectToLatestSessionRoute (options: {
+    reloadTab?: boolean
+  } = {}) {
+    return this.doRedirect(this.latestSessionUrl, options)
   }
 
-  redirectToPreviousRoute (fallbackRoute?: string) {
-    return this.doRedirect(this.previousUrl, fallbackRoute)
+  redirectToPreviousRoute (options: {
+    reloadTab?: boolean
+  } = {}) {
+    return this.doRedirect(this.previousUrl, options)
   }
 
   getPreviousUrl () {
     return this.previousUrl
   }
 
-  redirectToHomepage (skipLocationChange = false) {
+  redirectToHomepage (options: {
+    skipLocationChange?: boolean // default false
+    reloadTab?: boolean // default false
+  } = {}) {
+    const { skipLocationChange = false, reloadTab = false } = options
+
     if (this.redirectingToHomepage) return
+
+    if (reloadTab) {
+      window.location.href = this.defaultRoute
+      return
+    }
 
     this.redirectingToHomepage = true
 
-    logger.info(`Redirecting to ${this.defaultRoute}...`)
+    logger.info(`Redirecting to default route ${this.defaultRoute}...`, { skipLocationChange })
 
-    this.router.navigateByUrl(this.defaultRoute, { skipLocationChange })
-      .then(() => this.redirectingToHomepage = false)
+    this.router.navigateByUrl(this.defaultRoute, {
+      skipLocationChange,
+      state: { trigger: this.router.currentNavigation()?.trigger }
+    }).then(() => this.redirectingToHomepage = false)
       .catch(err => {
         this.redirectingToHomepage = false
 
@@ -131,20 +147,24 @@ export class RedirectService {
     this.router.navigate([ '/401' ], { state: { obj: err }, skipLocationChange: true })
   }
 
-  private doRedirect (redirectUrl: string, fallbackRoute?: string) {
+  private doRedirect (redirectUrl: string, options: {
+    reloadTab?: boolean
+  } = {}) {
+    const { reloadTab = false } = options
+
     debugLogger('Redirecting on %s', redirectUrl)
 
     if (this.isValidRedirection(redirectUrl)) {
+      if (reloadTab) {
+        window.location.href = redirectUrl
+        return
+      }
+
       return this.router.navigateByUrl(redirectUrl)
     }
 
-    debugLogger('%s is not a valid redirection, try fallback route %s', redirectUrl, fallbackRoute)
-    if (fallbackRoute) {
-      return this.router.navigateByUrl(fallbackRoute)
-    }
-
-    debugLogger('There was no fallback route, redirecting to homepage')
-    return this.redirectToHomepage()
+    debugLogger(`${redirectUrl} is not a valid redirection, redirecting to homepage`)
+    return this.redirectToHomepage(options)
   }
 
   private isValidRedirection (redirectUrl: string) {

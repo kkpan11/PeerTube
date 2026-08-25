@@ -1,5 +1,5 @@
-export interface SelectOptionsItem {
-  id: string | number
+export interface SelectOptionsItem<T = string | number> {
+  id: T
   label: string
 
   description?: string
@@ -9,6 +9,22 @@ export interface SelectOptionsItem {
 
 export interface SelectChannelItem extends SelectOptionsItem {
   id: number // Force number
-  avatarPath?: string
-  support?: string
+  name: string
+  support: string
+
+  editor: boolean
+  collaborate: boolean
+  owner: boolean
+
+  ownerAccountName: string
+  ownerAccountId: number
+  displayName: string
+
+  updatedAt: string | Date
+}
+
+export interface SelectOptionsGroup {
+  label: string
+  value: string
+  items: SelectOptionsItem[]
 }

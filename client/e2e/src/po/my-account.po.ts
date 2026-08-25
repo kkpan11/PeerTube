@@ -1,11 +1,7 @@
+import { NSFWPolicyType } from '@peertube/peertube-models'
 import { getCheckbox, go, selectCustomSelect } from '../utils'
 
 export class MyAccountPage {
-
-  navigateToMyVideos () {
-    return $('a[href="/my-library/videos"]').click()
-  }
-
   navigateToMyPlaylists () {
     return $('a[href="/my-library/video-playlists"]').click()
   }
@@ -14,20 +10,34 @@ export class MyAccountPage {
     return $('a[href="/my-library/history/videos"]').click()
   }
 
-  // Settings
+  // ---------------------------------------------------------------------------
+  // My account settings
+  // ---------------------------------------------------------------------------
 
   navigateToMySettings () {
     return $('a[href="/my-account"]').click()
   }
 
-  async updateNSFW (newValue: 'do_not_list' | 'blur' | 'display') {
-    const nsfw = $('#nsfwPolicy')
+  async updateNSFW (newValue: NSFWPolicyType) {
+    const nsfw = $(`#nsfwPolicy-${newValue} + label`)
 
     await nsfw.waitForDisplayed()
     await nsfw.scrollIntoView({ block: 'center' }) // Avoid issues with fixed header
     await nsfw.waitForClickable()
 
-    await nsfw.selectByAttribute('value', newValue)
+    await nsfw.click()
+
+    await this.submitVideoSettings()
+  }
+
+  async updateViolentFlag (newValue: NSFWPolicyType) {
+    const nsfw = $(`#nsfwFlagViolent-${newValue} + label`)
+
+    await nsfw.waitForDisplayed()
+    await nsfw.scrollIntoView({ block: 'center' }) // Avoid issues with fixed header
+    await nsfw.waitForClickable()
+
+    await nsfw.click()
 
     await this.submitVideoSettings()
   }
@@ -51,41 +61,25 @@ export class MyAccountPage {
     await submit.click()
   }
 
-  // My account Videos
+  async updateEmail (email: string, password: string) {
+    const emailInput = $('my-account-change-email #new-email')
+    await emailInput.waitForDisplayed()
+    await emailInput.scrollIntoView({ block: 'center' }) // Avoid issues with fixed header
+    await emailInput.setValue(email)
 
-  async removeVideo (name: string) {
-    const container = await this.getVideoElement(name)
+    const passwordInput = $('my-account-change-email #password')
+    await passwordInput.waitForDisplayed()
+    await passwordInput.setValue(password)
 
-    await container.$('my-action-dropdown .dropdown-toggle').click()
-
-    const deleteItem = () => {
-      return $$('.dropdown-menu .dropdown-item').find<WebdriverIO.Element>(async v => {
-        const text = await v.getText()
-
-        return text.includes('Delete')
-      })
-    }
-
-    await (await deleteItem()).waitForClickable()
-
-    return (await deleteItem()).click()
+    const submit = $('my-account-change-email input[type=submit]')
+    await submit.scrollIntoView({ block: 'center' }) // Avoid issues with fixed header
+    await submit.waitForClickable()
+    await submit.click()
   }
 
-  validRemove () {
-    return $('input[type=submit]').click()
-  }
-
-  async countVideos (names: string[]) {
-    const elements = await $$('.video').filter(async e => {
-      const t = await e.$('.video-name').getText()
-
-      return names.some(n => t.includes(n))
-    })
-
-    return elements.length
-  }
-
+  // ---------------------------------------------------------------------------
   // My account playlists
+  // ---------------------------------------------------------------------------
 
   async getPlaylistVideosText (name: string) {
     const elem = await this.getPlaylist(name)
@@ -118,14 +112,14 @@ export class MyAccountPage {
   }
 
   async updatePlaylistPrivacy (playlistUUID: string, privacy: 'Public' | 'Private' | 'Unlisted') {
-    go('/my-library/video-playlists/update/' + playlistUUID)
+    await go('/my-library/video-playlists/update/' + playlistUUID)
 
     await $('a[href*="/my-library/video-playlists/update/"]').waitForDisplayed()
 
     await selectCustomSelect('videoChannelId', 'Main root channel')
     await selectCustomSelect('privacy', privacy)
 
-    const submit = await $('form input[type=submit]')
+    const submit = $('form input[type=submit]')
     await submit.waitForClickable()
     await submit.scrollIntoView()
     await submit.click()
@@ -135,33 +129,11 @@ export class MyAccountPage {
     })
   }
 
-  // My account Videos
-
-  private async getVideoElement (name: string) {
-    const video = async () => {
-      const videos = await $$('.video').filter(async e => {
-        const t = await e.$('.video-name').getText()
-
-        return t.includes(name)
-      })
-
-      return videos[0]
-    }
-
-    await browser.waitUntil(async () => {
-      return (await video()).isDisplayed()
-    })
-
-    return video()
-  }
-
-  // My account playlists
-
   private async getPlaylist (name: string) {
     const playlist = () => {
       return $$('my-video-playlist-miniature')
         .filter(async e => {
-          const t = await e.$('.miniature-name').getText()
+          const t = await e.$('img').getAttribute('aria-label')
 
           return t.includes(name)
         })

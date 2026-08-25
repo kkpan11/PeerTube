@@ -1,9 +1,9 @@
-import videojs from 'video.js'
-import { secondsToTime } from '@peertube/peertube-core-utils'
+import { findAppropriateThumbnail, secondsToTime } from '@peertube/peertube-core-utils'
 import { VideoPlaylistElement } from '@peertube/peertube-models'
-import { PlaylistItemOptions } from '../../types'
+import videojs from 'video.js'
+import { PlaylistItemOptions, VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 
-const Component = videojs.getComponent('Component')
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
 
 class PlaylistMenuItem extends Component {
   declare private element: VideoPlaylistElement
@@ -11,10 +11,10 @@ class PlaylistMenuItem extends Component {
   declare private clickHandler: () => void
   declare private keyDownHandler: (event: KeyboardEvent) => void
 
-  declare options_: videojs.ComponentOptions & PlaylistItemOptions
+  declare options_: VideojsComponentOptions & PlaylistItemOptions
 
-  constructor (player: videojs.Player, options?: PlaylistItemOptions) {
-    super(player, options as any)
+  constructor (player: VideojsPlayer, options?: VideojsComponentOptions & PlaylistItemOptions) {
+    super(player, options)
 
     this.emitTapEvents()
 
@@ -83,7 +83,9 @@ class PlaylistMenuItem extends Component {
     positionBlock.appendChild(player)
 
     const thumbnail = super.createEl('img', {
-      src: window.location.origin + videoElement.video.thumbnailPath
+      src: videoElement.video.thumbnails.length !== 0
+        ? findAppropriateThumbnail(videoElement.video.thumbnails, 80, '16:9').fileUrl // Keep 80 in sync with CSS
+        : ''
     })
 
     const infoBlock = super.createEl('div', {
@@ -130,7 +132,8 @@ class PlaylistMenuItem extends Component {
     li.appendChild(block)
   }
 
-  private handleKeyDown (event: KeyboardEvent) {
+  // Can't put it private because it's public in parent component
+  handleKeyDown (event: KeyboardEvent) {
     if (event.code === 'Space' || event.code === 'Enter') {
       this.switchPlaylistItem()
     }
@@ -141,6 +144,6 @@ class PlaylistMenuItem extends Component {
   }
 }
 
-Component.registerComponent('PlaylistMenuItem', PlaylistMenuItem)
+videojs.registerComponent('PlaylistMenuItem', PlaylistMenuItem)
 
 export { PlaylistMenuItem }

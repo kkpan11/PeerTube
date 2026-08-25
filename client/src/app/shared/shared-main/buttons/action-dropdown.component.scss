@@ -1,6 +1,6 @@
-@use '_variables' as *;
-@use '_mixins' as *;
-@use '_button-mixins' as *;
+@use "_variables" as *;
+@use "_mixins" as *;
+@use "_button-mixins" as *;
 
 .dropdown-divider:last-child {
   display: none;
@@ -18,9 +18,40 @@
   }
 }
 
-.dropdown-toggle::after {
-  position: relative;
-  top: 1px;
+// So we can style the chevron color
+button {
+  color: inherit;
+}
+
+.chevron-down {
+  color: inherit;
+}
+
+.primary-button {
+  --co-fg: #{pvar(--on-primary-300)};
+  --co-active-fg: #{pvar(--on-primary)};
+}
+
+.secondary-button {
+  --co-fg: #{pvar(--fg-300)};
+  --co-active-fg: #{pvar(--fg)};
+}
+
+.dropdown-toggle {
+  .chevron-down {
+    color: var(--co-fg);
+
+    &:hover,
+    &:active,
+    &:focus,
+    &:focus-visible {
+      color: var(--co-active-fg);
+    }
+  }
+
+  &::after {
+    display: none;
+  }
 }
 
 .dropdown-menu {
@@ -54,15 +85,24 @@
   display: flex;
   flex-direction: column;
   min-width: 1px;
+}
 
-  > * {
-    @include ellipsis;
-  }
+.action-description {
+  max-width: 300px;
+  white-space: normal;
 }
 
 .owner-moderator-privilege {
   margin: 0 !important;
   width: 13px !important;
+  top: -1px !important;
 
-  @include margin-left(0.25rem !important);
+  @include margin-left(0.5rem !important);
+}
+
+.icon-placeholder {
+  min-width: 22px;
+  max-width: 22px;
+
+  @include margin-right(0.5rem);
 }

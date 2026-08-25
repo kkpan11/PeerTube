@@ -49,9 +49,10 @@ if [ "$1" = "types-package" ]; then
     mkdir -p /tmp/types-generator
     cp -r packages/types-generator/tests /tmp/types-generator/tests
     cp -r packages/types-generator/dist /tmp/types-generator/dist
-    (cd /tmp/types-generator/dist && npm install)
 
-    npm run tsc -- --noEmit --esModuleInterop --moduleResolution node16 --module Node16 /tmp/types-generator/tests/test.ts
+    (cd /tmp/types-generator/dist && npm install)
+    (cd /tmp/types-generator/tests && npx --package typescript tsc --noEmit --module commonjs --esModuleInterop ./test.ts)
+
     rm -r /tmp/types-generator
 elif [ "$1" = "client" ]; then
     npm run build
@@ -109,9 +110,9 @@ elif [ "$1" = "api-3" ]; then
     npm run build:tests
 
     videosFiles=$(findTestFiles ./packages/tests/dist/api/videos)
-    viewsFiles=$(findTestFiles ./packages/tests/dist/api/views)
+    statsFiles=$(findTestFiles ./packages/tests/dist/api/stats)
 
-    MOCHA_PARALLEL=true runJSTest "$1" $((3*$speedFactor)) $viewsFiles $videosFiles
+    MOCHA_PARALLEL=true runJSTest "$1" $((3*$speedFactor)) $statsFiles $videosFiles
 elif [ "$1" = "api-4" ]; then
     npm run build:server
     npm run build:tests
@@ -131,7 +132,7 @@ elif [ "$1" = "api-5" ]; then
 
     MOCHA_PARALLEL=true runJSTest "$1" $((2*$speedFactor)) $transcodingFiles $runnersFiles
 elif [ "$1" = "external-plugins" ]; then
-    npm run install-dependencies:transcription --workspace=@peertube/tests
+    pnpm run --filter=@peertube/tests install-dependencies:transcription
 
     npm run build:server
     npm run build:tests
@@ -143,13 +144,19 @@ elif [ "$1" = "external-plugins" ]; then
     runJSTest "$1" 1 $externalPluginsFiles
     MOCHA_PARALLEL=true runJSTest "$1" $((2*$speedFactor)) $peertubeRunnerFiles
 elif [ "$1" = "lint" ]; then
-    npm run eslint -- --ext .ts "server/**/*.ts"  "scripts/**/*.ts" "packages/**/*.ts" "apps/**/*.ts"
+    npm run oxlint -- --import-plugin --promise-plugin --node-plugin
 
     npm run swagger-cli -- validate support/doc/api/openapi.yaml
 
+    npm run generate-config-schema
+    git diff --exit-code config/config-schema.json || \
+        { echo "config/config-schema.json is stale. Run 'npm run generate-config-schema' and commit the result."; exit 1; }
+
+    npm run validate-config-schema
+
     ( cd client && npm run lint )
 elif [ "$1" = "transcription" ]; then
-    npm run install-dependencies:transcription --workspace=@peertube/tests
+    pnpm run --filter=@peertube/tests install-dependencies:transcription
 
     npm run build:server
     npm run build:tests
@@ -158,4 +165,7 @@ elif [ "$1" = "transcription" ]; then
     transcriptionDevToolsFiles=$(findTestFiles ./packages/tests/dist/transcription-devtools)
 
     MOCHA_PARALLEL=true runJSTest "$1" $((3*$speedFactor)) $transcriptionFiles $transcriptionDevToolsFiles
+else
+    echo "Unknown suite: $1"
+    exit 1
 fi

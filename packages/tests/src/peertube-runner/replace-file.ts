@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 import { getAllFiles } from '@peertube/peertube-core-utils'
 import {
   cleanupTests,
@@ -39,8 +39,8 @@ describe('Test replace file using peertube-runner program', function () {
   it('Should upload a webm video, transcode it and keep original file', async function () {
     this.timeout(240000)
 
-    const fixture = 'video_short.webm';
-    ({ uuid } = await server.videos.quickUpload({ name: 'video', fixture }))
+    const fixture = 'video_short.webm'
+    ;({ uuid } = await server.videos.quickUpload({ name: 'video', fixture }))
 
     await waitJobs(server, { runnerJobs: true })
 

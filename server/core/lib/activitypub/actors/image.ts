@@ -1,15 +1,17 @@
 import { ActorImageType, ActorImageType_Type } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { ActorImageModel } from '@server/models/actor/actor-image.js'
 import { MActorImage, MActorImages } from '@server/types/models/index.js'
 import { Transaction } from 'sequelize'
+
+const logger = createLogger()
 
 type ImageInfo = {
   name: string
   fileUrl: string
   height: number
   width: number
-  onDisk?: boolean
+  cached?: boolean
 }
 
 async function updateActorImages (actor: MActorImages, type: ActorImageType_Type, imagesInfo: ImageInfo[], t: Transaction) {
@@ -46,7 +48,7 @@ async function updateActorImages (actor: MActorImages, type: ActorImageType_Type
 
     const imageModel = await ActorImageModel.create({
       filename: imageInfo.name,
-      onDisk: imageInfo.onDisk ?? false,
+      cached: imageInfo.cached ?? false,
       fileUrl: imageInfo.fileUrl,
       height: imageInfo.height,
       width: imageInfo.width,
@@ -91,7 +93,6 @@ async function safeDeleteActorImage (actor: MActorImages, toDelete: MActorImage,
 
 export {
   type ImageInfo,
-
   updateActorImages,
   deleteActorImages
 }

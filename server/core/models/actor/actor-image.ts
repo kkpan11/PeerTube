@@ -3,22 +3,15 @@ import { getLowercaseExtension } from '@peertube/peertube-node-utils'
 import { MActorId, MActorImage, MActorImageFormattable, MActorImagePath } from '@server/types/models/index.js'
 import { remove } from 'fs-extra/esm'
 import { join } from 'path'
-import { Op } from 'sequelize'
-import {
-  AfterDestroy,
-  AllowNull,
-  BelongsTo,
-  Column,
-  CreatedAt,
-  Default,
-  ForeignKey, Table,
-  UpdatedAt
-} from 'sequelize-typescript'
-import { logger } from '../../helpers/logger.js'
+import { Op, Transaction } from 'sequelize'
+import { AfterDestroy, AllowNull, BelongsTo, Column, CreatedAt, Default, ForeignKey, Table, UpdatedAt } from 'sequelize-typescript'
+import { createLogger } from '../../helpers/logger.js'
 import { CONFIG } from '../../initializers/config.js'
-import { LAZY_STATIC_PATHS, MIMETYPES, WEBSERVER } from '../../initializers/constants.js'
+import { FILES_CACHE, LAZY_STATIC_PATHS, MIMETYPES, WEBSERVER } from '../../initializers/constants.js'
 import { SequelizeModel, buildSQLAttributes } from '../shared/index.js'
 import { ActorModel } from './actor.js'
+
+const logger = createLogger()
 
 @Table({
   tableName: 'actorImage',
@@ -34,42 +27,41 @@ import { ActorModel } from './actor.js'
   ]
 })
 export class ActorImageModel extends SequelizeModel<ActorImageModel> {
-
   @AllowNull(false)
   @Column
-  filename: string
+  declare filename: string
 
   @AllowNull(true)
   @Default(null)
   @Column
-  height: number
+  declare height: number
 
   @AllowNull(true)
   @Default(null)
   @Column
-  width: number
+  declare width: number
 
   @AllowNull(true)
   @Column
-  fileUrl: string
+  declare fileUrl: string
 
   @AllowNull(false)
   @Column
-  onDisk: boolean
+  declare cached: boolean
 
   @AllowNull(false)
   @Column
-  type: ActorImageType_Type
+  declare type: ActorImageType_Type
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @ForeignKey(() => ActorModel)
   @Column
-  actorId: number
+  declare actorId: number
 
   @BelongsTo(() => ActorModel, {
     foreignKey: {
@@ -77,18 +69,27 @@ export class ActorImageModel extends SequelizeModel<ActorImageModel> {
     },
     onDelete: 'CASCADE'
   })
-  Actor: Awaited<ActorModel> // TODO: Remove awaited: https://github.com/sequelize/sequelize-typescript/issues/825
+  declare Actor: Awaited<ActorModel> // TODO: Remove awaited: https://github.com/sequelize/sequelize-typescript/issues/825
 
   @AfterDestroy
   static removeFile (instance: ActorImageModel) {
     logger.info('Removing actor image file %s.', instance.filename)
 
     // Don't block the transaction
-    instance.removeImage()
+    instance.removeFile()
       .catch(err => logger.error('Cannot remove actor image file %s.', instance.filename, { err }))
   }
 
   // ---------------------------------------------------------------------------
+
+  static getSQLAttributesJSON () {
+    return buildSQLAttributes({
+      model: this,
+      tableName: '',
+      aliasPrefix: '',
+      jsonMode: true
+    })
+  }
 
   static getSQLAttributes (tableName: string, aliasPrefix = '') {
     return buildSQLAttributes({
@@ -110,73 +111,65 @@ export class ActorImageModel extends SequelizeModel<ActorImageModel> {
     return ActorImageModel.findOne(query)
   }
 
-  static listByActor (actor: MActorId, type: ActorImageType_Type) {
+  static listByActor (actor: MActorId, type: ActorImageType_Type, transaction?: Transaction) {
     const query = {
       where: {
         actorId: actor.id,
         type
-      }
+      },
+      transaction
     }
 
     return ActorImageModel.findAll(query)
   }
 
-  static async listActorImages (actor: MActorId) {
-    const promises = [ ActorImageType.AVATAR, ActorImageType.BANNER ].map(type => ActorImageModel.listByActor(actor, type))
+  static async listActorImages (actor: MActorId, transaction?: Transaction) {
+    const promises = [ ActorImageType.AVATAR, ActorImageType.BANNER ].map(type => ActorImageModel.listByActor(actor, type, transaction))
 
     const [ avatars, banners ] = await Promise.all(promises)
 
     return { avatars, banners }
   }
 
-  static listRemoteOnDisk () {
+  static listRemoteCached () {
     return this.findAll<MActorImage>({
       where: {
-        onDisk: true
-      },
-      include: [
-        {
-          attributes: [ 'id' ],
-          model: ActorModel.unscoped(),
-          required: true,
-          where: {
-            serverId: {
-              [Op.ne]: null
-            }
-          }
+        cached: true,
+        fileUrl: {
+          [Op.ne]: null
         }
-      ]
+      }
     })
-  }
-
-  static getImageUrl (image: MActorImagePath) {
-    if (!image) return undefined
-
-    return WEBSERVER.URL + image.getStaticPath()
   }
 
   // ---------------------------------------------------------------------------
 
   toFormattedJSON (this: MActorImageFormattable): ActorImage {
     return {
+      height: this.height,
       width: this.width,
       path: this.getStaticPath(),
-      fileUrl: ActorImageModel.getImageUrl(this),
+      fileUrl: this.getLocalFileUrl(),
       createdAt: this.createdAt,
       updatedAt: this.updatedAt
     }
   }
 
   toActivityPubObject (): ActivityIconObject {
-    const extension = getLowercaseExtension(this.filename)
-
     return {
       type: 'Image',
-      mediaType: MIMETYPES.IMAGE.EXT_MIMETYPE[extension],
+      mediaType: this.getMimeType(),
       height: this.height,
       width: this.width,
-      url: ActorImageModel.getImageUrl(this)
+      url: this.getLocalFileUrl()
     }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  getLocalFileUrl (this: MActorImagePath) {
+    // Remote files are cached by our instance
+    return WEBSERVER.URL + this.getStaticPath()
   }
 
   getStaticPath (this: MActorImagePath) {
@@ -192,16 +185,29 @@ export class ActorImageModel extends SequelizeModel<ActorImageModel> {
     }
   }
 
-  getPath () {
+  getFSPath () {
     return join(CONFIG.STORAGE.ACTOR_IMAGES_DIR, this.filename)
   }
 
-  removeImage () {
-    const imagePath = join(CONFIG.STORAGE.ACTOR_IMAGES_DIR, this.filename)
-    return remove(imagePath)
+  getFSCachedPath () {
+    return join(FILES_CACHE.AVATARS.DIRECTORY, this.filename)
   }
 
-  isOwned () {
+  removeFile () {
+    const path = this.cached
+      ? this.getFSCachedPath()
+      : this.getFSPath()
+
+    logger.info('Removing actor image file ' + path)
+
+    return remove(path)
+  }
+
+  isLocal () {
     return !this.fileUrl
+  }
+
+  getMimeType () {
+    return MIMETYPES.IMAGE.EXT_MIMETYPE[getLowercaseExtension(this.filename)]
   }
 }

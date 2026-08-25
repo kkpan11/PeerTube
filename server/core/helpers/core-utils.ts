@@ -1,4 +1,4 @@
-/* eslint-disable no-useless-call */
+/* oxlint-disable no-useless-call */
 
 /*
   Different from 'utils' because we don't import other PeerTube modules.
@@ -6,7 +6,7 @@
 */
 
 import { promisify1, promisify2, promisify3 } from '@peertube/peertube-core-utils'
-import { exec, ExecOptions } from 'child_process'
+import { exec } from 'child_process'
 import { ED25519KeyPairOptions, generateKeyPair, randomBytes, RSAKeyPairOptions, scrypt } from 'crypto'
 import truncate from 'lodash-es/truncate.js'
 import { pipeline } from 'stream'
@@ -50,7 +50,8 @@ const timeTable = {
   hour: 3600000,
   day: 3600000 * 24,
   week: 3600000 * 24 * 7,
-  month: 3600000 * 24 * 30
+  month: 3600000 * 24 * 30,
+  year: 3600000 * 24 * 365
 }
 
 export function parseDurationToMs (duration: number | string): number {
@@ -68,7 +69,10 @@ export function parseDurationToMs (duration: number | string): number {
         unit = 'ms'
       }
 
-      return (len || 1) * (timeTable[unit] || 0)
+      const multiplier = timeTable[unit]
+      if (!multiplier) throw new Error('Cannot parse datetime unit ' + unit)
+
+      return (len || 1) * multiplier
     }
   }
 
@@ -86,7 +90,7 @@ export function parseBytes (value: string | number): number {
   const t = /^(\d+)\s*TB$/
   const g = /^(\d+)\s*GB$/
   const m = /^(\d+)\s*MB$/
-  const b = /^(\d+)\s*B$/
+  const b = /^(\d+)\s*(?:KB|B)$/
 
   let match: RegExpMatchArray
 
@@ -182,8 +186,6 @@ function pageToStartAndCount (page: number, itemsPerPage: number) {
 
 // ---------------------------------------------------------------------------
 
-type SemVersion = { major: number, minor: number, patch: number }
-
 /**
  * Parses a semantic version string into its separate components.
  * Fairly lax, and allows for missing or additional segments in the string.
@@ -200,20 +202,7 @@ function parseSemVersion (s: string) {
     major: parseInt(parsed[1]),
     minor: parseInt(parsed[2]),
     patch: parsed[3] ? parseInt(parsed[3]) : 0
-  } as SemVersion
-}
-
-// ---------------------------------------------------------------------------
-
-function execShell (command: string, options?: ExecOptions) {
-  return new Promise<{ err?: Error, stdout: string, stderr: string }>((res, rej) => {
-    exec(command, options, (err, stdout, stderr) => {
-      // eslint-disable-next-line prefer-promise-reject-errors
-      if (err) return rej({ err, stdout, stderr })
-
-      return res({ stdout, stderr })
-    })
-  })
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -227,7 +216,7 @@ function generateRSAKeyPairPromise (size: number) {
         format: 'pem'
       },
       privateKeyEncoding: {
-        type: 'pkcs1',
+        type: 'pkcs8',
         format: 'pem'
       }
     }
@@ -272,27 +261,18 @@ const pipelinePromise = promisify(pipeline)
 // ---------------------------------------------------------------------------
 
 export {
-  objectConverter,
-  mapToJSON,
-
-  sanitizeUrl,
-  sanitizeHost,
-
-  execShell,
-
-  pageToStartAndCount,
-  peertubeTruncate,
-
-  scryptPromise,
-
-  randomBytesPromise,
-
-  generateRSAKeyPairPromise,
-  generateED25519KeyPairPromise,
-
-  execPromise2,
   execPromise,
+  execPromise2,
+  generateED25519KeyPairPromise,
+  generateRSAKeyPairPromise,
+  mapToJSON,
+  objectConverter,
+  pageToStartAndCount,
+  parseSemVersion,
+  peertubeTruncate,
   pipelinePromise,
-
-  parseSemVersion
+  randomBytesPromise,
+  sanitizeHost,
+  sanitizeUrl,
+  scryptPromise
 }

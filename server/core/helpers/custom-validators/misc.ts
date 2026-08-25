@@ -1,8 +1,8 @@
-import 'multer'
+import { isShortUUID, shortToUUID } from '@peertube/peertube-node-utils'
 import { UploadFilesForCheck } from 'express'
+import 'multer'
 import { sep } from 'path'
 import validator from 'validator'
-import { isShortUUID, shortToUUID } from '@peertube/peertube-node-utils'
 
 export function exists (value: any) {
   return value !== undefined && value !== null
@@ -125,10 +125,10 @@ export function checkMimetypeRegex (fileMimeType: string, mimeTypeRegex: string)
 
 // ---------------------------------------------------------------------------
 
-export function toCompleteUUID (value: string) {
-  if (isShortUUID(value)) {
+export function toCompleteUUID<T extends string | number> (value: T) {
+  if (isShortUUID(value + '')) {
     try {
-      return shortToUUID(value)
+      return shortToUUID(value + '')
     } catch {
       return ''
     }
@@ -137,7 +137,7 @@ export function toCompleteUUID (value: string) {
   return value
 }
 
-export function toCompleteUUIDs (values: string[]) {
+export function toCompleteUUIDs (values: (string | number)[]) {
   return values.map(v => toCompleteUUID(v))
 }
 
@@ -165,9 +165,45 @@ export function toValueOrNull (value: string) {
   return value
 }
 
+export function toArray (value: any) {
+  if (!value) return []
+  if (isArray(value)) return value
+
+  if (typeof value === 'object' && value?.[0]) return Object.values(value)
+
+  return [ value ]
+}
+
 export function toIntArray (value: any) {
   if (!value) return []
-  if (isArray(value) === false) return [ validator.default.toInt(value) ]
+  if (isArray(value)) return value.map(v => validator.default.toInt(v))
 
-  return value.map(v => validator.default.toInt(v))
+  if (typeof value === 'object' && value?.[0]) return Object.values(value).map(v => validator.default.toInt(v + ''))
+
+  if (typeof value === 'string' || typeof value === 'number') return [ validator.default.toInt(value + '') ]
+
+  return []
+}
+
+// ---------------------------------------------------------------------------
+
+export function isStableVersionValid (value: string) {
+  if (!exists(value)) return false
+
+  const parts = (value + '').split('.')
+
+  return parts.length === 3 && parts.every(p => validator.default.isInt(p))
+}
+
+export function isStableOrUnstableVersionValid (value: string) {
+  if (!exists(value)) return false
+
+  // suffix is beta.x or alpha.x
+  const [ stable, suffix ] = value.split('-')
+  if (!isStableVersionValid(stable)) return false
+
+  const suffixRegex = /^(rc|alpha|beta)\.\d+$/
+  if (suffix && !suffixRegex.test(suffix)) return false
+
+  return true
 }

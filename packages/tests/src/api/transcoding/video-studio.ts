@@ -50,7 +50,6 @@ describe('Test video studio', function () {
 
   function runCommonTests () {
     describe('Cutting', function () {
-
       it('Should cut the beginning of the video', async function () {
         this.timeout(120_000)
 
@@ -116,9 +115,9 @@ describe('Test video studio', function () {
       it('Should cut start/end of the audio', async function () {
         this.timeout(120_000)
 
+        await servers[0].config.save()
         await servers[0].config.enableMinimumTranscoding({ splitAudioAndVideo: true })
         await renewVideo('video_short1.webm')
-        await servers[0].config.enableMinimumTranscoding()
 
         const video = await servers[0].videos.get({ id: videoUUID })
         for (const file of video.files) {
@@ -146,11 +145,12 @@ describe('Test video studio', function () {
         for (const server of servers) {
           await checkVideoDuration(server, videoUUID, 4)
         }
+
+        await servers[0].config.rollback()
       })
     })
 
     describe('Intro/Outro', function () {
-
       it('Should add an intro', async function () {
         this.timeout(120_000)
         await renewVideo()
@@ -267,8 +267,48 @@ describe('Test video studio', function () {
       })
     })
 
-    describe('Watermark', function () {
+    describe('Removing segments', function () {
+      it('Should remove a single segment from the middle of the video', async function () {
+        this.timeout(120_000)
+        await renewVideo('video_short1.webm') // 10 seconds
 
+        await createTasks([
+          {
+            name: 'remove-segments',
+            options: {
+              segments: [ { start: 2, end: 6 } ] // removes 4s → 6s remaining
+            }
+          }
+        ])
+
+        for (const server of servers) {
+          await checkVideoDuration(server, videoUUID, 6)
+        }
+      })
+
+      it('Should remove multiple segments from the video', async function () {
+        this.timeout(120_000)
+        await renewVideo('video_short1.webm') // 10 seconds
+
+        await createTasks([
+          {
+            name: 'remove-segments',
+            options: {
+              segments: [
+                { start: 1, end: 3 }, // removes 2s
+                { start: 6, end: 8 } // removes 2s → 6s remaining
+              ]
+            }
+          }
+        ])
+
+        for (const server of servers) {
+          await checkVideoDuration(server, videoUUID, 6)
+        }
+      })
+    })
+
+    describe('Watermark', function () {
       it('Should add a watermark to the video', async function () {
         this.timeout(120_000)
         await renewVideo()
@@ -298,7 +338,6 @@ describe('Test video studio', function () {
   }
 
   describe('Web videos enabled', function () {
-
     it('Should run a complex task', async function () {
       this.timeout(240_000)
       await renewVideo()
@@ -306,13 +345,12 @@ describe('Test video studio', function () {
       await createTasks(VideoStudioCommand.getComplexTask())
 
       for (const server of servers) {
-        await checkVideoDuration(server, videoUUID, 9)
+        await checkVideoDuration(server, videoUUID, VideoStudioCommand.getComplexTaskVideoDuration())
       }
     })
   })
 
   describe('HLS only studio edition', function () {
-
     before(async function () {
       await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true })
     })
@@ -329,7 +367,7 @@ describe('Test video studio', function () {
         const video = await server.videos.get({ id: videoUUID })
         expect(video.files).to.have.lengthOf(0)
 
-        await checkVideoDuration(server, videoUUID, 9)
+        await checkVideoDuration(server, videoUUID, VideoStudioCommand.getComplexTaskVideoDuration())
 
         await completeCheckHlsPlaylist({ servers, videoUUID, hlsOnly: true, resolutions: [ 720, 240 ] })
       }
@@ -337,7 +375,6 @@ describe('Test video studio', function () {
   })
 
   describe('HLS with splitted audio studio edition', function () {
-
     before(async function () {
       await servers[0].config.enableMinimumTranscoding({ webVideo: false, hls: true, splitAudioAndVideo: true })
     })
@@ -354,7 +391,7 @@ describe('Test video studio', function () {
         const video = await server.videos.get({ id: videoUUID })
         expect(video.files).to.have.lengthOf(0)
 
-        await checkVideoDuration(server, videoUUID, 9)
+        await checkVideoDuration(server, videoUUID, VideoStudioCommand.getComplexTaskVideoDuration())
 
         await completeCheckHlsPlaylist({ servers, videoUUID, hlsOnly: true, splittedAudio: true, resolutions: [ 720, 240 ] })
       }
@@ -362,7 +399,6 @@ describe('Test video studio', function () {
   })
 
   describe('Server restart', function () {
-
     it('Should still be able to run video edition after a server restart', async function () {
       this.timeout(240_000)
 
@@ -375,7 +411,7 @@ describe('Test video studio', function () {
       await waitJobs(servers)
 
       for (const server of servers) {
-        await checkVideoDuration(server, videoUUID, 9)
+        await checkVideoDuration(server, videoUUID, VideoStudioCommand.getComplexTaskVideoDuration())
       }
     })
 
@@ -423,7 +459,7 @@ describe('Test video studio', function () {
           expectStartWith(hlsFile.fileUrl, objectStorage.getMockPlaylistBaseUrl())
         }
 
-        await checkVideoDuration(server, videoUUID, 9)
+        await checkVideoDuration(server, videoUUID, VideoStudioCommand.getComplexTaskVideoDuration())
       }
     })
 

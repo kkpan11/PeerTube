@@ -1,14 +1,14 @@
-import { CommonModule } from '@angular/common'
-import { Component, OnInit, inject } from '@angular/core'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { ServerService } from '@app/core'
-import { Actor } from '@app/shared/shared-main/account/actor.model'
+import { findAppropriateImageFileUrl } from '@root-helpers/images'
 
 @Component({
   selector: 'my-subscription-image',
   templateUrl: './subscription-image.component.html',
   styleUrls: [ './subscription-image.component.scss' ],
   standalone: true,
-  imports: [ CommonModule ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: []
 })
 export class SubscriptionImageComponent implements OnInit {
   private server = inject(ServerService)
@@ -16,6 +16,6 @@ export class SubscriptionImageComponent implements OnInit {
   avatarUrl: string
 
   ngOnInit () {
-    this.avatarUrl = Actor.GET_ACTOR_AVATAR_URL(this.server.getHTMLConfig().instance, 30)
+    this.avatarUrl = findAppropriateImageFileUrl(this.server.getHTMLConfig().instance.avatars, 30)
   }
 }

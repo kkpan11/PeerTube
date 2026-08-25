@@ -1,5 +1,5 @@
-import { DecimalPipe, NgFor, NgIf } from '@angular/common'
-import { Component, OnInit, inject } from '@angular/core'
+import { DecimalPipe } from '@angular/common'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { ComponentPagination, hasMoreItems, Notifier, RestService, ServerService } from '@app/core'
 import { ActorAvatarComponent } from '@app/shared/shared-actor-image/actor-avatar.component'
@@ -16,9 +16,8 @@ import { SubscriptionImageComponent } from './subscription-image.component'
   selector: 'my-about-follows',
   templateUrl: './about-follows.component.html',
   styleUrls: [ './about-follows.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
-    NgFor,
     ActorAvatarComponent,
     ButtonComponent,
     PluginSelectorDirective,
@@ -92,7 +91,7 @@ export class AboutFollowsComponent implements OnInit {
 
     const pagination = this.restService.componentToRestPagination(this.followersPagination)
 
-    this.followService.getFollowers({ pagination, sort: this.sort, state: 'accepted' })
+    this.followService.listFollowers({ pagination, sort: this.sort, state: 'accepted' })
       .subscribe({
         next: resultList => {
           if (reset) this.followers = []
@@ -103,7 +102,7 @@ export class AboutFollowsComponent implements OnInit {
           this.followersPagination.totalItems = resultList.total
         },
 
-        error: err => this.notifier.error(err.message),
+        error: err => this.notifier.handleError(err),
 
         complete: () => this.loadingFollowers = false
       })
@@ -118,7 +117,7 @@ export class AboutFollowsComponent implements OnInit {
 
     const pagination = this.restService.componentToRestPagination(this.subscriptionsPagination)
 
-    this.followService.getFollowing({ pagination, sort: this.sort, state: 'accepted' })
+    this.followService.listSubscriptions({ pagination, sort: this.sort, state: 'accepted' })
       .subscribe({
         next: resultList => {
           if (reset) this.subscriptions = []
@@ -129,7 +128,7 @@ export class AboutFollowsComponent implements OnInit {
           this.subscriptionsPagination.totalItems = resultList.total
         },
 
-        error: err => this.notifier.error(err.message),
+        error: err => this.notifier.handleError(err),
 
         complete: () => this.loadingSubscriptions = false
       })

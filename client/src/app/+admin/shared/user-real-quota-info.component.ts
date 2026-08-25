@@ -1,13 +1,13 @@
-import { Component, OnInit, inject, input } from '@angular/core'
+import { Component, OnInit, inject, input, ChangeDetectionStrategy } from '@angular/core'
 import { ServerService } from '@app/core'
 import { HTMLServerConfig, VideoResolution } from '@peertube/peertube-models'
 import { BytesPipe } from '../../shared/shared-main/common/bytes.pipe'
-import { NgIf } from '@angular/common'
 
 @Component({
   selector: 'my-user-real-quota-info',
   templateUrl: './user-real-quota-info.component.html',
-  imports: [ NgIf, BytesPipe ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ BytesPipe ]
 })
 export class UserRealQuotaInfoComponent implements OnInit {
   private server = inject(ServerService)
@@ -29,7 +29,7 @@ export class UserRealQuotaInfoComponent implements OnInit {
 
     const resolutions = transcodingConfig.enabledResolutions
     const higherResolution = VideoResolution.H_4K
-    let multiplier = 0
+    let multiplier = 1
 
     for (const resolution of resolutions) {
       multiplier += resolution / higherResolution
@@ -37,7 +37,7 @@ export class UserRealQuotaInfoComponent implements OnInit {
 
     if (transcodingConfig.hls.enabled) multiplier *= 2
 
-    return multiplier * this.getQuotaAsNumber()
+    return Math.round(multiplier * this.getQuotaAsNumber())
   }
 
   getQuotaAsNumber () {

@@ -1,8 +1,8 @@
-import { NgFor, NgStyle } from '@angular/common'
+import { NgStyle } from '@angular/common'
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit, inject, input, output } from '@angular/core'
-import { AuthService, Notifier } from '@app/core'
+import { Notifier, User, UserService } from '@app/core'
 import { Video } from '@app/shared/shared-main/video/video.model'
-import { CommonVideoParams, VideoService } from '@app/shared/shared-main/video/video.service'
+import { VideoListParams, VideoService } from '@app/shared/shared-main/video/video.service'
 import { objectKeysTyped } from '@peertube/peertube-core-utils'
 import { ResultList, VideoSortField } from '@peertube/peertube-models'
 import { Observable } from 'rxjs'
@@ -19,12 +19,12 @@ import { CustomMarkupComponent } from './shared'
   templateUrl: 'videos-list-markup.component.html',
   styleUrls: [ 'videos-list-markup.component.scss' ],
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ NgStyle, NgFor, VideoMiniatureComponent ]
+  imports: [ NgStyle, VideoMiniatureComponent ]
 })
 export class VideosListMarkupComponent implements CustomMarkupComponent, OnInit {
-  private auth = inject(AuthService)
   private videoService = inject(VideoService)
   private notifier = inject(Notifier)
+  private userService = inject(UserService)
   private cd = inject(ChangeDetectorRef)
 
   readonly sort = input<string>(undefined)
@@ -42,20 +42,14 @@ export class VideosListMarkupComponent implements CustomMarkupComponent, OnInit 
   readonly loaded = output<boolean>()
 
   videos: Video[]
+  user: User
 
   displayOptions: MiniatureDisplayOptions = {
     date: false,
     views: true,
     by: true,
     avatar: true,
-    privacyLabel: false,
-    privacyText: false,
-    state: false,
-    blacklistInfo: false
-  }
-
-  getUser () {
-    return this.auth.getUser()
+    privacyLabel: false
   }
 
   limitRowsStyle () {
@@ -75,7 +69,10 @@ export class VideosListMarkupComponent implements CustomMarkupComponent, OnInit 
       }
     }
 
-    return this.getVideosObservable()
+    this.userService.getAnonymousOrLoggedUser()
+      .subscribe(user => this.user = user)
+
+    this.getVideosObservable()
       .pipe(finalize(() => this.loaded.emit(true)))
       .subscribe({
         next: data => {
@@ -88,7 +85,7 @@ export class VideosListMarkupComponent implements CustomMarkupComponent, OnInit 
   }
 
   getVideosObservable () {
-    const options: CommonVideoParams = {
+    const options: VideoListParams = {
       videoPagination: {
         currentPage: 1,
         itemsPerPage: this.count()
@@ -107,19 +104,19 @@ export class VideosListMarkupComponent implements CustomMarkupComponent, OnInit 
     const channelHandle = this.channelHandle()
     const accountHandle = this.accountHandle()
     if (channelHandle) {
-      obs = this.videoService.getVideoChannelVideos({
+      obs = this.videoService.listChannelVideos({
         ...options,
 
         videoChannel: { nameWithHost: channelHandle }
       })
     } else if (accountHandle) {
-      obs = this.videoService.getAccountVideos({
+      obs = this.videoService.listAccountVideos({
         ...options,
 
         account: { nameWithHost: accountHandle }
       })
     } else {
-      obs = this.videoService.getVideos(options)
+      obs = this.videoService.listVideos(options)
     }
 
     return obs.pipe(map(({ data }) => data))

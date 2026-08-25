@@ -12,7 +12,10 @@ function pickCommonVideoQuery (query: VideosCommonQueryAfterSanitize) {
     'count',
     'sort',
     'nsfw',
+    'nsfwFlagsIncluded',
+    'nsfwFlagsExcluded',
     'isLive',
+    'includeScheduledLive',
     'categoryOneOf',
     'licenceOneOf',
     'languageOneOf',
@@ -27,7 +30,8 @@ function pickCommonVideoQuery (query: VideosCommonQueryAfterSanitize) {
     'hasWebVideoFiles',
     'search',
     'excludeAlreadyWatched',
-    'autoTagOneOf'
+    'autoTagOneOf',
+    'stateOneOf'
   ])
 }
 

@@ -1,13 +1,14 @@
 import { parseChapters, sortBy } from '@peertube/peertube-core-utils'
 import { VideoChapter } from '@peertube/peertube-models'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { afterCommitIfTransaction } from '@server/helpers/database-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { CONSTRAINTS_FIELDS } from '@server/initializers/constants.js'
 import { VideoChapterModel } from '@server/models/video/video-chapter.js'
 import { MVideoImmutable } from '@server/types/models/index.js'
 import { Transaction } from 'sequelize'
 import { InternalEventEmitter } from './internal-event-emitter.js'
-import { CONSTRAINTS_FIELDS } from '@server/initializers/constants.js'
 
-const lTags = loggerTagsFactory('video', 'chapters')
+const logger = createLogger('video', 'chapter')
 
 export async function replaceChapters (options: {
   video: MVideoImmutable
@@ -20,7 +21,9 @@ export async function replaceChapters (options: {
 
   await createChapters({ videoId: video.id, chapters, transaction })
 
-  InternalEventEmitter.Instance.emit('chapters-updated', { video })
+  afterCommitIfTransaction(transaction, () => {
+    InternalEventEmitter.Instance.emit('chapters-updated', { video })
+  })
 }
 
 export async function replaceChaptersIfNotExist (options: {
@@ -34,7 +37,9 @@ export async function replaceChaptersIfNotExist (options: {
 
   await createChapters({ videoId: video.id, chapters, transaction })
 
-  InternalEventEmitter.Instance.emit('chapters-updated', { video })
+  afterCommitIfTransaction(transaction, () => {
+    InternalEventEmitter.Instance.emit('chapters-updated', { video })
+  })
 }
 
 export async function replaceChaptersFromDescriptionIfNeeded (options: {
@@ -48,10 +53,12 @@ export async function replaceChaptersFromDescriptionIfNeeded (options: {
   const chaptersFromOldDescription = sortBy(parseChapters(oldDescription, CONSTRAINTS_FIELDS.VIDEO_CHAPTERS.TITLE.max), 'timecode')
   const existingChapters = await VideoChapterModel.listChaptersOfVideo(video.id, transaction)
 
-  logger.debug(
-    'Check if we replace chapters from description',
-    { oldDescription, chaptersFromOldDescription, newDescription, existingChapters, ...lTags(video.uuid) }
-  )
+  logger.debug('Check if we replace chapters from description', {
+    oldDescription,
+    chaptersFromOldDescription,
+    newDescription,
+    existingChapters
+  })
 
   // Then we can update chapters from the new description
   if (areSameChapters(chaptersFromOldDescription, existingChapters)) {
@@ -60,7 +67,7 @@ export async function replaceChaptersFromDescriptionIfNeeded (options: {
 
     await replaceChapters({ video, chapters: chaptersFromNewDescription, transaction })
 
-    logger.info('Replaced chapters of video ' + video.uuid, { chaptersFromNewDescription, ...lTags(video.uuid) })
+    logger.info('Replaced chapters of video ' + video.uuid, { chaptersFromNewDescription })
 
     return true
   }
@@ -79,10 +86,10 @@ async function createChapters (options: {
 }) {
   const { chapters, transaction, videoId } = options
 
-  const existingTimecodes = new Set<number>()
+  const existingTimecode = new Set<number>()
 
   for (const chapter of chapters) {
-    if (existingTimecodes.has(chapter.timecode)) continue
+    if (existingTimecode.has(chapter.timecode)) continue
 
     await VideoChapterModel.create({
       title: chapter.title,
@@ -90,7 +97,7 @@ async function createChapters (options: {
       videoId
     }, { transaction })
 
-    existingTimecodes.add(chapter.timecode)
+    existingTimecode.add(chapter.timecode)
   }
 }
 

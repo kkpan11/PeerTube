@@ -1,26 +1,25 @@
-import { throwError as observableThrowError } from 'rxjs'
 import { HttpHeaderResponse } from '@angular/common/http'
 import { Injectable, LOCALE_ID, inject } from '@angular/core'
 import { Router } from '@angular/router'
 import { DateFormat, dateToHuman } from '@app/helpers'
 import { HttpStatusCode, HttpStatusCodeType, ResultList } from '@peertube/peertube-models'
-import { logger } from '@root-helpers/logger'
+import { PeerTubeHTTPError, PeerTubeReconnectError } from '@root-helpers/errors'
+import { throwError as observableThrowError } from 'rxjs'
 
 @Injectable()
 export class RestExtractor {
   private localeId = inject(LOCALE_ID)
   private router = inject(Router)
 
-  applyToResultListData<T, A, U> (
+  applyToResultListData<T, U> (
     result: ResultList<T>,
-    fun: (data: T, ...args: A[]) => U,
-    additionalArgs: A[] = []
+    fun: (data: T) => U
   ): ResultList<U> {
     const data: T[] = result.data
 
     return {
       total: result.total,
-      data: data.map(d => fun.apply(this, [ d, ...additionalArgs ]))
+      data: data.map(d => fun(d))
     }
   }
 
@@ -29,7 +28,7 @@ export class RestExtractor {
     fieldsToConvert: string[] = [ 'createdAt' ],
     format?: DateFormat
   ): ResultList<T> {
-    return this.applyToResultListData(result, this.convertDateToHuman.bind(this), [ fieldsToConvert, format ])
+    return this.applyToResultListData(result, data => this.convertDateToHuman(data, fieldsToConvert, format))
   }
 
   convertDateToHuman (target: any, fieldsToConvert: string[], format?: DateFormat) {
@@ -70,37 +69,31 @@ export class RestExtractor {
       errorObj.body = err.error
     }
 
-    return observableThrowError(() => errorObj)
+    return observableThrowError(() => {
+      if (err instanceof PeerTubeReconnectError) {
+        return err
+      }
+
+      if (err.status) {
+        return new PeerTubeHTTPError(errorMessage, {
+          status: err.status,
+          body: errorObj.body,
+          headers: errorObj.headers,
+          url: err.url
+        })
+      }
+
+      return err
+    })
   }
 
   private buildErrorMessage (err: any) {
-    console.log(err)
-    if (err.error instanceof Error) {
-      // A client-side or network error occurred. Handle it accordingly.
-      const errorMessage = err.error.detail || err.error.title
-      logger.error('An error occurred:', errorMessage)
+    if (err.status !== undefined) return this.buildServerErrorMessage(err)
+    if (err.error instanceof Error) return err.error.detail || err.error.title
+    if (typeof err.error === 'string') return err.error
+    if (typeof err === 'string') return err
 
-      return errorMessage
-    }
-
-    if (typeof err.error === 'string') {
-      return err.error
-    }
-
-    if (err.status !== undefined) {
-      // A fetch response
-      const errorMessage = this.buildServerErrorMessage(err)
-
-      const message = `Backend returned code ${err.status}, errorMessage is: ${errorMessage}`
-
-      if (err.status === HttpStatusCode.NOT_FOUND_404) logger.clientError(message)
-      else logger.error(message, { type: err.type, url: err.url })
-
-      return errorMessage
-    }
-
-    logger.error(err)
-    return err
+    return err.message || err.detail || $localize`Unknown error`
   }
 
   private buildServerErrorMessage (err: any) {

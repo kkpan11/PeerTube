@@ -1,22 +1,134 @@
-import bytes from 'bytes'
-import { IConfig } from 'config'
-import { createRequire } from 'module'
-import { dirname, join } from 'path'
+import { guessAspectRatio, sortBy } from '@peertube/peertube-core-utils'
 import {
   BroadcastMessageLevel,
   NSFWPolicyType,
+  PlayerTheme,
+  ThumbnailAspectRatio,
   VideoCommentPolicyType,
   VideoPrivacyType,
   VideoRedundancyConfigFilter,
   VideosRedundancyStrategy
 } from '@peertube/peertube-models'
-import { decacheModule } from '@server/helpers/decache.js'
-import { buildPath, root } from '@peertube/peertube-node-utils'
-import { parseBytes, parseDurationToMs } from '../helpers/core-utils.js'
+import { buildPath } from '@peertube/peertube-node-utils'
 import { TranscriptionEngineName, WhisperBuiltinModelName } from '@peertube/peertube-transcription'
+import bytes from 'bytes'
+import { Load, Util, type ConfigSource } from 'config/lib/util.js'
+import { basename, dirname, join } from 'path'
+import { parseBytes, parseDurationToMs } from '../helpers/core-utils.js'
 
-const require = createRequire(import.meta.url)
-let config: IConfig = require('config')
+type ConfigInstance = {
+  get: <T>(property: string) => T
+  has: (property: string) => boolean
+  util: {
+    getConfigSources: () => ConfigSource[]
+    getEnv: (varName: string) => string
+  }
+}
+
+// Reimplement the bootstrap of the `config` module singleton, so we can rebuild the configuration
+// on reload without having to purge the CommonJS require cache
+function loadConfig (): ConfigInstance {
+  // `environments` is optional at runtime, but is typed as a required argument by the config module
+  const load = Load.fromEnvironment(undefined)
+
+  const additional: { name: string, config: any }[] = []
+  let envConfig: any = {}
+  let cmdLineConfig: any = {}
+
+  load.setEnv('CONFIG_DIR', load.options.configDir)
+
+  if (process.env.NODE_CONFIG) {
+    try {
+      envConfig = JSON.parse(process.env.NODE_CONFIG)
+    } catch {
+      console.error('The $NODE_CONFIG environment variable is malformed JSON')
+    }
+
+    additional.push({ name: '$NODE_CONFIG', config: envConfig })
+  }
+
+  const cmdLineArg = load.getCmdLineArg('NODE_CONFIG')
+  if (cmdLineArg) {
+    try {
+      cmdLineConfig = JSON.parse(cmdLineArg)
+    } catch {
+      console.error('The --NODE_CONFIG={json} command line argument is malformed JSON')
+    }
+
+    additional.push({ name: '--NODE_CONFIG argument', config: cmdLineConfig })
+  }
+
+  // Place the mixed NODE_CONFIG into the environment
+  load.setEnv('NODE_CONFIG', JSON.stringify(Util.extendDeep({}, envConfig, cmdLineConfig)))
+
+  load.scan(additional)
+
+  runStrictnessChecks(load)
+
+  if (!load.initParam('SUPPRESS_NO_CONFIG_WARNING') && Object.keys(load.config).length === 0) {
+    console.error('WARNING: No configurations found in configuration directory: ' + load.options.configDir)
+    console.error('WARNING: To disable this warning set SUPPRESS_NO_CONFIG_WARNING in the environment.')
+  }
+
+  // Ensure the configuration cannot be accidentally mutated at runtime
+  if (!load.initParam('ALLOW_CONFIG_MUTATIONS', false)) {
+    Util.makeImmutable(load.config)
+  }
+
+  return {
+    get: <T>(property: string): T => {
+      const value = Util.getPath(load.config, property)
+      if (value === undefined) throw new Error(`Configuration property "${property}" is not defined`)
+
+      return value
+    },
+    has: (property: string): boolean => Util.getPath(load.config, property) !== undefined,
+    util: {
+      getConfigSources: () => load.getSources(),
+      getEnv: (varName: string) => load.getEnv(varName)
+    }
+  }
+}
+
+// Warn (or throw if NODE_CONFIG_STRICT_MODE is set) when NODE_ENV/NODE_APP_INSTANCE match no config file
+// See https://github.com/node-config/node-config/wiki/Strict-Mode
+function runStrictnessChecks (load: Load) {
+  if (load.initParam('SUPPRESS_STRICTNESS_CHECK')) return
+
+  const sourceFilenames = load.getSources().map(s => basename(s.name))
+
+  const warnOrThrow = (message: string) => {
+    const beStrict = process.env.NODE_CONFIG_STRICT_MODE
+    const prefix = beStrict ? 'FATAL: ' : 'WARNING: '
+    const seeURL = 'See https://github.com/node-config/node-config/wiki/Strict-Mode'
+
+    console.error(prefix + message)
+    console.error(prefix + seeURL)
+
+    if ([ 'true', '1' ].includes(beStrict)) throw new Error(prefix + message + ' ' + seeURL)
+  }
+
+  for (const env of load.options.nodeEnv) {
+    // Anchored regex to avoid false positives, so `test` does not match `contest.yaml`
+    const anyFileMatchesEnv = sourceFilenames.some(filename => new RegExp(`^${env}[.-]`).test(filename))
+
+    // development is special cased because it's the default value
+    if (env && env !== 'development' && !anyFileMatchesEnv) {
+      warnOrThrow(`${load.getEnv('nodeEnv')} value of '${env}' did not match any deployment config file names.`)
+    }
+
+    if (env === 'default' || env === 'local') {
+      warnOrThrow(`${load.getEnv('nodeEnv')} value of '${env}' is ambiguous.`)
+    }
+  }
+
+  const appInstance = load.options.appInstance
+  if (appInstance && !sourceFilenames.some(filename => filename.includes(appInstance))) {
+    warnOrThrow(`NODE_APP_INSTANCE value of '${appInstance}' did not match any instance config file names.`)
+  }
+}
+
+let config = loadConfig()
 
 const configChangedHandlers: Function[] = []
 
@@ -29,11 +141,30 @@ const CONFIG = {
   SECRETS: {
     PEERTUBE: config.get<string>('secrets.peertube')
   },
+  HTTP_TIMEOUTS: {
+    REQUEST: parseDurationToMs(config.get<number>('http_timeouts.request'))
+  },
   DATABASE: {
     DBNAME: config.has('database.name') ? config.get<string>('database.name') : 'peertube' + config.get<string>('database.suffix'),
     HOSTNAME: config.get<string>('database.hostname'),
     PORT: config.get<number>('database.port'),
     SSL: config.get<boolean>('database.ssl'),
+    SSL_SETTINGS: {
+      get REJECT_UNAUTHORIZED () {
+        return config.has('database.ssl_settings.reject_unauthorized')
+          ? config.get<boolean>('database.ssl_settings.reject_unauthorized')
+          : false
+      },
+      get CA () {
+        return config.has('database.ssl_settings.ca') ? config.get<string>('database.ssl_settings.ca') : null
+      },
+      get CERT () {
+        return config.has('database.ssl_settings.cert') ? config.get<string>('database.ssl_settings.cert') : null
+      },
+      get KEY () {
+        return config.has('database.ssl_settings.key') ? config.get<string>('database.ssl_settings.key') : null
+      }
+    },
     USERNAME: config.get<string>('database.username'),
     PASSWORD: config.get<string>('database.password'),
     POOL: {
@@ -46,11 +177,43 @@ const CONFIG = {
     SOCKET: config.has('redis.socket') ? config.get<string>('redis.socket') : null,
     AUTH: config.has('redis.auth') ? config.get<string>('redis.auth') : null,
     DB: config.has('redis.db') ? config.get<number>('redis.db') : null,
+    ENABLE_TLS: config.has('redis.enable_tls') ? config.get<boolean>('redis.enable_tls') : false,
+    TLS_SETTINGS: {
+      get REJECT_UNAUTHORIZED () {
+        return config.get<boolean>('redis.tls_settings.reject_unauthorized')
+      },
+      get CA () {
+        return config.get<string>('redis.tls_settings.ca')
+      },
+      get CERT () {
+        return config.get<string>('redis.tls_settings.cert')
+      },
+      get KEY () {
+        return config.get<string>('redis.tls_settings.key')
+      }
+    },
     SENTINEL: {
       ENABLED: config.has('redis.sentinel.enabled') ? config.get<boolean>('redis.sentinel.enabled') : false,
       ENABLE_TLS: config.has('redis.sentinel.enable_tls') ? config.get<boolean>('redis.sentinel.enable_tls') : false,
-      SENTINELS: config.has('redis.sentinel.sentinels') ? config.get<{ hostname: string, port: number }[]>('redis.sentinel.sentinels') : [],
-      MASTER_NAME: config.has('redis.sentinel.master_name') ? config.get<string>('redis.sentinel.master_name') : null
+      TLS_SETTINGS: {
+        get REJECT_UNAUTHORIZED () {
+          return config.has('redis.sentinel.tls_settings.reject_unauthorized')
+            ? config.get<boolean>('redis.sentinel.tls_settings.reject_unauthorized')
+            : false
+        },
+        get CA () {
+          return config.has('redis.sentinel.tls_settings.ca') ? config.get<string>('redis.sentinel.tls_settings.ca') : null
+        },
+        get CERT () {
+          return config.has('redis.sentinel.tls_settings.cert') ? config.get<string>('redis.sentinel.tls_settings.cert') : null
+        },
+        get KEY () {
+          return config.has('redis.sentinel.tls_settings.key') ? config.get<string>('redis.sentinel.tls_settings.key') : null
+        }
+      },
+      SENTINELS: config.has('redis.sentinel.sentinels') ? config.get<{ host: string, port: number }[]>('redis.sentinel.sentinels') : [],
+      MASTER_NAME: config.has('redis.sentinel.master_name') ? config.get<string>('redis.sentinel.master_name') : null,
+      PASSWORD: config.has('redis.sentinel.password') ? config.get<string>('redis.sentinel.password') : null
     }
   },
   SMTP: {
@@ -65,64 +228,141 @@ const CONFIG = {
     CA_FILE: config.get<string>('smtp.ca_file'),
     FROM_ADDRESS: config.get<string>('smtp.from_address')
   },
-  EMAIL: {
-    BODY: {
-      SIGNATURE: config.get<string>('email.body.signature')
-    },
-    SUBJECT: {
-      PREFIX: config.get<string>('email.subject.prefix') + ' '
+
+  NSFW_FLAGS_SETTINGS: {
+    ENABLED: config.get<boolean>('nsfw_flags_settings.enabled')
+  },
+
+  BLOCKLIST: {
+    PUBLIC_LOG: {
+      get ENABLED () {
+        return config.get<boolean>('blocklist.public_log.enabled')
+      }
     }
   },
 
+  DOWNLOAD: {
+    MAX_TOTAL_BYTES_PER_SECOND: config.get<string | number | null>('download.max_total_bytes_per_second') === null
+      ? null
+      : parseBytes(config.get<string | number>('download.max_total_bytes_per_second')),
+    MAX_BYTES_PER_IP_PER_SECOND: config.get<string | number | null>('download.max_bytes_per_ip_per_second') === null
+      ? null
+      : parseBytes(config.get<string | number>('download.max_bytes_per_ip_per_second'))
+  },
+
+  DOWNLOAD_GENERATE_VIDEO: {
+    MAX_PARALLEL_DOWNLOADS: config.get<number>('download_generate_video.max_parallel_downloads')
+  },
+
   CLIENT: {
+    get NEW_FEATURES_INFO () {
+      return config.get<boolean>('client.new_features_info')
+    },
+    HEADER: {
+      get HIDE_INSTANCE_NAME () {
+        return config.get<boolean>('client.header.hide_instance_name')
+      }
+    },
     VIDEOS: {
       MINIATURE: {
-        get PREFER_AUTHOR_DISPLAY_NAME () { return config.get<boolean>('client.videos.miniature.prefer_author_display_name') }
+        get PREFER_AUTHOR_DISPLAY_NAME () {
+          return config.get<boolean>('client.videos.miniature.prefer_author_display_name')
+        }
       },
       RESUMABLE_UPLOAD: {
-        get MAX_CHUNK_SIZE () { return parseBytes(config.get<number>('client.videos.resumable_upload.max_chunk_size') || 0) }
+        get MAX_CHUNK_SIZE () {
+          return parseBytes(config.get<number>('client.videos.resumable_upload.max_chunk_size') || 0)
+        }
+      }
+    },
+    BROWSE_VIDEOS: {
+      get DEFAULT_SORT () {
+        return config.get<string>('client.browse_videos.default_sort')
+      },
+      get DEFAULT_SCOPE () {
+        return config.get<string>('client.browse_videos.default_scope')
       }
     },
     MENU: {
       LOGIN: {
-        get REDIRECT_ON_SINGLE_EXTERNAL_AUTH () { return config.get<boolean>('client.menu.login.redirect_on_single_external_auth') }
+        get REDIRECT_ON_SINGLE_EXTERNAL_AUTH () {
+          return config.get<boolean>('client.menu.login.redirect_on_single_external_auth')
+        }
       }
     },
     OPEN_IN_APP: {
       ANDROID: {
         INTENT: {
-          get ENABLED () { return config.get<boolean>('client.open_in_app.android.intent.enabled') },
-          get HOST () { return config.get<string>('client.open_in_app.android.intent.host') },
-          get SCHEME () { return config.get<string>('client.open_in_app.android.intent.scheme') },
-          get FALLBACK_URL () { return config.get<string>('client.open_in_app.android.intent.fallback_url') }
+          get ENABLED () {
+            return config.get<boolean>('client.open_in_app.android.intent.enabled')
+          },
+          get HOST () {
+            return config.get<string>('client.open_in_app.android.intent.host')
+          },
+          get SCHEME () {
+            return config.get<string>('client.open_in_app.android.intent.scheme')
+          },
+          get FALLBACK_URL () {
+            return config.get<string>('client.open_in_app.android.intent.fallback_url')
+          }
         }
       },
       IOS: {
-        get ENABLED () { return config.get<boolean>('client.open_in_app.ios.enabled') },
-        get HOST () { return config.get<string>('client.open_in_app.ios.host') },
-        get SCHEME () { return config.get<string>('client.open_in_app.ios.scheme') },
-        get FALLBACK_URL () { return config.get<string>('client.open_in_app.ios.fallback_url') }
+        get ENABLED () {
+          return config.get<boolean>('client.open_in_app.ios.enabled')
+        },
+        get HOST () {
+          return config.get<string>('client.open_in_app.ios.host')
+        },
+        get SCHEME () {
+          return config.get<string>('client.open_in_app.ios.scheme')
+        },
+        get FALLBACK_URL () {
+          return config.get<string>('client.open_in_app.ios.fallback_url')
+        }
       }
     }
   },
 
   DEFAULTS: {
     PUBLISH: {
-      DOWNLOAD_ENABLED: config.get<boolean>('defaults.publish.download_enabled'),
-      COMMENTS_POLICY: config.get<VideoCommentPolicyType>('defaults.publish.comments_policy'),
-      PRIVACY: config.get<VideoPrivacyType>('defaults.publish.privacy'),
-      LICENCE: config.get<number>('defaults.publish.licence')
+      get DOWNLOAD_ENABLED () {
+        return config.get<boolean>('defaults.publish.download_enabled')
+      },
+      get COMMENTS_POLICY () {
+        return config.get<VideoCommentPolicyType>('defaults.publish.comments_policy')
+      },
+      get PRIVACY () {
+        return config.get<VideoPrivacyType>('defaults.publish.privacy')
+      },
+      get LICENCE () {
+        return config.get<number>('defaults.publish.licence')
+      }
+    },
+    LIVE: {
+      get SAVE_REPLAY () {
+        return config.get<boolean>('defaults.live.save_replay')
+      }
     },
     P2P: {
       WEBAPP: {
-        ENABLED: config.get<boolean>('defaults.p2p.webapp.enabled')
+        get ENABLED () {
+          return config.get<boolean>('defaults.p2p.webapp.enabled')
+        }
       },
       EMBED: {
-        ENABLED: config.get<boolean>('defaults.p2p.embed.enabled')
+        get ENABLED () {
+          return config.get<boolean>('defaults.p2p.embed.enabled')
+        }
       }
     },
     PLAYER: {
-      get AUTO_PLAY () { return config.get<boolean>('defaults.player.auto_play') }
+      get THEME () {
+        return config.get<PlayerTheme>('defaults.player.theme')
+      },
+      get AUTO_PLAY () {
+        return config.get<boolean>('defaults.player.auto_play')
+      }
     }
   },
 
@@ -144,7 +384,8 @@ const CONFIG = {
     CACHE_DIR: buildPath(config.get<string>('storage.cache')),
     PLUGINS_DIR: buildPath(config.get<string>('storage.plugins')),
     CLIENT_OVERRIDES_DIR: buildPath(config.get<string>('storage.client_overrides')),
-    WELL_KNOWN_DIR: buildPath(config.get<string>('storage.well_known'))
+    WELL_KNOWN_DIR: buildPath(config.get<string>('storage.well_known')),
+    UPLOADS_DIR: buildPath(config.get<string>('storage.uploads'))
   },
   STATIC_FILES: {
     PRIVATE_FILES_REQUIRE_AUTH: config.get<boolean>('static_files.private_files_require_auth')
@@ -155,6 +396,7 @@ const CONFIG = {
     MAX_REQUEST_ATTEMPTS: config.get<number>('object_storage.max_request_attempts'),
     ENDPOINT: config.get<string>('object_storage.endpoint'),
     REGION: config.get<string>('object_storage.region'),
+    FORCE_PATH_STYLE: config.get<boolean>('object_storage.force_path_style'),
     UPLOAD_ACL: {
       PUBLIC: config.get<string>('object_storage.upload_acl.public'),
       PRIVATE: config.get<string>('object_storage.upload_acl.private')
@@ -207,48 +449,80 @@ const CONFIG = {
   },
   RATES_LIMIT: {
     API: {
+      ENABLED: config.get<boolean>('rates_limit.api.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.api.window')),
       MAX: config.get<number>('rates_limit.api.max')
     },
     SIGNUP: {
+      ENABLED: config.get<boolean>('rates_limit.signup.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.signup.window')),
       MAX: config.get<number>('rates_limit.signup.max')
     },
     LOGIN: {
+      ENABLED: config.get<boolean>('rates_limit.login.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.login.window')),
       MAX: config.get<number>('rates_limit.login.max')
     },
     RECEIVE_CLIENT_LOG: {
+      ENABLED: config.get<boolean>('rates_limit.receive_client_log.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.receive_client_log.window')),
       MAX: config.get<number>('rates_limit.receive_client_log.max')
     },
     ASK_SEND_EMAIL: {
+      ENABLED: config.get<boolean>('rates_limit.ask_send_email.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.ask_send_email.window')),
       MAX: config.get<number>('rates_limit.ask_send_email.max')
     },
+    CONFIRM_TOKEN: {
+      ENABLED: config.get<boolean>('rates_limit.confirm_token.enabled'),
+      WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.confirm_token.window')),
+      MAX: config.get<number>('rates_limit.confirm_token.max')
+    },
     PLUGINS: {
+      ENABLED: config.get<boolean>('rates_limit.plugins.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.plugins.window')),
       MAX: config.get<number>('rates_limit.plugins.max')
     },
     WELL_KNOWN: {
+      ENABLED: config.get<boolean>('rates_limit.well_known.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.well_known.window')),
       MAX: config.get<number>('rates_limit.well_known.max')
     },
     FEEDS: {
+      ENABLED: config.get<boolean>('rates_limit.feeds.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.feeds.window')),
       MAX: config.get<number>('rates_limit.feeds.max')
     },
     ACTIVITY_PUB: {
+      ENABLED: config.get<boolean>('rates_limit.activity_pub.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.activity_pub.window')),
       MAX: config.get<number>('rates_limit.activity_pub.max')
     },
     CLIENT: {
+      ENABLED: config.get<boolean>('rates_limit.client.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.client.window')),
       MAX: config.get<number>('rates_limit.client.max')
     },
     DOWNLOAD_GENERATE_VIDEO: {
+      ENABLED: config.get<boolean>('rates_limit.download_generate_video.enabled'),
       WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.download_generate_video.window')),
       MAX: config.get<number>('rates_limit.download_generate_video.max')
+    },
+    REPORT_ABUSE: {
+      ENABLED: config.get<boolean>('rates_limit.report_abuse.enabled'),
+      WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.report_abuse.window')),
+      MAX: config.get<number>('rates_limit.report_abuse.max')
+    },
+    CREATE_COMMENT: {
+      ENABLED: config.get<boolean>('rates_limit.create_comment.enabled'),
+      WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.create_comment.window')),
+      MAX: config.get<number>('rates_limit.create_comment.max')
+    },
+    LOGIN_LOCKOUT: {
+      ENABLED: config.get<boolean>('rates_limit.login_lockout.enabled'),
+      WINDOW_MS: parseDurationToMs(config.get<string>('rates_limit.login_lockout.window')),
+      MAX: config.get<number>('rates_limit.login_lockout.max'),
+      MAX_PER_IP: config.get<number>('rates_limit.login_lockout.max_per_ip')
     }
   },
   TRUST_PROXY: config.get<string[]>('trust_proxy'),
@@ -260,6 +534,7 @@ const CONFIG = {
       MAX_FILES: config.get<number>('log.rotation.max_files')
     },
     ANONYMIZE_IP: config.get<boolean>('log.anonymize_ip'),
+    TAG_REQUESTS: config.get<boolean>('log.tag_requests'),
     LOG_PING_REQUESTS: config.get<boolean>('log.log_ping_requests'),
     LOG_TRACKER_UNKNOWN_INFOHASH: config.get<boolean>('log.log_tracker_unknown_infohash'),
     LOG_HTTP_REQUESTS: config.get<boolean>('log.log_http_requests'),
@@ -293,8 +568,12 @@ const CONFIG = {
     VIDEOS: {
       INTERVAL_DAYS: config.get<number>('trending.videos.interval_days'),
       ALGORITHMS: {
-        get ENABLED () { return config.get<string[]>('trending.videos.algorithms.enabled') },
-        get DEFAULT () { return config.get<string>('trending.videos.algorithms.default') }
+        get ENABLED () {
+          return config.get<string[]>('trending.videos.algorithms.enabled')
+        },
+        get DEFAULT () {
+          return config.get<string>('trending.videos.algorithms.default')
+        }
       }
     }
   },
@@ -336,6 +615,9 @@ const CONFIG = {
     VIDEOS: {
       REMOTE: {
         MAX_AGE: parseDurationToMs(config.get('views.videos.remote.max_age'))
+      },
+      LOCAL: {
+        MAX_AGE: parseDurationToMs(config.get('views.videos.local.max_age'))
       },
       LOCAL_BUFFER_UPDATE_INTERVAL: parseDurationToMs(config.get('views.videos.local_buffer_update_interval')),
       VIEW_EXPIRATION: parseDurationToMs(config.get('views.videos.view_expiration')),
@@ -396,14 +678,21 @@ const CONFIG = {
   REMOTE_RUNNERS: {
     STALLED_JOBS: {
       LIVE: parseDurationToMs(config.get<string>('remote_runners.stalled_jobs.live')),
-      VOD: parseDurationToMs(config.get<string>('remote_runners.stalled_jobs.vod'))
+      VOD: parseDurationToMs(config.get<string>('remote_runners.stalled_jobs.vod')),
+      STUDIO: parseDurationToMs(config.get<string>('remote_runners.stalled_jobs.studio')),
+      TRANSCRIPTION: parseDurationToMs(config.get<string>('remote_runners.stalled_jobs.transcription'))
     }
   },
   THUMBNAILS: {
     GENERATION_FROM_VIDEO: {
       FRAMES_TO_ANALYZE: config.get<number>('thumbnails.generation_from_video.frames_to_analyze')
     },
-    SIZES: config.get<{ width: number, height: number }[]>('thumbnails.sizes')
+    SIZES: sortBy(config.get<{ width: number, height: number, aspect_ratio?: ThumbnailAspectRatio }[]>('thumbnails.sizes'), 'width')
+      .map(size => ({
+        width: size.width,
+        height: size.height,
+        aspectRatio: size.aspect_ratio || guessAspectRatio(size.width, size.height)
+      }))
   },
   STATS: {
     REGISTRATION_REQUESTS: {
@@ -423,177 +712,392 @@ const CONFIG = {
     STUN_SERVERS: config.get<string[]>('webrtc.stun_servers')
   },
   ADMIN: {
-    get EMAIL () { return config.get<string>('admin.email') }
+    get EMAIL () {
+      return config.get<string>('admin.email')
+    }
   },
   CONTACT_FORM: {
-    get ENABLED () { return config.get<boolean>('contact_form.enabled') }
+    get ENABLED () {
+      return config.get<boolean>('contact_form.enabled')
+    }
   },
   SIGNUP: {
-    get ENABLED () { return config.get<boolean>('signup.enabled') },
-    get REQUIRES_APPROVAL () { return config.get<boolean>('signup.requires_approval') },
-    get LIMIT () { return config.get<number>('signup.limit') },
-    get REQUIRES_EMAIL_VERIFICATION () { return config.get<boolean>('signup.requires_email_verification') },
-    get MINIMUM_AGE () { return config.get<number>('signup.minimum_age') },
+    get ENABLED () {
+      return config.get<boolean>('signup.enabled')
+    },
+    get REQUIRES_APPROVAL () {
+      return config.get<boolean>('signup.requires_approval')
+    },
+    get LIMIT () {
+      return config.get<number>('signup.limit')
+    },
+    get REQUIRES_EMAIL_VERIFICATION () {
+      return config.get<boolean>('signup.requires_email_verification')
+    },
+    get MINIMUM_AGE () {
+      return config.get<number>('signup.minimum_age')
+    },
+
     FILTERS: {
       CIDR: {
-        get WHITELIST () { return config.get<string[]>('signup.filters.cidr.whitelist') },
-        get BLACKLIST () { return config.get<string[]>('signup.filters.cidr.blacklist') }
+        get WHITELIST () {
+          return config.get<string[]>('signup.filters.cidr.whitelist')
+        },
+        get BLACKLIST () {
+          return config.get<string[]>('signup.filters.cidr.blacklist')
+        }
       }
     }
   },
   USER: {
     HISTORY: {
       VIDEOS: {
-        get ENABLED () { return config.get<boolean>('user.history.videos.enabled') }
+        get ENABLED () {
+          return config.get<boolean>('user.history.videos.enabled')
+        }
       }
     },
-    get VIDEO_QUOTA () { return parseBytes(config.get<number>('user.video_quota')) },
-    get VIDEO_QUOTA_DAILY () { return parseBytes(config.get<number>('user.video_quota_daily')) },
-    get DEFAULT_CHANNEL_NAME () { return config.get<string>('user.default_channel_name') }
+    get DISABLE_ROOT_AUTH () {
+      return config.get<boolean>('user.disable_root_auth')
+    },
+    get ALLOW_CROSS_PROVIDER_AUTH () {
+      return config.get<boolean>('user.allow_cross_provider_auth')
+    },
+    get VIDEO_QUOTA () {
+      return parseBytes(config.get<number>('user.video_quota'))
+    },
+    get VIDEO_QUOTA_DAILY () {
+      return parseBytes(config.get<number>('user.video_quota_daily'))
+    },
+    get DEFAULT_CHANNEL_NAME () {
+      return config.get<string>('user.default_channel_name')
+    },
+    PASSWORD_CONSTRAINTS: {
+      get MIN_LENGTH () {
+        return config.get<number>('user.password_constraints.min_length')
+      }
+    }
   },
   VIDEO_CHANNELS: {
-    get MAX_PER_USER () { return config.get<number>('video_channels.max_per_user') }
+    get MAX_PER_USER () {
+      return config.get<number>('video_channels.max_per_user')
+    },
+    get MAX_COLLABORATORS_PER_CHANNEL () {
+      return config.get<number>('video_channels.max_collaborators_per_channel')
+    }
   },
   TRANSCODING: {
-    get ENABLED () { return config.get<boolean>('transcoding.enabled') },
-    ORIGINAL_FILE: {
-      get KEEP () { return config.get<boolean>('transcoding.original_file.keep') }
+    get ENABLED () {
+      return config.get<boolean>('transcoding.enabled')
     },
-    get ALLOW_ADDITIONAL_EXTENSIONS () { return config.get<boolean>('transcoding.allow_additional_extensions') },
-    get ALLOW_AUDIO_FILES () { return config.get<boolean>('transcoding.allow_audio_files') },
-    get THREADS () { return config.get<number>('transcoding.threads') },
-    get CONCURRENCY () { return config.get<number>('transcoding.concurrency') },
-    get PROFILE () { return config.get<string>('transcoding.profile') },
-    get ALWAYS_TRANSCODE_ORIGINAL_RESOLUTION () { return config.get<boolean>('transcoding.always_transcode_original_resolution') },
+    ORIGINAL_FILE: {
+      get KEEP () {
+        return config.get<boolean>('transcoding.original_file.keep')
+      }
+    },
+    get ALLOW_ADDITIONAL_EXTENSIONS () {
+      return config.get<boolean>('transcoding.allow_additional_extensions')
+    },
+    get ALLOW_AUDIO_FILES () {
+      return config.get<boolean>('transcoding.allow_audio_files')
+    },
+    get THREADS () {
+      return config.get<number>('transcoding.threads')
+    },
+    get CONCURRENCY () {
+      return config.get<number>('transcoding.concurrency')
+    },
+    get PROFILE () {
+      return config.get<string>('transcoding.profile')
+    },
+    get ALWAYS_TRANSCODE_ORIGINAL_RESOLUTION () {
+      return config.get<boolean>('transcoding.always_transcode_original_resolution')
+    },
+    get ALWAYS_TRANSCODE_PODCAST_OPTIMIZED_AUDIO () {
+      return config.get<boolean>('transcoding.always_transcode_podcast_optimized_audio')
+    },
     RESOLUTIONS: {
-      get '0p' () { return config.get<boolean>('transcoding.resolutions.0p') },
-      get '144p' () { return config.get<boolean>('transcoding.resolutions.144p') },
-      get '240p' () { return config.get<boolean>('transcoding.resolutions.240p') },
-      get '360p' () { return config.get<boolean>('transcoding.resolutions.360p') },
-      get '480p' () { return config.get<boolean>('transcoding.resolutions.480p') },
-      get '720p' () { return config.get<boolean>('transcoding.resolutions.720p') },
-      get '1080p' () { return config.get<boolean>('transcoding.resolutions.1080p') },
-      get '1440p' () { return config.get<boolean>('transcoding.resolutions.1440p') },
-      get '2160p' () { return config.get<boolean>('transcoding.resolutions.2160p') }
+      get '0p' () {
+        return config.get<boolean>('transcoding.resolutions.0p')
+      },
+      get '144p' () {
+        return config.get<boolean>('transcoding.resolutions.144p')
+      },
+      get '240p' () {
+        return config.get<boolean>('transcoding.resolutions.240p')
+      },
+      get '360p' () {
+        return config.get<boolean>('transcoding.resolutions.360p')
+      },
+      get '480p' () {
+        return config.get<boolean>('transcoding.resolutions.480p')
+      },
+      get '720p' () {
+        return config.get<boolean>('transcoding.resolutions.720p')
+      },
+      get '1080p' () {
+        return config.get<boolean>('transcoding.resolutions.1080p')
+      },
+      get '1440p' () {
+        return config.get<boolean>('transcoding.resolutions.1440p')
+      },
+      get '2160p' () {
+        return config.get<boolean>('transcoding.resolutions.2160p')
+      }
     },
     FPS: {
-      get MAX () { return config.get<number>('transcoding.fps.max') }
+      get MAX () {
+        return config.get<number>('transcoding.fps.max')
+      }
     },
     HLS: {
-      get ENABLED () { return config.get<boolean>('transcoding.hls.enabled') },
-      get SPLIT_AUDIO_AND_VIDEO () { return config.get<boolean>('transcoding.hls.split_audio_and_video') }
+      get ENABLED () {
+        return config.get<boolean>('transcoding.hls.enabled')
+      },
+      get SPLIT_AUDIO_AND_VIDEO () {
+        return config.get<boolean>('transcoding.hls.split_audio_and_video')
+      }
     },
     WEB_VIDEOS: {
-      get ENABLED () { return config.get<boolean>('transcoding.web_videos.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('transcoding.web_videos.enabled')
+      }
     },
     REMOTE_RUNNERS: {
-      get ENABLED () { return config.get<boolean>('transcoding.remote_runners.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('transcoding.remote_runners.enabled')
+      }
     }
   },
   LIVE: {
-    get ENABLED () { return config.get<boolean>('live.enabled') },
+    get ENABLED () {
+      return config.get<boolean>('live.enabled')
+    },
 
-    get MAX_DURATION () { return parseDurationToMs(config.get<string>('live.max_duration')) },
-    get MAX_INSTANCE_LIVES () { return config.get<number>('live.max_instance_lives') },
-    get MAX_USER_LIVES () { return config.get<number>('live.max_user_lives') },
+    get MAX_DURATION () {
+      return parseDurationToMs(config.get<string>('live.max_duration'))
+    },
+    get MAX_INSTANCE_LIVES () {
+      return config.get<number>('live.max_instance_lives')
+    },
+    get MAX_USER_LIVES () {
+      return config.get<number>('live.max_user_lives')
+    },
 
-    get ALLOW_REPLAY () { return config.get<boolean>('live.allow_replay') },
+    get ALLOW_REPLAY () {
+      return config.get<boolean>('live.allow_replay')
+    },
+
+    DVR: {
+      get MAX_WINDOW () { // In seconds
+        const value = config.get<string>('live.dvr.max_window')
+        if (typeof value === 'number') return value
+
+        return Math.round(parseDurationToMs(value) / 1000)
+      }
+    },
 
     LATENCY_SETTING: {
-      get ENABLED () { return config.get<boolean>('live.latency_setting.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('live.latency_setting.enabled')
+      }
     },
 
     RTMP: {
-      get ENABLED () { return config.get<boolean>('live.rtmp.enabled') },
-      get PORT () { return config.get<number>('live.rtmp.port') },
-      get HOSTNAME () { return config.get<number>('live.rtmp.hostname') },
-      get PUBLIC_HOSTNAME () { return config.get<number>('live.rtmp.public_hostname') }
+      get ENABLED () {
+        return config.get<boolean>('live.rtmp.enabled')
+      },
+      get PORT () {
+        return config.get<number>('live.rtmp.port')
+      },
+      get HOSTNAME () {
+        return config.get<number>('live.rtmp.hostname')
+      },
+      get PUBLIC_HOSTNAME () {
+        return config.get<number>('live.rtmp.public_hostname')
+      }
     },
 
     RTMPS: {
-      get ENABLED () { return config.get<boolean>('live.rtmps.enabled') },
-      get PORT () { return config.get<number>('live.rtmps.port') },
-      get HOSTNAME () { return config.get<number>('live.rtmps.hostname') },
-      get PUBLIC_HOSTNAME () { return config.get<number>('live.rtmps.public_hostname') },
-      get KEY_FILE () { return config.get<string>('live.rtmps.key_file') },
-      get CERT_FILE () { return config.get<string>('live.rtmps.cert_file') }
+      get ENABLED () {
+        return config.get<boolean>('live.rtmps.enabled')
+      },
+      get PORT () {
+        return config.get<number>('live.rtmps.port')
+      },
+      get HOSTNAME () {
+        return config.get<number>('live.rtmps.hostname')
+      },
+      get PUBLIC_HOSTNAME () {
+        return config.get<number>('live.rtmps.public_hostname')
+      },
+      get KEY_FILE () {
+        return config.get<string>('live.rtmps.key_file')
+      },
+      get CERT_FILE () {
+        return config.get<string>('live.rtmps.cert_file')
+      }
     },
 
     TRANSCODING: {
-      get ENABLED () { return config.get<boolean>('live.transcoding.enabled') },
-      get THREADS () { return config.get<number>('live.transcoding.threads') },
-      get PROFILE () { return config.get<string>('live.transcoding.profile') },
+      get ENABLED () {
+        return config.get<boolean>('live.transcoding.enabled')
+      },
+      get THREADS () {
+        return config.get<number>('live.transcoding.threads')
+      },
+      get PROFILE () {
+        return config.get<string>('live.transcoding.profile')
+      },
 
-      get ALWAYS_TRANSCODE_ORIGINAL_RESOLUTION () { return config.get<boolean>('live.transcoding.always_transcode_original_resolution') },
+      get ALWAYS_TRANSCODE_ORIGINAL_RESOLUTION () {
+        return config.get<boolean>('live.transcoding.always_transcode_original_resolution')
+      },
 
       RESOLUTIONS: {
-        get '0p' () { return config.get<boolean>('live.transcoding.resolutions.0p') },
-        get '144p' () { return config.get<boolean>('live.transcoding.resolutions.144p') },
-        get '240p' () { return config.get<boolean>('live.transcoding.resolutions.240p') },
-        get '360p' () { return config.get<boolean>('live.transcoding.resolutions.360p') },
-        get '480p' () { return config.get<boolean>('live.transcoding.resolutions.480p') },
-        get '720p' () { return config.get<boolean>('live.transcoding.resolutions.720p') },
-        get '1080p' () { return config.get<boolean>('live.transcoding.resolutions.1080p') },
-        get '1440p' () { return config.get<boolean>('live.transcoding.resolutions.1440p') },
-        get '2160p' () { return config.get<boolean>('live.transcoding.resolutions.2160p') }
+        get '0p' () {
+          return config.get<boolean>('live.transcoding.resolutions.0p')
+        },
+        get '144p' () {
+          return config.get<boolean>('live.transcoding.resolutions.144p')
+        },
+        get '240p' () {
+          return config.get<boolean>('live.transcoding.resolutions.240p')
+        },
+        get '360p' () {
+          return config.get<boolean>('live.transcoding.resolutions.360p')
+        },
+        get '480p' () {
+          return config.get<boolean>('live.transcoding.resolutions.480p')
+        },
+        get '720p' () {
+          return config.get<boolean>('live.transcoding.resolutions.720p')
+        },
+        get '1080p' () {
+          return config.get<boolean>('live.transcoding.resolutions.1080p')
+        },
+        get '1440p' () {
+          return config.get<boolean>('live.transcoding.resolutions.1440p')
+        },
+        get '2160p' () {
+          return config.get<boolean>('live.transcoding.resolutions.2160p')
+        }
       },
 
       FPS: {
-        get MAX () { return config.get<number>('live.transcoding.fps.max') }
+        get MAX () {
+          return config.get<number>('live.transcoding.fps.max')
+        }
       },
 
       REMOTE_RUNNERS: {
-        get ENABLED () { return config.get<boolean>('live.transcoding.remote_runners.enabled') }
+        get ENABLED () {
+          return config.get<boolean>('live.transcoding.remote_runners.enabled')
+        }
       }
     }
   },
   VIDEO_STUDIO: {
-    get ENABLED () { return config.get<boolean>('video_studio.enabled') },
+    get ENABLED () {
+      return config.get<boolean>('video_studio.enabled')
+    },
     REMOTE_RUNNERS: {
-      get ENABLED () { return config.get<boolean>('video_studio.remote_runners.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('video_studio.remote_runners.enabled')
+      }
     }
   },
   VIDEO_FILE: {
     UPDATE: {
-      get ENABLED () { return config.get<boolean>('video_file.update.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('video_file.update.enabled')
+      }
     }
   },
   VIDEO_TRANSCRIPTION: {
-    get ENABLED () { return config.get<boolean>('video_transcription.enabled') },
-    get ENGINE () { return config.get<TranscriptionEngineName>('video_transcription.engine') },
-    get ENGINE_PATH () { return config.get<string>('video_transcription.engine_path') },
-    get MODEL () { return config.get<WhisperBuiltinModelName>('video_transcription.model') },
-    get MODEL_PATH () { return config.get<string>('video_transcription.model_path') },
+    get ENABLED () {
+      return config.get<boolean>('video_transcription.enabled')
+    },
+    get ENGINE () {
+      return config.get<TranscriptionEngineName>('video_transcription.engine')
+    },
+    get ENGINE_PATH () {
+      return config.get<string>('video_transcription.engine_path')
+    },
+    get MODEL () {
+      return config.get<WhisperBuiltinModelName>('video_transcription.model')
+    },
+    get MODEL_PATH () {
+      return config.get<string>('video_transcription.model_path')
+    },
+    get TIMEOUT () {
+      return parseDurationToMs(config.get<string>('video_transcription.timeout'))
+    },
     REMOTE_RUNNERS: {
-      get ENABLED () { return config.get<boolean>('video_transcription.remote_runners.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('video_transcription.remote_runners.enabled')
+      }
     }
   },
   IMPORT: {
     VIDEOS: {
-      get CONCURRENCY () { return config.get<number>('import.videos.concurrency') },
-      get TIMEOUT () { return parseDurationToMs(config.get<string>('import.videos.timeout')) },
+      get CONCURRENCY () {
+        return config.get<number>('import.videos.concurrency')
+      },
+      get TIMEOUT () {
+        return parseDurationToMs(config.get<string>('import.videos.timeout'))
+      },
+      get MAX_ATTEMPTS () {
+        return config.get<number>('import.videos.max_attempts')
+      },
 
       HTTP: {
-        get ENABLED () { return config.get<boolean>('import.videos.http.enabled') },
-
-        YOUTUBE_DL_RELEASE: {
-          get URL () { return config.get<string>('import.videos.http.youtube_dl_release.url') },
-          get NAME () { return config.get<string>('import.videos.http.youtube_dl_release.name') },
-          get PYTHON_PATH () { return config.get<string>('import.videos.http.youtube_dl_release.python_path') }
+        get ENABLED () {
+          return config.get<boolean>('import.videos.http.enabled')
         },
 
-        get FORCE_IPV4 () { return config.get<boolean>('import.videos.http.force_ipv4') },
+        YOUTUBE_DL_RELEASE: {
+          get URL () {
+            return config.get<string>('import.videos.http.youtube_dl_release.url')
+          },
+          get NAME () {
+            return config.get<string>('import.videos.http.youtube_dl_release.name')
+          },
+          get PYTHON_PATH () {
+            return config.get<string>('import.videos.http.youtube_dl_release.python_path')
+          }
+        },
 
-        get PROXIES () { return config.get<string[]>('import.videos.http.proxies') }
+        get FORCE_IPV4 () {
+          return config.get<boolean>('import.videos.http.force_ipv4')
+        },
+
+        get PROXIES () {
+          return config.get<string[]>('import.videos.http.proxies')
+        },
+
+        COOKIES: {
+          get ENABLED () {
+            return config.get<boolean>('import.videos.http.cookies.enabled')
+          }
+        }
       },
       TORRENT: {
-        get ENABLED () { return config.get<boolean>('import.videos.torrent.enabled') }
+        get ENABLED () {
+          return config.get<boolean>('import.videos.torrent.enabled')
+        }
       }
     },
     VIDEO_CHANNEL_SYNCHRONIZATION: {
-      get ENABLED () { return config.get<boolean>('import.video_channel_synchronization.enabled') },
-      get MAX_PER_USER () { return config.get<number>('import.video_channel_synchronization.max_per_user') },
-      get CHECK_INTERVAL () { return parseDurationToMs(config.get<string>('import.video_channel_synchronization.check_interval')) },
+      get ENABLED () {
+        return config.get<boolean>('import.video_channel_synchronization.enabled')
+      },
+      get MAX_PER_USER () {
+        return config.get<number>('import.video_channel_synchronization.max_per_user')
+      },
+      get CHECK_INTERVAL () {
+        return parseDurationToMs(config.get<string>('import.video_channel_synchronization.check_interval'))
+      },
       get VIDEOS_LIMIT_PER_SYNCHRONIZATION () {
         return config.get<number>('import.video_channel_synchronization.videos_limit_per_synchronization')
       },
@@ -602,88 +1106,151 @@ const CONFIG = {
       }
     },
     USERS: {
-      get ENABLED () { return config.get<boolean>('import.users.enabled') }
+      get ENABLED () {
+        return config.get<boolean>('import.users.enabled')
+      }
     }
   },
   EXPORT: {
     USERS: {
-      get ENABLED () { return config.get<boolean>('export.users.enabled') },
-      get MAX_USER_VIDEO_QUOTA () { return parseBytes(config.get<string>('export.users.max_user_video_quota')) },
-      get EXPORT_EXPIRATION () { return parseDurationToMs(config.get<string>('export.users.export_expiration')) }
+      get ENABLED () {
+        return config.get<boolean>('export.users.enabled')
+      },
+      get MAX_USER_VIDEO_QUOTA () {
+        return parseBytes(config.get<string>('export.users.max_user_video_quota'))
+      },
+      get EXPORT_EXPIRATION () {
+        return parseDurationToMs(config.get<string>('export.users.export_expiration'))
+      }
     }
   },
   AUTO_BLACKLIST: {
     VIDEOS: {
       OF_USERS: {
-        get ENABLED () { return config.get<boolean>('auto_blacklist.videos.of_users.enabled') }
+        get ENABLED () {
+          return config.get<boolean>('auto_blacklist.videos.of_users.enabled')
+        }
       }
     }
   },
-  CACHE: {
-    PREVIEWS: {
-      get SIZE () { return config.get<number>('cache.previews.size') }
-    },
-    VIDEO_CAPTIONS: {
-      get SIZE () { return config.get<number>('cache.captions.size') }
-    },
-    TORRENTS: {
-      get SIZE () { return config.get<number>('cache.torrents.size') }
-    },
-    STORYBOARDS: {
-      get SIZE () { return config.get<number>('cache.storyboards.size') }
-    }
-  },
   INSTANCE: {
-    get NAME () { return config.get<string>('instance.name') },
-    get SHORT_DESCRIPTION () { return config.get<string>('instance.short_description') },
-    get DESCRIPTION () { return config.get<string>('instance.description') },
-    get TERMS () { return config.get<string>('instance.terms') },
-    get CODE_OF_CONDUCT () { return config.get<string>('instance.code_of_conduct') },
+    get NAME () {
+      return config.get<string>('instance.name')
+    },
+    get SHORT_DESCRIPTION () {
+      return config.get<string>('instance.short_description')
+    },
+    get DESCRIPTION () {
+      return config.get<string>('instance.description')
+    },
+    get TERMS () {
+      return config.get<string>('instance.terms')
+    },
+    get CODE_OF_CONDUCT () {
+      return config.get<string>('instance.code_of_conduct')
+    },
 
-    get CREATION_REASON () { return config.get<string>('instance.creation_reason') },
+    get CREATION_REASON () {
+      return config.get<string>('instance.creation_reason')
+    },
 
-    get MODERATION_INFORMATION () { return config.get<string>('instance.moderation_information') },
-    get ADMINISTRATOR () { return config.get<string>('instance.administrator') },
-    get MAINTENANCE_LIFETIME () { return config.get<string>('instance.maintenance_lifetime') },
-    get BUSINESS_MODEL () { return config.get<string>('instance.business_model') },
-    get HARDWARE_INFORMATION () { return config.get<string>('instance.hardware_information') },
+    get MODERATION_INFORMATION () {
+      return config.get<string>('instance.moderation_information')
+    },
+    get ADMINISTRATOR () {
+      return config.get<string>('instance.administrator')
+    },
+    get MAINTENANCE_LIFETIME () {
+      return config.get<string>('instance.maintenance_lifetime')
+    },
+    get BUSINESS_MODEL () {
+      return config.get<string>('instance.business_model')
+    },
+    get HARDWARE_INFORMATION () {
+      return config.get<string>('instance.hardware_information')
+    },
 
-    get LANGUAGES () { return config.get<string[]>('instance.languages') || [] },
-    get CATEGORIES () { return config.get<number[]>('instance.categories') || [] },
+    get DEFAULT_LANGUAGE () {
+      return config.get<string>('instance.default_language')
+    },
+    get LANGUAGES () {
+      return config.get<string[]>('instance.languages') || []
+    },
+    get CATEGORIES () {
+      return config.get<number[]>('instance.categories') || []
+    },
 
-    get IS_NSFW () { return config.get<boolean>('instance.is_nsfw') },
-    get DEFAULT_NSFW_POLICY () { return config.get<NSFWPolicyType>('instance.default_nsfw_policy') },
+    get IS_NSFW () {
+      return config.get<boolean>('instance.is_nsfw')
+    },
+    get DEFAULT_NSFW_POLICY () {
+      return config.get<NSFWPolicyType>('instance.default_nsfw_policy')
+    },
 
-    get SERVER_COUNTRY () { return config.get<string>('instance.server_country') },
+    get SERVER_COUNTRY () {
+      return config.get<string>('instance.server_country')
+    },
 
     SUPPORT: {
-      get TEXT () { return config.get<string>('instance.support.text') }
+      get TEXT () {
+        return config.get<string>('instance.support.text')
+      }
     },
 
     SOCIAL: {
-      get EXTERNAL_LINK () { return config.get<string>('instance.social.external_link') },
-      get MASTODON_LINK () { return config.get<string>('instance.social.mastodon_link') },
-      get BLUESKY () { return config.get<string>('instance.social.bluesky_link') }
+      get EXTERNAL_LINK () {
+        return config.get<string>('instance.social.external_link')
+      },
+      get MASTODON_LINK () {
+        return config.get<string>('instance.social.mastodon_link')
+      },
+      get BLUESKY () {
+        return config.get<string>('instance.social.bluesky_link')
+      },
+      get X_LINK () {
+        return config.get<string>('instance.social.x_link')
+      }
     },
 
-    get DEFAULT_CLIENT_ROUTE () { return config.get<string>('instance.default_client_route') },
+    get DEFAULT_CLIENT_ROUTE () {
+      return config.get<string>('instance.default_client_route')
+    },
 
     CUSTOMIZATIONS: {
-      get JAVASCRIPT () { return config.get<string>('instance.customizations.javascript') },
-      get CSS () { return config.get<string>('instance.customizations.css') }
+      get JAVASCRIPT () {
+        return config.get<string>('instance.customizations.javascript')
+      },
+      get CSS () {
+        return config.get<string>('instance.customizations.css')
+      }
     },
-    get ROBOTS () { return config.get<string>('instance.robots') },
-    get SECURITYTXT () { return config.get<string>('instance.securitytxt') }
+    get ROBOTS () {
+      return config.get<string>('instance.robots')
+    },
+    get SECURITYTXT () {
+      return config.get<string>('instance.securitytxt')
+    }
   },
   SERVICES: {
     TWITTER: {
-      get USERNAME () { return config.get<string>('services.twitter.username') }
+      get USERNAME () {
+        return config.get<string>('services.twitter.username')
+      }
     }
   },
   FOLLOWERS: {
     INSTANCE: {
-      get ENABLED () { return config.get<boolean>('followers.instance.enabled') },
-      get MANUAL_APPROVAL () { return config.get<boolean>('followers.instance.manual_approval') }
+      get ENABLED () {
+        return config.get<boolean>('followers.instance.enabled')
+      },
+      get MANUAL_APPROVAL () {
+        return config.get<boolean>('followers.instance.manual_approval')
+      }
+    },
+    CHANNELS: {
+      get ENABLED () {
+        return config.get<boolean>('followers.channels.enabled')
+      }
     }
   },
   FOLLOWINGS: {
@@ -704,28 +1271,110 @@ const CONFIG = {
     }
   },
   THEME: {
-    get DEFAULT () { return config.get<string>('theme.default') }
+    get DEFAULT () {
+      return config.get<string>('theme.default')
+    },
+
+    CUSTOMIZATION: {
+      get PRIMARY_COLOR () {
+        return config.get<string>('theme.customization.primary_color')
+      },
+      get ON_PRIMARY_COLOR () {
+        return config.get<string>('theme.customization.on_primary_color')
+      },
+      get FOREGROUND_COLOR () {
+        return config.get<string>('theme.customization.foreground_color')
+      },
+      get BACKGROUND_COLOR () {
+        return config.get<string>('theme.customization.background_color')
+      },
+      get BACKGROUND_SECONDARY_COLOR () {
+        return config.get<string>('theme.customization.background_secondary_color')
+      },
+      get MENU_FOREGROUND_COLOR () {
+        return config.get<string>('theme.customization.menu_foreground_color')
+      },
+      get MENU_BACKGROUND_COLOR () {
+        return config.get<string>('theme.customization.menu_background_color')
+      },
+      get MENU_BORDER_RADIUS () {
+        return config.get<string>('theme.customization.menu_border_radius')
+      },
+      get HEADER_BACKGROUND_COLOR () {
+        return config.get<string>('theme.customization.header_background_color')
+      },
+      get HEADER_FOREGROUND_COLOR () {
+        return config.get<string>('theme.customization.header_foreground_color')
+      },
+      get INPUT_BORDER_RADIUS () {
+        return config.get<string>('theme.customization.input_border_radius')
+      }
+    }
   },
   BROADCAST_MESSAGE: {
-    get ENABLED () { return config.get<boolean>('broadcast_message.enabled') },
-    get MESSAGE () { return config.get<string>('broadcast_message.message') },
-    get LEVEL () { return config.get<BroadcastMessageLevel>('broadcast_message.level') },
-    get DISMISSABLE () { return config.get<boolean>('broadcast_message.dismissable') }
+    get ENABLED () {
+      return config.get<boolean>('broadcast_message.enabled')
+    },
+    get MESSAGE () {
+      return config.get<string>('broadcast_message.message')
+    },
+    get LEVEL () {
+      return config.get<BroadcastMessageLevel>('broadcast_message.level')
+    },
+    get DISMISSABLE () {
+      return config.get<boolean>('broadcast_message.dismissable')
+    }
   },
   SEARCH: {
     REMOTE_URI: {
-      get USERS () { return config.get<boolean>('search.remote_uri.users') },
-      get ANONYMOUS () { return config.get<boolean>('search.remote_uri.anonymous') }
+      get USERS () {
+        return config.get<boolean>('search.remote_uri.users')
+      },
+      get ANONYMOUS () {
+        return config.get<boolean>('search.remote_uri.anonymous')
+      }
     },
     SEARCH_INDEX: {
-      get ENABLED () { return config.get<boolean>('search.search_index.enabled') },
-      get URL () { return config.get<string>('search.search_index.url') },
-      get DISABLE_LOCAL_SEARCH () { return config.get<boolean>('search.search_index.disable_local_search') },
-      get IS_DEFAULT_SEARCH () { return config.get<boolean>('search.search_index.is_default_search') }
+      get ENABLED () {
+        return config.get<boolean>('search.search_index.enabled')
+      },
+      get URL () {
+        return config.get<string>('search.search_index.url')
+      },
+      get DISABLE_LOCAL_SEARCH () {
+        return config.get<boolean>('search.search_index.disable_local_search')
+      },
+      get IS_DEFAULT_SEARCH () {
+        return config.get<boolean>('search.search_index.is_default_search')
+      }
     }
   },
   STORYBOARDS: {
-    get ENABLED () { return config.get<boolean>('storyboards.enabled') }
+    get ENABLED () {
+      return config.get<boolean>('storyboards.enabled')
+    },
+    REMOTE_RUNNERS: {
+      get ENABLED () {
+        return config.get<boolean>('storyboards.remote_runners.enabled')
+      }
+    }
+  },
+  EMAIL: {
+    BODY: {
+      get SIGNATURE () {
+        return config.get<string>('email.body.signature')
+      }
+    },
+    SUBJECT: {
+      get PREFIX () {
+        return config.get<string>('email.subject.prefix')
+      }
+    }
+  },
+  VIDEO_COMMENTS: {
+    get ACCEPT_REMOTE_COMMENTS () {
+      return config.get<boolean>('video_comments.accept_remote_comments')
+    }
   }
 }
 
@@ -751,7 +1400,7 @@ function getLocalConfigFilePath () {
   return join(localConfigDir, filename + '.json')
 }
 
-function getConfigModule () {
+function getConfigModule (): ConfigInstance {
   return config
 }
 
@@ -761,8 +1410,8 @@ export {
   CONFIG,
   getConfigModule,
   getLocalConfigFilePath,
-  registerConfigChangedHandler,
-  isEmailEnabled
+  isEmailEnabled,
+  registerConfigChangedHandler
 }
 
 // ---------------------------------------------------------------------------
@@ -791,32 +1440,7 @@ function buildVideosRedundancy (objs: any[]): VideosRedundancyStrategy[] {
 }
 
 export function reloadConfig () {
-
-  function getConfigDirectories () {
-    if (process.env.NODE_CONFIG_DIR) {
-      return process.env.NODE_CONFIG_DIR.split(':')
-    }
-
-    return [ join(root(), 'config') ]
-  }
-
-  function purge () {
-    const directories = getConfigDirectories()
-
-    for (const fileName in require.cache) {
-      if (directories.some((dir) => fileName.includes(dir)) === false) {
-        continue
-      }
-
-      delete require.cache[fileName]
-    }
-
-    decacheModule(require, 'config')
-  }
-
-  purge()
-
-  config = require('config')
+  config = loadConfig()
 
   for (const configChangedHandler of configChangedHandlers) {
     configChangedHandler()

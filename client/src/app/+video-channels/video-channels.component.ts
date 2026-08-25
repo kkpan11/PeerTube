@@ -1,5 +1,5 @@
-import { NgClass, NgIf, NgTemplateOutlet } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { NgClass, NgTemplateOutlet } from '@angular/common'
+import { ChangeDetectionStrategy, Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
 import { ActivatedRoute, RouterLink, RouterOutlet } from '@angular/router'
 import { AuthService, Hotkey, HotkeysService, MarkdownService, MetaService, RestExtractor, ScreenService, ServerService } from '@app/core'
 import { getOriginUrl } from '@app/helpers'
@@ -23,8 +23,8 @@ import { AccountBlockBadgesComponent } from '../shared/shared-moderation/account
 @Component({
   templateUrl: './video-channels.component.html',
   styleUrls: [ './video-channels.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     RouterLink,
     SubscribeButtonComponent,
     GlobalIconComponent,
@@ -72,7 +72,7 @@ export class VideoChannelsComponent implements OnInit, OnDestroy {
       .pipe(
         map(params => params['videoChannelName']),
         distinctUntilChanged(),
-        switchMap(videoChannelName => this.videoChannelService.getVideoChannel(videoChannelName)),
+        switchMap(videoChannelName => this.videoChannelService.get(videoChannelName)),
         catchError(err =>
           this.restExtractor.redirectTo404IfNotFound(err, 'other', [
             HttpStatusCode.BAD_REQUEST_400,
@@ -81,8 +81,22 @@ export class VideoChannelsComponent implements OnInit, OnDestroy {
         )
       )
       .subscribe(async videoChannel => {
+        const instanceName = this.server.getHTMLConfig().instance.name
+
         this.metaService.setTitle(videoChannel.displayName)
-        this.metaService.setRSSFeeds(getChannelRSSFeeds(getOriginUrl(), this.server.getHTMLConfig().instance.name, videoChannel))
+        this.metaService.setRSSFeeds(
+          getChannelRSSFeeds({
+            url: getOriginUrl(),
+            channel: videoChannel,
+            titles: {
+              instanceVideosFeed: `${instanceName} - Videos feed`,
+              channelVideosFeed: `${videoChannel.displayName} - Videos feed`,
+              channelPodcastFeed: `${videoChannel.displayName} - Podcast feed`,
+              channelPodcastAudioFeed: `${videoChannel.displayName} - Apple Podcast audio feed`,
+              channelPodcastVideoFeed: `${videoChannel.displayName} - Apple Podcast video feed`
+            }
+          })
+        )
 
         this.channelDescriptionHTML = await this.markdown.textMarkdownToHTML({
           markdown: videoChannel.description,
@@ -176,7 +190,7 @@ export class VideoChannelsComponent implements OnInit, OnDestroy {
   }
 
   private loadChannelVideosCount () {
-    this.videoService.getVideoChannelVideos({
+    this.videoService.listChannelVideos({
       videoChannel: this.videoChannel,
       videoPagination: {
         currentPage: 1,

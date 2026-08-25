@@ -1,9 +1,17 @@
-import { forceNumber, pick } from '@peertube/peertube-core-utils'
-import { ActivityPubActor, VideoChannel, VideoChannelSummary, VideoPrivacy } from '@peertube/peertube-models'
+import {
+  ActivityPubActor,
+  ActivityUrlObject,
+  VIDEO_CHANNEL_STATS_DAYS_DEFAULT,
+  VideoChannel,
+  VideoChannelSummary,
+  VideoPrivacy
+} from '@peertube/peertube-models'
+import { AttributesOnly } from '@peertube/peertube-typescript-utils'
 import { CONFIG } from '@server/initializers/config.js'
+import { getLocalActorPlayerSettingsActivityPubUrl } from '@server/lib/activitypub/url.js'
 import { InternalEventEmitter } from '@server/lib/internal-event-emitter.js'
 import { MAccountIdHost } from '@server/types/models/index.js'
-import { FindOptions, Includeable, literal, Op, QueryTypes, ScopeOptions, Transaction, WhereOptions } from 'sequelize'
+import { FindOptions, Includeable, literal, Op, QueryTypes, Transaction } from 'sequelize'
 import {
   AfterCreate,
   AfterDestroy,
@@ -18,15 +26,16 @@ import {
   DefaultScope,
   ForeignKey,
   HasMany,
+  HasOne,
   Is,
   Scopes,
-  Sequelize,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
 import {
   isVideoChannelDescriptionValid,
   isVideoChannelDisplayNameValid,
+  isVideoChannelPublicEmailValid,
   isVideoChannelSupportValid
 } from '../../helpers/custom-validators/video-channels.js'
 import { CONSTRAINTS_FIELDS, WEBSERVER } from '../../initializers/constants.js'
@@ -41,43 +50,24 @@ import {
   MChannelSummaryFormattable,
   type MChannel
 } from '../../types/models/video/index.js'
-import { AccountModel, ScopeNames as AccountModelScopeNames, SummaryOptions as AccountSummaryOptions } from '../account/account.js'
-import { ActorFollowModel } from '../actor/actor-follow.js'
+import { AccountModel, ScopeNames as AccountModelScopeNames } from '../account/account.js'
 import { ActorImageModel } from '../actor/actor-image.js'
-import { ActorModel, unusedActorAttributesForAPI } from '../actor/actor.js'
-import { ServerModel } from '../server/server.js'
-import {
-  buildServerIdsFollowedBy,
-  buildTrigramSearchIndex,
-  createSimilarityAttribute,
-  getSort,
-  SequelizeModel,
-  setAsUpdated,
-  throwIfNotValid
-} from '../shared/index.js'
+import { ActorModel, actorSummaryAttributes } from '../actor/actor.js'
+import { ServerModel, serverSummaryAttributes } from '../server/server.js'
+import { buildSQLAttributes, buildTrigramSearchIndex, getSort, SequelizeModel, setAsUpdated, throwIfNotValid } from '../shared/index.js'
+import { ListVideoChannelsOptions, VideoChannelListQueryBuilder } from './sql/channel/video-channel-list-query-builder.js'
+import { VideoChannelCollaboratorModel } from './video-channel-collaborator.js'
 import { VideoPlaylistModel } from './video-playlist.js'
 import { VideoModel } from './video.js'
 
+const channelSummaryAttributes = [ 'id', 'name', 'description' ] as const satisfies (keyof AttributesOnly<AccountModel>)[]
+
 export enum ScopeNames {
-  FOR_API = 'FOR_API',
   SUMMARY = 'SUMMARY',
   WITH_ACCOUNT = 'WITH_ACCOUNT',
   WITH_ACTOR = 'WITH_ACTOR',
   WITH_ACTOR_BANNER = 'WITH_ACTOR_BANNER',
-  WITH_VIDEOS = 'WITH_VIDEOS',
-  WITH_STATS = 'WITH_STATS'
-}
-
-type AvailableForListOptions = {
-  actorId: number
-  search?: string
-  host?: string
-  handles?: string[]
-  forCount?: boolean
-}
-
-type AvailableWithStatsOptions = {
-  daysPrior: number
+  WITH_VIDEOS = 'WITH_VIDEOS'
 }
 
 export type SummaryOptions = {
@@ -95,142 +85,15 @@ export type SummaryOptions = {
   ]
 }))
 @Scopes(() => ({
-  [ScopeNames.FOR_API]: (options: AvailableForListOptions) => {
-    // Only list local channels OR channels that are on an instance followed by actorId
-    const inQueryInstanceFollow = buildServerIdsFollowedBy(options.actorId)
-
-    const whereActorAnd: WhereOptions[] = [
-      {
-        [Op.or]: [
-          {
-            serverId: null
-          },
-          {
-            serverId: {
-              [Op.in]: Sequelize.literal(inQueryInstanceFollow)
-            }
-          }
-        ]
-      }
-    ]
-
-    let serverRequired = false
-    let whereServer: WhereOptions
-
-    if (options.host && options.host !== WEBSERVER.HOST) {
-      serverRequired = true
-      whereServer = { host: options.host }
-    }
-
-    if (options.host === WEBSERVER.HOST) {
-      whereActorAnd.push({
-        serverId: null
-      })
-    }
-
-    if (Array.isArray(options.handles) && options.handles.length !== 0) {
-      const or: string[] = []
-
-      for (const handle of options.handles || []) {
-        const [ preferredUsername, host ] = handle.split('@')
-
-        const sanitizedPreferredUsername = VideoChannelModel.sequelize.escape(preferredUsername.toLowerCase())
-        const sanitizedHost = VideoChannelModel.sequelize.escape(host)
-
-        if (!host || host === WEBSERVER.HOST) {
-          or.push(`(LOWER("preferredUsername") = ${sanitizedPreferredUsername} AND "serverId" IS NULL)`)
-        } else {
-          or.push(
-            `(` +
-              `LOWER("preferredUsername") = ${sanitizedPreferredUsername} ` +
-              `AND "host" = ${sanitizedHost}` +
-              `)`
-          )
-        }
-      }
-
-      whereActorAnd.push({
-        id: {
-          [Op.in]: literal(`(SELECT "actor".id FROM actor LEFT JOIN server on server.id = actor."serverId" WHERE ${or.join(' OR ')})`)
-        }
-      })
-    }
-
-    const channelActorInclude: Includeable[] = []
-    const accountActorInclude: Includeable[] = []
-
-    if (options.forCount !== true) {
-      accountActorInclude.push({
-        model: ServerModel,
-        required: false
-      })
-
-      accountActorInclude.push({
-        model: ActorImageModel,
-        as: 'Avatars',
-        required: false
-      })
-
-      channelActorInclude.push({
-        model: ActorImageModel,
-        as: 'Avatars',
-        required: false
-      })
-
-      channelActorInclude.push({
-        model: ActorImageModel,
-        as: 'Banners',
-        required: false
-      })
-    }
-
-    if (options.forCount !== true || serverRequired) {
-      channelActorInclude.push({
-        model: ServerModel,
-        duplicating: false,
-        required: serverRequired,
-        where: whereServer
-      })
-    }
-
-    return {
-      include: [
-        {
-          attributes: {
-            exclude: unusedActorAttributesForAPI
-          },
-          model: ActorModel.unscoped(),
-          where: {
-            [Op.and]: whereActorAnd
-          },
-          include: channelActorInclude
-        },
-        {
-          model: AccountModel.unscoped(),
-          required: true,
-          include: [
-            {
-              attributes: {
-                exclude: unusedActorAttributesForAPI
-              },
-              model: ActorModel.unscoped(),
-              required: true,
-              include: accountActorInclude
-            }
-          ]
-        }
-      ]
-    }
-  },
   [ScopeNames.SUMMARY]: (options: SummaryOptions = {}) => {
     const include: Includeable[] = [
       {
-        attributes: [ 'id', 'preferredUsername', 'url', 'serverId' ],
+        attributes: actorSummaryAttributes,
         model: ActorModel.unscoped(),
         required: options.actorRequired ?? true,
         include: [
           {
-            attributes: [ 'host' ],
+            attributes: serverSummaryAttributes,
             model: ServerModel.unscoped(),
             required: false
           },
@@ -244,13 +107,13 @@ export type SummaryOptions = {
     ]
 
     const base: FindOptions = {
-      attributes: [ 'id', 'name', 'description', 'actorId' ]
+      attributes: channelSummaryAttributes
     }
 
     if (options.withAccount === true) {
       include.push({
         model: AccountModel.scope({
-          method: [ AccountModelScopeNames.SUMMARY, { withAccountBlockerIds: options.withAccountBlockerIds } as AccountSummaryOptions ]
+          method: [ AccountModelScopeNames.SUMMARY, { withAccountBlockerIds: options.withAccountBlockerIds } ]
         }),
         required: true
       })
@@ -291,53 +154,6 @@ export type SummaryOptions = {
     include: [
       VideoModel
     ]
-  },
-  [ScopeNames.WITH_STATS]: (options: AvailableWithStatsOptions = { daysPrior: 30 }) => {
-    const daysPrior = forceNumber(options.daysPrior)
-
-    return {
-      attributes: {
-        include: [
-          [
-            literal('(SELECT COUNT(*) FROM "video" WHERE "channelId" = "VideoChannelModel"."id")'),
-            'videosCount'
-          ],
-          [
-            literal(
-              '(' +
-                `SELECT string_agg(concat_ws('|', t.day, t.views), ',') ` +
-                'FROM ( ' +
-                'WITH ' +
-                'days AS ( ' +
-                `SELECT generate_series(date_trunc('day', now()) - '${daysPrior} day'::interval, ` +
-                `date_trunc('day', now()), '1 day'::interval) AS day ` +
-                ') ' +
-                'SELECT days.day AS day, COALESCE(SUM("videoView".views), 0) AS views ' +
-                'FROM days ' +
-                'LEFT JOIN (' +
-                '"videoView" INNER JOIN "video" ON "videoView"."videoId" = "video"."id" ' +
-                'AND "video"."channelId" = "VideoChannelModel"."id"' +
-                `) ON date_trunc('day', "videoView"."startDate") = date_trunc('day', days.day) ` +
-                'GROUP BY day ' +
-                'ORDER BY day ' +
-                ') t' +
-                ')'
-            ),
-            'viewsPerDay'
-          ],
-          [
-            literal(
-              '(' +
-                'SELECT COALESCE(SUM("video".views), 0) AS totalViews ' +
-                'FROM "video" ' +
-                'WHERE "video"."channelId" = "VideoChannelModel"."id"' +
-                ')'
-            ),
-            'totalViews'
-          ]
-        ]
-      }
-    }
   }
 }))
 @Table({
@@ -347,9 +163,6 @@ export type SummaryOptions = {
 
     {
       fields: [ 'accountId' ]
-    },
-    {
-      fields: [ 'actorId' ]
     }
   ]
 })
@@ -357,48 +170,42 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
   @AllowNull(false)
   @Is('VideoChannelName', value => throwIfNotValid(value, isVideoChannelDisplayNameValid, 'name'))
   @Column
-  name: string
+  declare name: string
 
   @AllowNull(true)
   @Default(null)
   @Is('VideoChannelDescription', value => throwIfNotValid(value, isVideoChannelDescriptionValid, 'description', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.VIDEO_CHANNELS.DESCRIPTION.max))
-  description: string
+  declare description: string
 
   @AllowNull(true)
   @Default(null)
   @Is('VideoChannelSupport', value => throwIfNotValid(value, isVideoChannelSupportValid, 'support', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.VIDEO_CHANNELS.SUPPORT.max))
-  support: string
+  declare support: string
+
+  @AllowNull(true)
+  @Default(null)
+  @Is('VideoChannelPublicEmail', value => throwIfNotValid(value, isVideoChannelPublicEmailValid, 'publicEmail', true))
+  @Column(DataType.STRING(400))
+  declare publicEmail: string
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
-
-  @ForeignKey(() => ActorModel)
-  @Column
-  actorId: number
-
-  @BelongsTo(() => ActorModel, {
-    foreignKey: {
-      allowNull: false
-    },
-    onDelete: 'cascade'
-  })
-  Actor: Awaited<ActorModel>
+  declare updatedAt: Date
 
   @ForeignKey(() => AccountModel)
   @Column
-  accountId: number
+  declare accountId: number
 
   @BelongsTo(() => AccountModel, {
     foreignKey: {
       allowNull: false
     }
   })
-  Account: Awaited<AccountModel>
+  declare Account: Awaited<AccountModel>
 
   @HasMany(() => VideoModel, {
     foreignKey: {
@@ -408,7 +215,7 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
     onDelete: 'CASCADE',
     hooks: true
   })
-  Videos: Awaited<VideoModel>[]
+  declare Videos: Awaited<VideoModel>[]
 
   @HasMany(() => VideoPlaylistModel, {
     foreignKey: {
@@ -417,7 +224,22 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
     onDelete: 'CASCADE',
     hooks: true
   })
-  VideoPlaylists: Awaited<VideoPlaylistModel>[]
+  declare VideoPlaylists: Awaited<VideoPlaylistModel>[]
+
+  @HasMany(() => VideoChannelCollaboratorModel, {
+    foreignKey: 'channelId',
+    onDelete: 'CASCADE'
+  })
+  declare VideoChannelCollaborators: Awaited<VideoChannelCollaboratorModel>[]
+
+  @HasOne(() => ActorModel, {
+    foreignKey: {
+      allowNull: true
+    },
+    onDelete: 'cascade',
+    hooks: true
+  })
+  declare Actor: Awaited<ActorModel>
 
   @AfterCreate
   static notifyCreate (channel: MChannel) {
@@ -440,26 +262,33 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       instance.Actor = await instance.$get('Actor', { transaction: options.transaction })
     }
 
-    await ActorFollowModel.removeFollowsOf(instance.Actor.id, options.transaction)
-
-    if (instance.Actor.isOwned()) {
+    if (instance.Actor.isLocal()) {
       return sendDeleteActor(instance.Actor, options.transaction)
     }
 
     return undefined
   }
 
-  @AfterDestroy
-  static async deleteActorIfRemote (instance: VideoChannelModel, options) {
-    if (!instance.Actor) {
-      instance.Actor = await instance.$get('Actor', { transaction: options.transaction })
-    }
+  // ---------------------------------------------------------------------------
 
-    // Remote actor, delete it
-    if (instance.Actor.serverId) {
-      await instance.Actor.destroy({ transaction: options.transaction })
-    }
+  static getSQLAttributes (tableName: string, aliasPrefix = '') {
+    return buildSQLAttributes({
+      model: this,
+      tableName,
+      aliasPrefix
+    })
   }
+
+  static getSQLSummaryAttributes (tableName: string, aliasPrefix = '') {
+    return buildSQLAttributes({
+      model: this,
+      tableName,
+      aliasPrefix,
+      includeAttributes: channelSummaryAttributes
+    })
+  }
+
+  // ---------------------------------------------------------------------------
 
   static countByAccount (accountId: number) {
     const query = {
@@ -488,7 +317,7 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       FROM "videoChannel" AS "VideoChannelModel"
       ${videoJoin}
       INNER JOIN "account" AS "Account" ON "VideoChannelModel"."accountId" = "Account"."id"
-      INNER JOIN "actor" AS "Account->Actor" ON "Account"."actorId" = "Account->Actor"."id"
+      INNER JOIN "actor" AS "Account->Actor" ON "Account"."id" = "Account->Actor"."accountId"
         AND "Account->Actor"."serverId" IS NULL`
 
       return VideoChannelModel.sequelize.query<{ count: string }>(query, options)
@@ -510,9 +339,38 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
     }
   }
 
+  static async getChannelQuota (channelId: number) {
+    const webVideoFiles = 'SELECT "videoFile"."size" AS "size", "video"."id" AS "videoId" FROM "videoFile" ' +
+      'INNER JOIN "video" ON "videoFile"."videoId" = "video"."id" ' +
+      'AND "video"."isLive" IS FALSE AND "video"."channelId" = $channelId'
+
+    const hlsFiles = 'SELECT "videoFile"."size" AS "size", "video"."id" AS "videoId" FROM "videoFile" ' +
+      'INNER JOIN "videoStreamingPlaylist" ON "videoFile"."videoStreamingPlaylistId" = "videoStreamingPlaylist".id ' +
+      'INNER JOIN "video" ON "videoStreamingPlaylist"."videoId" = "video"."id" ' +
+      'AND "video"."isLive" IS FALSE AND "video"."channelId" = $channelId'
+
+    const sql = 'SELECT COALESCE(SUM("size"), 0) AS "total" ' +
+      'FROM (' +
+      `SELECT MAX("t1"."size") AS "size" FROM (${webVideoFiles} UNION ${hlsFiles}) t1 ` +
+      'GROUP BY "t1"."videoId"' +
+      ') t2'
+
+    const queryOptions = {
+      bind: { channelId },
+      type: QueryTypes.SELECT as QueryTypes.SELECT
+    }
+
+    const [ { total } ] = await VideoChannelModel.sequelize.query<{ total: string }>(sql, queryOptions)
+    if (!total) return 0
+
+    return parseInt(total, 10)
+  }
+
+  // ---------------------------------------------------------------------------
+
   static listLocalsForSitemap (sort: string): Promise<MChannelHost[]> {
     const query = {
-      attributes: [],
+      attributes: [ 'updatedAt' ],
       offset: 0,
       order: getSort(sort),
       include: [
@@ -536,147 +394,33 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       .findAll(query)
   }
 
-  static listForApi (
-    parameters: Pick<AvailableForListOptions, 'actorId'> & {
-      start: number
-      count: number
-      sort: string
+  // ---------------------------------------------------------------------------
+
+  static listForApi (options: ListVideoChannelsOptions) {
+    return Promise.all([
+      new VideoChannelListQueryBuilder(VideoChannelModel.sequelize, options).list<VideoChannelModel>() as Promise<MChannelFormattable[]>,
+      new VideoChannelListQueryBuilder(VideoChannelModel.sequelize, options).count()
+    ]).then(([ rows, count ]) => {
+      return { total: count, data: rows }
+    })
+  }
+
+  static listByAccountForAPI (
+    options: Pick<ListVideoChannelsOptions, 'accountId' | 'includeCollaborations' | 'search' | 'start' | 'count' | 'sort'> & {
+      withStats?: boolean
+      statsDays?: number
     }
   ) {
-    const { actorId } = parameters
+    const listOptions = options.withStats
+      ? { ...options, statsDaysPrior: options.statsDays ?? VIDEO_CHANNEL_STATS_DAYS_DEFAULT }
+      : options
 
-    const query = {
-      offset: parameters.start,
-      limit: parameters.count,
-      order: getSort(parameters.sort)
-    }
-
-    const getScope = (forCount: boolean) => {
-      return { method: [ ScopeNames.FOR_API, { actorId, forCount } as AvailableForListOptions ] }
-    }
-
-    return Promise.all([
-      VideoChannelModel.scope(getScope(true)).count(),
-      VideoChannelModel.scope(getScope(false)).findAll(query)
-    ]).then(([ total, data ]) => ({ total, data }))
+    return this.listForApi(listOptions)
   }
 
-  static searchForApi (
-    options: Pick<AvailableForListOptions, 'actorId' | 'search' | 'host' | 'handles'> & {
-      start: number
-      count: number
-      sort: string
-    }
-  ) {
-    let attributesInclude: any[] = [ literal('0 as similarity') ]
-    let where: WhereOptions
+  // ---------------------------------------------------------------------------
 
-    if (options.search) {
-      const escapedSearch = VideoChannelModel.sequelize.escape(options.search)
-      const escapedLikeSearch = VideoChannelModel.sequelize.escape('%' + options.search + '%')
-      attributesInclude = [ createSimilarityAttribute('VideoChannelModel.name', options.search) ]
-
-      where = {
-        [Op.or]: [
-          Sequelize.literal(
-            'lower(immutable_unaccent("VideoChannelModel"."name")) % lower(immutable_unaccent(' + escapedSearch + '))'
-          ),
-          Sequelize.literal(
-            'lower(immutable_unaccent("VideoChannelModel"."name")) LIKE lower(immutable_unaccent(' + escapedLikeSearch + '))'
-          )
-        ]
-      }
-    }
-
-    const query = {
-      attributes: {
-        include: attributesInclude
-      },
-      offset: options.start,
-      limit: options.count,
-      order: getSort(options.sort),
-      where
-    }
-
-    const getScope = (forCount: boolean) => {
-      return {
-        method: [
-          ScopeNames.FOR_API,
-          {
-            ...pick(options, [ 'actorId', 'host', 'handles' ]),
-
-            forCount
-          } as AvailableForListOptions
-        ]
-      }
-    }
-
-    return Promise.all([
-      VideoChannelModel.scope(getScope(true)).count(query),
-      VideoChannelModel.scope(getScope(false)).findAll(query)
-    ]).then(([ total, data ]) => ({ total, data }))
-  }
-
-  static listByAccountForAPI (options: {
-    accountId: number
-    start: number
-    count: number
-    sort: string
-    withStats?: boolean
-    search?: string
-  }) {
-    const escapedSearch = VideoModel.sequelize.escape(options.search)
-    const escapedLikeSearch = VideoModel.sequelize.escape('%' + options.search + '%')
-    const where = options.search
-      ? {
-        [Op.or]: [
-          Sequelize.literal(
-            'lower(immutable_unaccent("VideoChannelModel"."name")) % lower(immutable_unaccent(' + escapedSearch + '))'
-          ),
-          Sequelize.literal(
-            'lower(immutable_unaccent("VideoChannelModel"."name")) LIKE lower(immutable_unaccent(' + escapedLikeSearch + '))'
-          )
-        ]
-      }
-      : null
-
-    const getQuery = (forCount: boolean) => {
-      const accountModel = forCount
-        ? AccountModel.unscoped()
-        : AccountModel
-
-      return {
-        offset: options.start,
-        limit: options.count,
-        order: getSort(options.sort),
-        include: [
-          {
-            model: accountModel,
-            where: {
-              id: options.accountId
-            },
-            required: true
-          }
-        ],
-        where
-      }
-    }
-
-    const findScopes: string | ScopeOptions | (string | ScopeOptions)[] = [ ScopeNames.WITH_ACTOR_BANNER ]
-
-    if (options.withStats === true) {
-      findScopes.push({
-        method: [ ScopeNames.WITH_STATS, { daysPrior: 30 } as AvailableWithStatsOptions ]
-      })
-    }
-
-    return Promise.all([
-      VideoChannelModel.unscoped().count(getQuery(true)),
-      VideoChannelModel.scope(findScopes).findAll(getQuery(false))
-    ]).then(([ total, data ]) => ({ total, data }))
-  }
-
-  static listAllByAccount (accountId: number): Promise<MChannelDefault[]> {
+  static listAllOwnedByAccount (accountId: number): Promise<MChannelDefault[]> {
     const query = {
       limit: CONFIG.VIDEO_CHANNELS.MAX_PER_USER,
       include: [
@@ -692,6 +436,12 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
     }
 
     return VideoChannelModel.findAll(query)
+  }
+
+  // ---------------------------------------------------------------------------
+
+  static load (id: number, transaction?: Transaction): Promise<MChannel> {
+    return VideoChannelModel.unscoped().findByPk(id, { transaction })
   }
 
   static loadAndPopulateAccount (id: number, transaction?: Transaction): Promise<MChannelBannerAccountDefault> {
@@ -725,8 +475,8 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       .findOne(query)
   }
 
-  static loadByNameWithHostAndPopulateAccount (nameWithHost: string) {
-    const [ name, host ] = nameWithHost.split('@')
+  static loadByHandleAndPopulateAccount (handle: string) {
+    const [ name, host ] = handle.split('@')
 
     if (!host || host === WEBSERVER.HOST) return VideoChannelModel.loadLocalByNameAndPopulateAccount(name)
 
@@ -789,6 +539,8 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       .findOne(query)
   }
 
+  // ---------------------------------------------------------------------------
+
   toFormattedSummaryJSON (this: MChannelSummaryFormattable): VideoChannelSummary {
     const actor = this.Actor.toFormattedSummaryJSON()
 
@@ -805,6 +557,7 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
   toFormattedJSON (this: MChannelFormattable): VideoChannel {
     const viewsPerDayString = this.get('viewsPerDay') as string
     const videosCount = this.get('videosCount') as number
+    const viewsGroupInterval = this.get('viewsGroupInterval') as VideoChannel['viewsGroupInterval']
 
     let viewsPerDay: { date: Date, views: number }[]
 
@@ -828,13 +581,15 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       displayName: this.getDisplayName(),
       description: this.description,
       support: this.support,
-      isLocal: this.Actor.isOwned(),
+      publicEmail: this.publicEmail,
+      isLocal: this.Actor.isLocal(),
       updatedAt: this.updatedAt,
 
       ownerAccount: undefined,
 
       videosCount,
       viewsPerDay,
+      viewsGroupInterval,
       totalViews,
 
       avatars: actor.avatars
@@ -851,35 +606,34 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
     return {
       ...obj,
 
-      // // TODO: Uncomment in v8 for backward compatibility
-      // url: [
-      //   {
-      //     type: 'Link',
-      //     mediaType: 'text/html',
-      //     href: this.getClientUrl(true)
-      //   },
-      //   {
-      //     type: 'Link',
-      //     mediaType: 'text/html',
-      //     href: this.getClientUrl(false)
-      //   },
-      //   {
-      //     type: 'Link',
-      //     mediaType: 'text/html',
-      //     href: this.Actor.url
-      //   }
-      // ] as ActivityUrlObject[],
+      url: [
+        {
+          type: 'Link',
+          mediaType: 'text/html',
+          href: this.getClientUrl(true)
+        },
+        {
+          type: 'Link',
+          mediaType: 'text/html',
+          href: this.getClientUrl(false)
+        },
+        {
+          type: 'Link',
+          mediaType: 'text/html',
+          href: this.Actor.url
+        }
+      ] as ActivityUrlObject[],
 
-      url: this.Actor.url,
+      playerSettings: getLocalActorPlayerSettingsActivityPubUrl(this.Actor),
 
       summary: this.description,
       support: this.support,
       postingRestrictedToMods: true,
+
+      email: this.publicEmail,
+
       attributedTo: [
-        {
-          type: 'Person' as 'Person',
-          id: this.Account.Actor.url
-        }
+        this.Account.Actor.url
       ]
     }
   }
@@ -891,6 +645,10 @@ export class VideoChannelModel extends SequelizeModel<VideoChannelModel> {
       : ''
 
     return WEBSERVER.URL + '/c/' + this.Actor.getIdentifier() + suffix
+  }
+
+  getClientManageUrl (this: MAccountIdHost | MChannelIdHost) {
+    return WEBSERVER.URL + '/my-library/video-channels/manage/' + this.Actor.getIdentifier()
   }
 
   getDisplayName () {

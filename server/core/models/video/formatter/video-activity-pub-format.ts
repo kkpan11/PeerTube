@@ -1,27 +1,32 @@
 import {
+  ActivityHashTagObject,
   ActivityIconObject,
   ActivityPlaylistUrlObject,
   ActivityPubStoryboard,
+  ActivitySensitiveTagObject,
   ActivityTagObject,
   ActivityTrackerUrlObject,
   ActivityUrlObject,
+  nsfwFlagsToString,
   VideoCommentPolicy,
+  VideoEmbedPrivacyPolicy,
   VideoObject
 } from '@peertube/peertube-models'
 import { getAPPublicValue } from '@server/helpers/activity-pub-utils.js'
 import { isArray } from '@server/helpers/custom-validators/misc.js'
-import { generateMagnetUri } from '@server/helpers/webtorrent.js'
 import { getActivityStreamDuration } from '@server/lib/activitypub/activity.js'
 import { getLocalVideoFileMetadataUrl } from '@server/lib/video-urls.js'
+import { generateMagnetUri } from '@server/lib/webtorrent.js'
 import { WEBSERVER } from '../../../initializers/constants.js'
 import {
   getLocalVideoChaptersActivityPubUrl,
   getLocalVideoCommentsActivityPubUrl,
   getLocalVideoDislikesActivityPubUrl,
   getLocalVideoLikesActivityPubUrl,
+  getLocalVideoPlayerSettingsActivityPubUrl,
   getLocalVideoSharesActivityPubUrl
 } from '../../../lib/activitypub/url.js'
-import { MStreamingPlaylistFiles, MUserId, MVideo, MVideoAP, MVideoFile } from '../../../types/models/index.js'
+import { MStreamingPlaylistAP, MUserId, MVideo, MVideoAP, MVideoFileInfoHash } from '../../../types/models/index.js'
 import { sortByResolutionDesc } from './shared/index.js'
 import { getCategoryLabel, getLanguageLabel, getLicenceLabel } from './video-api-format.js'
 
@@ -44,13 +49,13 @@ export function videoModelToActivityPubObject (video: MVideoAP): VideoObject {
       type: 'Link',
       mediaType: 'text/html',
       href: WEBSERVER.URL + video.getWatchStaticPath()
-    } as ActivityUrlObject,
+    },
 
     {
       type: 'Link',
       mediaType: 'text/html',
       href: video.url
-    } as ActivityUrlObject,
+    },
 
     ...buildVideoFileUrls({ video, files: video.VideoFiles }),
 
@@ -60,7 +65,7 @@ export function videoModelToActivityPubObject (video: MVideoAP): VideoObject {
   ]
 
   return {
-    type: 'Video' as 'Video',
+    type: 'Video',
     id: video.url,
     name: video.name,
     duration: getActivityStreamDuration(video.duration),
@@ -69,12 +74,15 @@ export function videoModelToActivityPubObject (video: MVideoAP): VideoObject {
     licence,
     language,
     views: video.views,
+    downloads: video.downloads,
+
     sensitive: video.nsfw,
+    summary: video.nsfwSummary,
+
     waitTranscoding: video.waitTranscoding,
 
     state: video.state,
 
-    commentsEnabled: video.commentsPolicy !== VideoCommentPolicy.DISABLED,
     canReply: video.commentsPolicy === VideoCommentPolicy.ENABLED
       ? null
       : getAPPublicValue(), // Requires approval
@@ -87,6 +95,10 @@ export function videoModelToActivityPubObject (video: MVideoAP): VideoObject {
     originallyPublishedAt: video.originallyPublishedAt
       ? video.originallyPublishedAt.toISOString()
       : null,
+
+    schedules: (video.VideoLive?.LiveSchedules || []).map(s => ({
+      startDate: s.startAt
+    })),
 
     updated: video.updatedAt.toISOString(),
 
@@ -113,17 +125,26 @@ export function videoModelToActivityPubObject (video: MVideoAP): VideoObject {
     shares: getLocalVideoSharesActivityPubUrl(video),
     comments: getLocalVideoCommentsActivityPubUrl(video),
     hasParts: getLocalVideoChaptersActivityPubUrl(video),
+    playerSettings: getLocalVideoPlayerSettingsActivityPubUrl(video),
 
-    attributedTo: [
-      {
-        type: 'Person',
-        id: video.VideoChannel.Account.Actor.url
-      },
-      {
-        type: 'Group',
-        id: video.VideoChannel.Actor.url
-      }
-    ],
+    embedUrl: video.embedPrivacyPolicy === VideoEmbedPrivacyPolicy.ALL_ALLOWED
+      ? video.getEmbedStaticUrl()
+      : null,
+
+    attributedTo: process.env.FEP_1B12_ONLY !== 'true'
+      ? [
+        {
+          type: 'Person',
+          id: video.VideoChannel.Account.Actor.url
+        },
+        {
+          type: 'Group',
+          id: video.VideoChannel.Actor.url
+        }
+      ]
+      : video.VideoChannel.Account.Actor.url,
+
+    audience: video.VideoChannel.Actor.url,
 
     ...buildLiveAPAttributes(video)
   }
@@ -139,7 +160,8 @@ function buildLiveAPAttributes (video: MVideoAP) {
       isLiveBroadcast: false,
       liveSaveReplay: null,
       permanentLive: null,
-      latencyMode: null
+      latencyMode: null,
+      dvrWindow: null
     }
   }
 
@@ -147,7 +169,8 @@ function buildLiveAPAttributes (video: MVideoAP) {
     isLiveBroadcast: true,
     liveSaveReplay: video.VideoLive.saveReplay,
     permanentLive: video.VideoLive.permanentLive,
-    latencyMode: video.VideoLive.latencyMode
+    latencyMode: video.VideoLive.latencyMode,
+    dvrWindow: getActivityStreamDuration(video.VideoLive.dvrWindow)
   }
 }
 
@@ -164,7 +187,7 @@ function buildPreviewAPAttribute (video: MVideoAP): ActivityPubStoryboard[] {
         {
           mediaType: 'image/jpeg',
 
-          href: storyboard.getOriginFileUrl(video),
+          href: storyboard.getLocalFileUrl(),
 
           width: storyboard.totalWidth,
           height: storyboard.totalHeight,
@@ -180,7 +203,7 @@ function buildPreviewAPAttribute (video: MVideoAP): ActivityPubStoryboard[] {
 
 function buildVideoFileUrls (options: {
   video: MVideo
-  files: MVideoFile[]
+  files: MVideoFileInfoHash[]
   user?: MUserId
 }): ActivityUrlObject[] {
   const { video, files } = options
@@ -208,7 +231,7 @@ function buildVideoFileUrls (options: {
       fps: file.fps
     })
 
-    if (file.hasTorrent()) {
+    if (file.canBuildMagnetUri()) {
       urls.push({
         type: 'Link',
         mediaType: 'application/x-bittorrent' as 'application/x-bittorrent',
@@ -246,9 +269,9 @@ function buildStreamingPlaylistUrls (video: MVideoAP): ActivityPlaylistUrlObject
     }))
 }
 
-function buildStreamingPlaylistTags (video: MVideoAP, playlist: MStreamingPlaylistFiles) {
+function buildStreamingPlaylistTags (video: MVideoAP, playlist: MStreamingPlaylistAP) {
   return [
-    ...playlist.p2pMediaLoaderInfohashes.map(i => ({ type: 'Infohash' as 'Infohash', name: i })),
+    ...(playlist.InfoHashes ?? []).map(i => ({ type: 'Infohash' as 'Infohash', name: i.toP2PMediaLoaderInfohash() })),
 
     {
       type: 'Link',
@@ -281,19 +304,28 @@ function buildTrackerUrls (video: MVideoAP): ActivityTrackerUrlObject[] {
 
 // ---------------------------------------------------------------------------
 
-function buildTags (video: MVideoAP) {
-  if (!isArray(video.Tags)) return []
+function buildTags (video: MVideoAP): (ActivitySensitiveTagObject | ActivityHashTagObject)[] {
+  const tags = isArray(video.Tags)
+    ? video.Tags
+    : []
 
-  return video.Tags.map(t => ({
-    type: 'Hashtag' as 'Hashtag',
-    name: t.name
-  }))
+  return [
+    ...tags.map((t): ActivityHashTagObject => ({
+      type: 'Hashtag',
+      name: t.name
+    })),
+
+    ...nsfwFlagsToString(video.nsfwFlags).map((f): ActivitySensitiveTagObject => ({
+      type: 'SensitiveTag',
+      name: f
+    }))
+  ]
 }
 
 function buildIcon (video: MVideoAP): ActivityIconObject[] {
-  return [ video.getMiniature(), video.getPreview() ]
+  return video.Thumbnails
     .filter(i => !!i)
-    .map(i => i.toActivityPubObject(video))
+    .map(i => i.toActivityPubObject())
 }
 
 function buildSubtitleLanguage (video: MVideoAP) {

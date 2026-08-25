@@ -1,5 +1,5 @@
 import { SimpleLogger } from '@peertube/peertube-models'
-import { buildSUUID, SUUID } from '@peertube/peertube-node-utils'
+import { buildSUUID } from '@peertube/peertube-node-utils'
 import { $ } from 'execa'
 import { PerformanceObserver } from 'node:perf_hooks'
 import { join } from 'path'
@@ -15,7 +15,8 @@ export interface TranscribeArgs {
   transcriptDirectory: string
 
   language?: string
-  runId?: SUUID
+  runId?: string
+  signal?: AbortSignal
 }
 
 export abstract class AbstractTranscriber {
@@ -46,7 +47,7 @@ export abstract class AbstractTranscriber {
     this.performanceObserver = performanceObserver
   }
 
-  createRun (uuid: SUUID = buildSUUID()) {
+  createRun (uuid: string = buildSUUID()) {
     this.run = new TranscriptionRun(this.logger, uuid)
   }
 
@@ -76,7 +77,12 @@ export abstract class AbstractTranscriber {
     return this.engine.command
   }
 
-  protected getExec (env?: { [ id: string ]: string }) {
+  protected getExec (options: {
+    signal?: AbortSignal
+    env?: { [id: string]: string }
+  } = {}) {
+    const { signal, env } = options
+
     const logLevels = {
       command: 'debug',
       output: 'debug',
@@ -91,6 +97,8 @@ export abstract class AbstractTranscriber {
 
         this.logger[level](message, verboseObject)
       },
+
+      cancelSignal: signal,
 
       env
     })

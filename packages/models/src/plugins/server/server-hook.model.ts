@@ -90,6 +90,11 @@ export const serverFilterHookObject = {
   'filter:api.video-thread-comments.list.params': true,
   'filter:api.video-thread-comments.list.result': true,
 
+  // Filter params/result used to list replies of a specific comment
+  // PeerTube >= 8.3
+  'filter:api.video-comment-replies.list.params': true,
+  'filter:api.video-comment-replies.list.result': true,
+
   // Filter get stats result
   'filter:api.server.stats.get.result': true,
 
@@ -99,6 +104,10 @@ export const serverFilterHookObject = {
 
   // Filter result used to check if a user can register on the instance
   'filter:api.user.signup.allowed.result': true,
+
+  // Filter result used to check if signup requires approval on the instance
+  // PeerTube >= 8.2
+  'filter:api.user.signup.requires-approval.result': true,
 
   // Filter result used to check if a user can send a registration request on the instance
   // PeerTube >= 5.1
@@ -137,6 +146,8 @@ export const serverFilterHookObject = {
   // Filter result to allow custom tags in podcast RSS feeds
   // Peertube >= 5.2
   'filter:feed.podcast.channel.create-custom-tags.result': true,
+  // Peertube >= 8.2
+  'filter:feed.podcast.video-playlist.create-custom-tags.result': true,
   // Peertube >= 5.2
   'filter:feed.podcast.video.create-custom-tags.result': true,
   // Peertube >= 6.1
@@ -145,7 +156,18 @@ export const serverFilterHookObject = {
   // Peertube >= 7.1
   'filter:oauth.password-grant.get-user.params': true,
   'filter:api.email-verification.ask-send-verify-email.body': true,
-  'filter:api.users.ask-reset-password.body': true
+  'filter:api.users.ask-reset-password.body': true,
+
+  // Peertube >= 7.2
+  'filter:email.subject.result': true,
+  'filter:email.template-path.result': true,
+
+  // Filter notifications enabled state
+  // Peertube >= 8.2
+  'filter:notifier.notification.enabled.result': true,
+
+  // PeerTube >= 8.1
+  'filter:feed.videos.list.result': true
 }
 
 export type ServerFilterHookName = keyof typeof serverFilterHookObject
@@ -229,5 +251,5 @@ export const serverHookObject = Object.assign({}, serverFilterHookObject, server
 export type ServerHookName = keyof typeof serverHookObject
 
 export interface ServerHook {
-  runHook <T> (hookName: ServerHookName, result?: T, params?: any): Promise<T>
+  runHook<T>(hookName: ServerHookName, result?: T, params?: any): Promise<T>
 }

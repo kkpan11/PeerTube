@@ -1,9 +1,9 @@
-import { environment } from 'src/environments/environment'
-import { Component, ElementRef, OnInit, booleanAttribute, inject, input } from '@angular/core'
+import { Component, ElementRef, OnChanges, booleanAttribute, inject, input, numberAttribute, ChangeDetectionStrategy } from '@angular/core'
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser'
-import { buildVideoOrPlaylistEmbed } from '@root-helpers/video'
 import { buildVideoEmbedLink, decorateVideoLink } from '@peertube/peertube-core-utils'
 import { Video } from '@peertube/peertube-models'
+import { buildVideoOrPlaylistEmbed } from '@root-helpers/video'
+import { environment } from '../../../../environments/environment'
 
 export type EmbedVideoInput = Pick<Video, 'name' | 'uuid'> & Partial<Pick<Video, 'aspectRatio'>>
 
@@ -11,9 +11,10 @@ export type EmbedVideoInput = Pick<Video, 'name' | 'uuid'> & Partial<Pick<Video,
   selector: 'my-embed',
   styleUrls: [ './embed.component.scss' ],
   templateUrl: './embed.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   standalone: true
 })
-export class EmbedComponent implements OnInit {
+export class EmbedComponent implements OnChanges {
   private sanitizer = inject(DomSanitizer)
   private el = inject(ElementRef)
 
@@ -21,10 +22,11 @@ export class EmbedComponent implements OnInit {
   readonly enableAPI = input<boolean, unknown>(undefined, { transform: booleanAttribute })
   readonly mute = input<boolean, unknown>(undefined, { transform: booleanAttribute })
   readonly autoplay = input<boolean, unknown>(undefined, { transform: booleanAttribute })
+  readonly version = input<number, unknown>(undefined, { transform: numberAttribute })
 
   embedHTML: SafeHtml
 
-  ngOnInit () {
+  ngOnChanges () {
     const html = buildVideoOrPlaylistEmbed({
       embedUrl: decorateVideoLink({
         url: buildVideoEmbedLink(this.video(), environment.originServerUrl),
@@ -33,7 +35,8 @@ export class EmbedComponent implements OnInit {
         warningTitle: false,
         api: this.enableAPI(),
         muted: this.mute(),
-        autoplay: this.autoplay()
+        autoplay: this.autoplay(),
+        version: this.version()
       }),
       embedTitle: this.video().name,
       aspectRatio: this.video().aspectRatio

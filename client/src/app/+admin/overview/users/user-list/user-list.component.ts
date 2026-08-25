@@ -1,119 +1,105 @@
-import { NgClass, NgIf } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { CommonModule, NgClass } from '@angular/common'
+import { Component, OnDestroy, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule } from '@angular/forms'
-import { ActivatedRoute, Router, RouterLink } from '@angular/router'
-import {
-  AuthService,
-  ConfirmService,
-  HooksService,
-  LocalStorageService,
-  Notifier,
-  PluginService,
-  RestPagination,
-  RestTable
-} from '@app/core'
-import { formatICU, getAPIHost } from '@app/helpers'
+import { RouterLink } from '@angular/router'
+import { AuthService, ConfirmService, HooksService, Notifier, PluginService, UserService } from '@app/core'
+import { formatICU, getBackendHost } from '@app/helpers'
 import { Actor } from '@app/shared/shared-main/account/actor.model'
 import { PTDatePipe } from '@app/shared/shared-main/common/date.pipe'
 import { ProgressBarComponent } from '@app/shared/shared-main/common/progress-bar.component'
 import { BlocklistService } from '@app/shared/shared-moderation/blocklist.service'
 import { UserBanModalComponent } from '@app/shared/shared-moderation/user-ban-modal.component'
-import { UserAdminService } from '@app/shared/shared-users/user-admin.service'
-import { NgbDropdown, NgbDropdownMenu, NgbDropdownToggle, NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
-import { User, UserRole, UserRoleType } from '@peertube/peertube-models'
-import { logger } from '@root-helpers/logger'
-import { SharedModule, SortMeta } from 'primeng/api'
-import { TableModule } from 'primeng/table'
-import { lastValueFrom } from 'rxjs'
+import { UserAdmin, UserAdminService } from '@app/shared/shared-users/user-admin.service'
+import { NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
+import { UserRole, UserRoleType } from '@peertube/peertube-models'
+import { map, switchMap } from 'rxjs'
 import { ActorAvatarComponent } from '../../../../shared/shared-actor-image/actor-avatar.component'
-import { AdvancedInputFilter, AdvancedInputFilterComponent } from '../../../../shared/shared-forms/advanced-input-filter.component'
-import { PeertubeCheckboxComponent } from '../../../../shared/shared-forms/peertube-checkbox.component'
-import { SelectCheckboxComponent } from '../../../../shared/shared-forms/select/select-checkbox.component'
+import { AdvancedFilterDef } from '../../../../shared/shared-forms/advanced-input-filter.component'
 import { GlobalIconComponent } from '../../../../shared/shared-icons/global-icon.component'
-import { ActionDropdownComponent, DropdownAction } from '../../../../shared/shared-main/buttons/action-dropdown.component'
-import { AutoColspanDirective } from '../../../../shared/shared-main/common/auto-colspan.directive'
+import { DropdownAction } from '../../../../shared/shared-main/buttons/action-dropdown.component'
 import { BytesPipe } from '../../../../shared/shared-main/common/bytes.pipe'
+import { NumberFormatterPipe } from '../../../../shared/shared-main/common/number-formatter.pipe'
 import {
   AccountMutedStatus,
   UserModerationDisplayType,
   UserModerationDropdownComponent
 } from '../../../../shared/shared-moderation/user-moderation-dropdown.component'
-import { TableExpanderIconComponent } from '../../../../shared/shared-tables/table-expander-icon.component'
+import { DataLoaderOptionsBase, TableColumnInfo, TableComponent } from '../../../../shared/shared-tables/table.component'
 import { UserEmailInfoComponent } from '../../../shared/user-email-info.component'
 
-type UserForList = User & {
-  rawVideoQuota: number
-  rawVideoQuotaUsed: number
-  rawVideoQuotaDaily: number
-  rawVideoQuotaUsedDaily: number
-}
+type DataLoaderParameter = Parameters<UserListComponent['_dataLoader']>[0]
+type User = UserAdmin & { accountMutedStatus: AccountMutedStatus }
+
+type ColumnName =
+  | 'username'
+  | 'role'
+  | 'email'
+  | 'videoQuotaUsed'
+  | 'videoQuotaDailyUsed'
+  | 'totalVideoFileSize'
+  | 'createdAt'
+  | 'lastLoginDate'
+  | 'twoFactorEnabled'
+  | 'pluginAuth'
 
 @Component({
   selector: 'my-user-list',
   templateUrl: './user-list.component.html',
   styleUrls: [ './user-list.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     GlobalIconComponent,
-    TableModule,
-    SharedModule,
-    NgIf,
-    ActionDropdownComponent,
+    CommonModule,
     RouterLink,
-    AdvancedInputFilterComponent,
-    NgbDropdown,
-    NgbDropdownToggle,
-    NgbDropdownMenu,
-    SelectCheckboxComponent,
     FormsModule,
-    PeertubeCheckboxComponent,
     NgbTooltip,
     NgClass,
-    TableExpanderIconComponent,
     UserModerationDropdownComponent,
     ActorAvatarComponent,
     UserEmailInfoComponent,
-    AutoColspanDirective,
     UserBanModalComponent,
     PTDatePipe,
     BytesPipe,
-    ProgressBarComponent
+    ProgressBarComponent,
+    TableComponent,
+    NumberFormatterPipe
   ]
 })
-export class UserListComponent extends RestTable<User> implements OnInit, OnDestroy {
-  protected route = inject(ActivatedRoute)
-  protected router = inject(Router)
+export class UserListComponent implements OnInit, OnDestroy {
   private notifier = inject(Notifier)
   private confirmService = inject(ConfirmService)
   private auth = inject(AuthService)
   private blocklist = inject(BlocklistService)
   private userAdminService = inject(UserAdminService)
-  private peertubeLocalStorage = inject(LocalStorageService)
   private hooks = inject(HooksService)
   private pluginService = inject(PluginService)
-
-  private static readonly LS_SELECTED_COLUMNS_KEY = 'admin-user-list-selected-columns'
+  private userService = inject(UserService)
 
   readonly userBanModal = viewChild<UserBanModalComponent>('userBanModal')
-
-  users: (User & { accountMutedStatus: AccountMutedStatus })[] = []
-
-  totalRecords = 0
-  sort: SortMeta = { field: 'createdAt', order: 1 }
-  pagination: RestPagination = { count: this.rowsPerPage, start: 0 }
-
-  highlightBannedUsers = false
+  readonly table = viewChild<TableComponent<User, DataLoaderParameter, ColumnName>>('table')
 
   bulkActions: DropdownAction<User[]>[][] = []
-  columns: { id: string, label: string }[]
 
-  inputFilters: AdvancedInputFilter[] = [
+  inputFilters: AdvancedFilterDef<DataLoaderParameter>[] = [
     {
-      title: $localize`Advanced filters`,
-      children: [
-        {
-          value: 'banned:true',
-          label: $localize`Banned users`
-        }
+      type: 'options',
+      key: 'blocked',
+      title: $localize`Ban status`,
+      options: [
+        { value: 'all', label: $localize`All` },
+        { value: true, label: $localize`Banned` },
+        { value: false, label: $localize`Not banned` }
+      ]
+    },
+    {
+      type: 'options',
+      key: 'role',
+      title: $localize`Role`,
+      options: [
+        { value: 'all', label: $localize`All` },
+        { value: UserRole.ADMINISTRATOR, label: $localize`Administrator` },
+        { value: UserRole.MODERATOR, label: $localize`Moderator` },
+        { value: UserRole.USER, label: $localize`User` }
       ]
     }
   ]
@@ -124,26 +110,33 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
     myAccount: false
   }
 
-  private _selectedColumns: string[] = []
+  columns: TableColumnInfo<ColumnName>[] = [
+    { id: 'username', label: $localize`Username`, sortable: true },
+    { id: 'role', label: $localize`Role`, sortable: true },
+    { id: 'email', label: $localize`Email`, sortable: false },
+    { id: 'videoQuotaUsed', label: $localize`Video quota`, sortable: true },
+    { id: 'videoQuotaDailyUsed', label: $localize`Daily quota`, sortable: false },
+    { id: 'totalVideoFileSize', label: $localize`Total size`, sortable: false },
+    { id: 'twoFactorEnabled', label: $localize`2FA`, sortable: false },
+    { id: 'pluginAuth', label: $localize`Auth plugin`, sortable: false },
+    { id: 'createdAt', label: $localize`Created`, sortable: true },
+    { id: 'lastLoginDate', label: $localize`Last login`, sortable: true }
+  ]
+
+  dataLoader: typeof this._dataLoader
+  hasExpandedRow: typeof this._hasExpandedRow
+
+  constructor () {
+    this.dataLoader = this._dataLoader.bind(this)
+    this.hasExpandedRow = this._hasExpandedRow.bind(this)
+  }
 
   get authUser () {
     return this.auth.getUser()
   }
 
-  get selectedColumns () {
-    return this._selectedColumns || []
-  }
-
-  set selectedColumns (val: string[]) {
-    this._selectedColumns = val
-
-    this.saveSelectedColumns()
-  }
-
   async ngOnInit () {
-    this.initialize()
-
-    this.pluginService.addAction('admin-users-list:load-data', () => this.reloadDataInternal())
+    this.pluginService.addAction('admin-users-list:load-data', () => this.table().loadData())
 
     const bulkActions: DropdownAction<User[]>[][] = [
       [
@@ -151,103 +144,56 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
           label: $localize`Delete`,
           description: $localize`Videos will be deleted, comments will be tombstoned.`,
           handler: users => this.removeUsers(users),
-          isDisplayed: users => users.every(u => this.authUser.canManage(u))
+          isDisplayed: users => users.every(u => this.authUser.canManageUser(u))
         },
         {
-          label: $localize`Ban`,
+          label: $localize`Ban...`,
           description: $localize`User won't be able to login anymore, but videos and comments will be kept as is.`,
           handler: users => this.openBanUserModal(users),
-          isDisplayed: users => users.every(u => this.authUser.canManage(u) && u.blocked === false)
+          isDisplayed: users => users.every(u => this.authUser.canManageUser(u) && u.blocked === false)
         },
         {
           label: $localize`Unban`,
           handler: users => this.unbanUsers(users),
-          isDisplayed: users => users.every(u => this.authUser.canManage(u) && u.blocked === true)
+          isDisplayed: users => users.every(u => this.authUser.canManageUser(u) && u.blocked === true)
         }
       ],
       [
         {
-          label: $localize`Set Email as Verified`,
+          label: $localize`Set email as verified`,
           handler: users => this.setEmailsAsVerified(users),
           isDisplayed: users => {
-            return users.every(u => this.authUser.canManage(u) && !u.blocked && u.emailVerified !== true)
+            return users.every(u => this.authUser.canManageUser(u) && !u.blocked && u.emailVerified !== true)
+          }
+        },
+        {
+          label: $localize`Re-send verification emails`,
+          handler: users => this.resendVerificationEmails(users),
+          isDisplayed: users => {
+            return users.every(u => this.authUser.canManageUser(u) && !u.blocked && u.emailVerified !== true && !u.pluginAuth)
           }
         }
       ]
     ]
 
     this.bulkActions = await this.hooks.wrapObject(bulkActions, 'admin-users', 'filter:admin-users-list.bulk-actions.create.result')
-
-    this.columns = [
-      { id: 'username', label: $localize`Username` },
-      { id: 'role', label: $localize`Role` },
-      { id: 'email', label: $localize`Email` },
-      { id: 'quota', label: $localize`Video quota` },
-      { id: 'totalVideoFileSize', label: $localize`Total size` },
-      { id: 'createdAt', label: $localize`Created` },
-      { id: 'lastLoginDate', label: $localize`Last login` },
-
-      { id: 'quotaDaily', label: $localize`Daily quota` },
-      { id: 'pluginAuth', label: $localize`Auth plugin` }
-    ]
-
-    this.loadSelectedColumns()
   }
 
   ngOnDestroy () {
     this.pluginService.removeAction('admin-users-list:load-data')
   }
 
-  loadSelectedColumns () {
-    const result = this.peertubeLocalStorage.getItem(UserListComponent.LS_SELECTED_COLUMNS_KEY)
-
-    if (result) {
-      try {
-        this.selectedColumns = JSON.parse(result)
-        return
-      } catch (err) {
-        logger.error('Cannot load selected columns.', err)
-      }
-    }
-
-    // Default behaviour
-    this.selectedColumns = [ 'username', 'role', 'email', 'quota', 'totalVideoFileSize', 'createdAt', 'lastLoginDate' ]
-    return
-  }
-
-  saveSelectedColumns () {
-    this.peertubeLocalStorage.setItem(UserListComponent.LS_SELECTED_COLUMNS_KEY, JSON.stringify(this.selectedColumns))
-  }
-
-  getIdentifier () {
-    return 'UserListComponent'
-  }
-
   getRoleClass (role: UserRoleType) {
     switch (role) {
       case UserRole.ADMINISTRATOR:
         return 'badge-purple'
+
       case UserRole.MODERATOR:
         return 'badge-blue'
+
       default:
         return 'badge-yellow'
     }
-  }
-
-  isSelected (id: string) {
-    return this.selectedColumns.find(c => c === id)
-  }
-
-  getColumn (id: string) {
-    return this.columns.find(c => c.id === id)
-  }
-
-  getUserVideoQuotaPercentage (user: UserForList) {
-    return user.rawVideoQuotaUsed * 100 / user.rawVideoQuota
-  }
-
-  getUserVideoQuotaDailyPercentage (user: UserForList) {
-    return user.rawVideoQuotaUsedDaily * 100 / user.rawVideoQuotaDaily
   }
 
   openBanUserModal (users: User[]) {
@@ -262,7 +208,7 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
   }
 
   onUserChanged () {
-    this.reloadData()
+    this.table().loadData()
   }
 
   async unbanUsers (users: User[]) {
@@ -285,10 +231,10 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
               { count: users.length }
             )
           )
-          this.reloadData()
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -315,10 +261,10 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
             )
           )
 
-          this.reloadData()
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -333,51 +279,67 @@ export class UserListComponent extends RestTable<User> implements OnInit, OnDest
             )
           )
 
-          this.reloadData()
+          this.table().loadData()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
-  protected async reloadDataInternal () {
-    const obs = this.userAdminService.getUsers({
-      pagination: this.pagination,
-      sort: this.sort,
-      search: this.search
-    })
+  resendVerificationEmails (users: User[]) {
+    this.userService.askSendVerifyEmail(users.map(u => u.email))
+      .subscribe({
+        next: () => {
+          this.notifier.success(
+            formatICU(
+              $localize`{count, plural, =1 {1 verification email sent.} other {{count} verification emails sent.}}`,
+              { count: users.length }
+            )
+          )
+        },
 
-    try {
-      const resultList = await lastValueFrom(obs)
+        error: err => this.notifier.handleError(err)
+      })
+  }
 
-      this.users = resultList.data.map(u => ({
-        ...u,
+  getRoleFilterTitle (roleLabel: string) {
+    return $localize`Filter by role: ${roleLabel}`
+  }
 
-        accountMutedStatus: {
-          ...u.account,
-
-          nameWithHost: Actor.CREATE_BY_STRING(u.account.name, u.account.host),
-
-          mutedByInstance: false,
-          mutedByUser: false,
-          mutedServerByInstance: false,
-          mutedServerByUser: false
-        }
-      }))
-      this.totalRecords = resultList.total
-
-      this.loadMutedStatus()
-    } catch (err) {
-      this.notifier.error(err.message)
+  private _dataLoader (
+    options: DataLoaderOptionsBase & {
+      blocked?: boolean
+      role?: UserRoleType
     }
+  ) {
+    return this.userAdminService.listUsers(options)
+      .pipe(
+        switchMap(result => {
+          return this.blocklist.getStatus({ accounts: result.data.map(u => u.username + '@' + getBackendHost()) })
+            .pipe(map(blockStatus => ({ result, blockStatus })))
+        }),
+        map(({ result, blockStatus }) => ({
+          total: result.total,
+
+          data: result.data.map(u => ({
+            ...u,
+
+            accountMutedStatus: {
+              ...u.account,
+
+              nameWithHost: Actor.CREATE_BY_STRING(u.account.name, u.account.host),
+
+              mutedByInstance: blockStatus.accounts[u.username + '@' + getBackendHost()].blockedByServer,
+              mutedByUser: false,
+              mutedServerByInstance: false,
+              mutedServerByUser: false
+            }
+          }))
+        }))
+      )
   }
 
-  private loadMutedStatus () {
-    this.blocklist.getStatus({ accounts: this.users.map(u => u.username + '@' + getAPIHost()) })
-      .subscribe(blockStatus => {
-        for (const user of this.users) {
-          user.accountMutedStatus.mutedByInstance = blockStatus.accounts[user.username + '@' + getAPIHost()].blockedByServer
-        }
-      })
+  private _hasExpandedRow (user: User) {
+    return !!user.blockedReason
   }
 }

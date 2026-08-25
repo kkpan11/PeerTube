@@ -1,5 +1,5 @@
-import { MChannel, MVideo, MVideoImmutable } from '@server/types/models/index.js'
-import { EventEmitter } from 'events'
+import { TypedEventEmitter } from '@peertube/peertube-node-utils'
+import { MChannel, MVideo, MVideoImmutable, MVideoPlaylist, MVideoPlaylistElement } from '@server/types/models/index.js'
 
 export interface PeerTubeInternalEvents {
   'video-created': (options: { video: MVideo }) => void
@@ -10,21 +10,18 @@ export interface PeerTubeInternalEvents {
   'channel-updated': (options: { channel: MChannel }) => void
   'channel-deleted': (options: { channel: MChannel }) => void
 
+  'playlist-created': (options: { playlist: MVideoPlaylist }) => void
+  'playlist-updated': (options: { playlist: MVideoPlaylist }) => void
+  'playlist-deleted': (options: { playlist: MVideoPlaylist }) => void
+
+  'playlist-element-created': (options: { playlistElement: MVideoPlaylistElement }) => void
+  'playlist-element-updated': (options: { playlistElement: MVideoPlaylistElement }) => void
+  'playlist-element-deleted': (options: { playlistElement: MVideoPlaylistElement }) => void
+
   'chapters-updated': (options: { video: MVideoImmutable }) => void
 }
 
-declare interface InternalEventEmitter {
-  on<U extends keyof PeerTubeInternalEvents>(
-    event: U, listener: PeerTubeInternalEvents[U]
-  ): this
-
-  emit<U extends keyof PeerTubeInternalEvents>(
-    event: U, ...args: Parameters<PeerTubeInternalEvents[U]>
-  ): boolean
-}
-
-class InternalEventEmitter extends EventEmitter {
-
+class InternalEventEmitter extends TypedEventEmitter<PeerTubeInternalEvents> {
   private static instance: InternalEventEmitter
 
   static get Instance () {

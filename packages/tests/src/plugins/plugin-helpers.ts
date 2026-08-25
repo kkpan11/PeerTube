@@ -1,21 +1,26 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
-import { pathExists } from 'fs-extra/esm'
-import { HttpStatusCode, ThumbnailType } from '@peertube/peertube-models'
+import { HttpStatusCode, VideoPrivacy } from '@peertube/peertube-models'
+import { areMockObjectStorageTestsDisabled } from '@peertube/peertube-node-utils'
 import {
   cleanupTests,
+  ConfigCommand,
   createMultipleServers,
+  createSingleServer,
   doubleFollow,
   makeGetRequest,
   makePostBodyRequest,
   makeRawRequest,
+  ObjectStorageCommand,
   PeerTubeServer,
   PluginsCommand,
   setAccessTokensToServers,
   waitJobs
 } from '@peertube/peertube-server-commands'
+import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 import { checkVideoFilesWereRemoved } from '@tests/shared/videos.js'
+import { expect } from 'chai'
+import { pathExists } from 'fs-extra/esm'
 
 function postCommand (server: PeerTubeServer, command: string, bodyArg?: object) {
   const body = { command }
@@ -32,10 +37,14 @@ function postCommand (server: PeerTubeServer, command: string, bodyArg?: object)
 describe('Test plugin helpers', function () {
   let servers: PeerTubeServer[]
 
+  const emails: object[] = []
+
   before(async function () {
     this.timeout(60000)
 
-    servers = await createMultipleServers(2)
+    const emailPort = await MockSmtpServer.Instance.collectEmails(emails)
+
+    servers = await createMultipleServers(2, ConfigCommand.getEmailOverrideConfig(emailPort))
     await setAccessTokensToServers(servers)
 
     await doubleFollow(servers[0], servers[1])
@@ -44,7 +53,6 @@ describe('Test plugin helpers', function () {
   })
 
   describe('Logger', function () {
-
     it('Should have logged things', async function () {
       await servers[0].servers.waitUntilLog(servers[0].host + ' peertube-plugin-test-four', 1, false)
       await servers[0].servers.waitUntilLog('Hello world from plugin four', 1)
@@ -52,14 +60,12 @@ describe('Test plugin helpers', function () {
   })
 
   describe('Database', function () {
-
     it('Should have made a query', async function () {
       await servers[0].servers.waitUntilLog(`root email is admin${servers[0].internalServerNumber}@example.com`)
     })
   })
 
   describe('Config', function () {
-
     it('Should have the correct webserver url', async function () {
       await servers[0].servers.waitUntilLog(`server url is ${servers[0].url}`)
     })
@@ -89,14 +95,12 @@ describe('Test plugin helpers', function () {
   })
 
   describe('Server', function () {
-
     it('Should get the server actor', async function () {
       await servers[0].servers.waitUntilLog('server actor name is peertube')
     })
   })
 
   describe('Socket', function () {
-
     it('Should sendNotification without any exceptions', async () => {
       const user = await servers[0].users.create({ username: 'notis_redding', password: 'secret1234?' })
       await makePostBodyRequest({
@@ -122,8 +126,31 @@ describe('Test plugin helpers', function () {
     })
   })
 
-  describe('Plugin', function () {
+  describe('Email', function () {
+    it('Should send an email', async function () {
+      await makePostBodyRequest({
+        url: servers[0].url,
+        path: '/plugins/test-four/router/send-email',
+        fields: {
+          to: 'plugin-email-recipient@example.com',
+          subject: 'Email sent by a plugin',
+          text: 'Hello from plugin four'
+        },
+        expectedStatus: HttpStatusCode.CREATED_201
+      })
 
+      await waitJobs(servers)
+
+      expect(emails).to.have.lengthOf(1)
+
+      const email = emails[0]
+      expect(email['to'][0]['address']).to.equal('plugin-email-recipient@example.com')
+      expect(email['subject']).to.contain('Email sent by a plugin')
+      expect(email['text']).to.contain('Hello from plugin four')
+    })
+  })
+
+  describe('Plugin', function () {
     it('Should get the base static route', async function () {
       const res = await makeGetRequest({
         url: servers[0].url,
@@ -325,16 +352,60 @@ describe('Test plugin helpers', function () {
       {
         expect(body.thumbnails).to.be.an('array')
 
-        const miniature = body.thumbnails.find(t => t.type === ThumbnailType.MINIATURE)
+        const miniature = body.thumbnails.find(t => t.type === 1)
         expect(miniature).to.exist
+        expect(miniature.width).to.equal(280)
+        expect(miniature.height).to.equal(157)
         expect(await pathExists(miniature.path)).to.be.true
         await makeRawRequest({ url: miniature.url, expectedStatus: HttpStatusCode.OK_200 })
 
-        const preview = body.thumbnails.find(t => t.type === ThumbnailType.PREVIEW)
+        const preview = body.thumbnails.find(t => t.type === 2 && t.width === 850 && t.height === 480)
         expect(preview).to.exist
         expect(await pathExists(preview.path)).to.be.true
         await makeRawRequest({ url: preview.url, expectedStatus: HttpStatusCode.OK_200 })
       }
+    })
+
+    it('Should provide a locked video file to the plugin (local storage)', async function () {
+      const { body: filesBody } = await makeGetRequest({
+        url: servers[0].url,
+        path: '/plugins/test-four/router/video-files/' + videoUUID,
+        expectedStatus: HttpStatusCode.OK_200
+      })
+
+      for (const file of [ ...filesBody.webVideo.videoFiles, ...filesBody.hls.videoFiles ]) {
+        const { body } = await makeGetRequest({
+          url: servers[0].url,
+          path: `/plugins/test-four/router/with-file/${videoUUID}/${file.id}`,
+          expectedStatus: HttpStatusCode.OK_200
+        })
+
+        expect(body.path).to.equal(file.path)
+        expect(body.streamsLength).to.equal(2)
+        expect(body.existsDuringCallback).to.be.true
+
+        // Local storage files are not cleaned up after the plugin used them
+        expect(body.existsAfterCallback).to.be.true
+        expect(await pathExists(body.path)).to.be.true
+      }
+    })
+
+    it('Should return 404 when the video file does not belong to the video', async function () {
+      const { uuid: otherUUID } = await servers[0].videos.quickUpload({ name: 'other video' })
+      await waitJobs(servers)
+
+      const { body: filesBody } = await makeGetRequest({
+        url: servers[0].url,
+        path: '/plugins/test-four/router/video-files/' + videoUUID,
+        expectedStatus: HttpStatusCode.OK_200
+      })
+      const fileId = filesBody.webVideo.videoFiles[0].id
+
+      await makeGetRequest({
+        url: servers[0].url,
+        path: `/plugins/test-four/router/with-file/${otherUUID}/${fileId}`,
+        expectedStatus: HttpStatusCode.NOT_FOUND_404
+      })
     })
 
     it('Should probe a file', async function () {
@@ -349,6 +420,36 @@ describe('Test plugin helpers', function () {
 
       expect(body.streams).to.be.an('array')
       expect(body.streams).to.have.lengthOf(2)
+    })
+
+    it('Should update a video', async function () {
+      const { uuid } = await servers[0].videos.quickUpload({
+        name: 'video to update',
+        privacy: VideoPrivacy.PRIVATE,
+        nsfw: false
+      })
+
+      await makePostBodyRequest({
+        url: servers[0].url,
+        path: '/plugins/test-four/router/update-video/' + uuid,
+        fields: {
+          name: 'video1 updated by plugin',
+          support: 'support text updated by plugin',
+          nsfw: true,
+          privacy: VideoPrivacy.PUBLIC
+        },
+        expectedStatus: HttpStatusCode.NO_CONTENT_204
+      })
+
+      await waitJobs(servers)
+
+      for (const server of servers) {
+        const video = await server.videos.get({ id: uuid })
+        expect(video.name).to.equal('video1 updated by plugin')
+        expect(video.support).to.equal('support text updated by plugin')
+        expect(video.privacy.id).to.equal(VideoPrivacy.PUBLIC)
+        expect(video.nsfw).to.be.true
+      }
     })
 
     it('Should remove a video after a view', async function () {
@@ -379,5 +480,66 @@ describe('Test plugin helpers', function () {
 
   after(async function () {
     await cleanupTests(servers)
+  })
+})
+
+describe('Test plugin helpers videos.withFile with object storage', function () {
+  if (areMockObjectStorageTestsDisabled()) return
+
+  let server: PeerTubeServer
+  let videoUUID: string
+
+  const objectStorage = new ObjectStorageCommand()
+
+  before(async function () {
+    this.timeout(240000)
+
+    await objectStorage.prepareDefaultMockBuckets()
+
+    server = await createSingleServer(1, objectStorage.getDefaultMockConfig())
+    await setAccessTokensToServers([ server ])
+
+    await server.plugins.install({ path: PluginsCommand.getPluginTestPath('-four') })
+
+    await server.config.enableTranscoding({ webVideo: true, hls: true, resolutions: 'max' })
+
+    const res = await server.videos.quickUpload({ name: 'video1' })
+    videoUUID = res.uuid
+
+    await waitJobs([ server ])
+  })
+
+  it('Should provide a locked video file to the plugin, cleaning it up afterwards', async function () {
+    const { body: filesBody } = await makeGetRequest({
+      url: server.url,
+      path: '/plugins/test-four/router/video-files/' + videoUUID,
+      expectedStatus: HttpStatusCode.OK_200
+    })
+
+    // Object storage files do not have a local FS path
+    expect(filesBody.webVideo.videoFiles[0].path).to.be.null
+    expect(filesBody.hls.videoFiles[0].path).to.be.null
+
+    for (const file of [ ...filesBody.webVideo.videoFiles, ...filesBody.hls.videoFiles ]) {
+      const { body } = await makeGetRequest({
+        url: server.url,
+        path: `/plugins/test-four/router/with-file/${videoUUID}/${file.id}`,
+        expectedStatus: HttpStatusCode.OK_200
+      })
+
+      expect(body.path).to.be.a('string')
+      expect(body.streamsLength).to.equal(2)
+      expect(body.existsDuringCallback).to.be.true
+
+      // The file was downloaded from object storage to a tmp destination that must be cleaned up afterwards
+      expect(body.existsAfterCallback).to.be.false
+      expect(await pathExists(body.path)).to.be.false
+    }
+  })
+
+  after(async function () {
+    await objectStorage.cleanupMock()
+
+    await cleanupTests([ server ])
   })
 })

@@ -1,40 +1,65 @@
+import { CONFIG } from '@server/initializers/config.js'
 import { OBJECT_STORAGE_PROXY_PATHS, WEBSERVER } from '@server/initializers/constants.js'
 import { MVideoUUID } from '@server/types/models/index.js'
-import { BucketInfo, buildKey, getEndpointParsed } from './shared/index.js'
+import { BucketInfo, buildKey, getEndpoint, objectStorageLogger as logger } from './shared/index.js'
 
-export function getInternalUrl (config: BucketInfo, keyWithoutPrefix: string) {
-  return getBaseUrl(config) + buildKey(keyWithoutPrefix, config)
+// ---------------------------------------------------------------------------
+
+export function buildObjectStoragePublicFileUrl (options: {
+  bucket: BucketInfo
+  key: string
+}) {
+  return buildBaseUrl(options.bucket) + buildKey(options.key, options.bucket)
 }
 
 // ---------------------------------------------------------------------------
 
-export function getObjectStoragePublicFileUrl (fileUrl: string, objectStorageConfig: { BASE_URL: string }) {
-  const baseUrl = objectStorageConfig.BASE_URL
-  if (!baseUrl) return fileUrl
-
-  return replaceByBaseUrl(fileUrl, baseUrl)
-}
-
-// ---------------------------------------------------------------------------
-
-export function getHLSPrivateFileUrl (video: MVideoUUID, filename: string) {
+export function buildObjectStorageHLSPrivateFileUrl (video: MVideoUUID, filename: string) {
   return WEBSERVER.URL + OBJECT_STORAGE_PROXY_PATHS.STREAMING_PLAYLISTS.PRIVATE_HLS + video.uuid + `/${filename}`
 }
 
-export function getWebVideoPrivateFileUrl (filename: string) {
+export function buildObjectStorageWebVideoPrivateFileUrl (filename: string) {
   return WEBSERVER.URL + OBJECT_STORAGE_PROXY_PATHS.PRIVATE_WEB_VIDEOS + filename
 }
+
+// ---------------------------------------------------------------------------
+// Private
 // ---------------------------------------------------------------------------
 
-function getBaseUrl (bucketInfo: BucketInfo, baseUrl?: string) {
-  if (baseUrl) return baseUrl
+function buildBaseUrl (bucketInfo: BucketInfo) {
+  const endpointParsed = getEndpointParsed()
+  if (!endpointParsed) return ''
 
-  return `${getEndpointParsed().protocol}//${bucketInfo.BUCKET_NAME}.${getEndpointParsed().host}/`
+  const baseUrlConfig = bucketInfo.BASE_URL
+  if (baseUrlConfig) {
+    if (!baseUrlConfig.endsWith('/')) return `${baseUrlConfig}/`
+
+    return baseUrlConfig
+  }
+
+  if (CONFIG.OBJECT_STORAGE.FORCE_PATH_STYLE) {
+    return `${endpointParsed.protocol}//${endpointParsed.host}/${bucketInfo.BUCKET_NAME}/`
+  }
+
+  return `${endpointParsed.protocol}//${bucketInfo.BUCKET_NAME}.${endpointParsed.host}/`
 }
 
-const regex = new RegExp('https?://[^/]+')
-function replaceByBaseUrl (fileUrl: string, baseUrl: string) {
-  if (!fileUrl) return fileUrl
+let endpointParsed: URL
 
-  return fileUrl.replace(regex, baseUrl)
+function getEndpointParsed () {
+  if (!endpointParsed) {
+    try {
+      endpointParsed = new URL(getEndpoint())
+    } catch (error) {
+      logger.error(
+        `Invalid object storage endpoint URL: ${getEndpoint()}. ` +
+          `If you enabled object storage, ensure object_storage.endpoint is correctly configured. ` +
+          `Otherwise, check that you have correctly moved all your videos to your local filesystem.`
+      )
+
+      return undefined
+    }
+  }
+
+  return endpointParsed
 }

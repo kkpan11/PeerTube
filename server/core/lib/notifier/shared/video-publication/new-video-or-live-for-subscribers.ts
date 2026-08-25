@@ -1,17 +1,20 @@
-import { logger } from '@server/helpers/logger.js'
-import { WEBSERVER } from '@server/initializers/constants.js'
-import { UserModel } from '@server/models/user/user.js'
-import { UserNotificationModel } from '@server/models/user/user-notification.js'
-import { MUserWithNotificationSetting, MVideoAccountLight, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { UserNotificationType, VideoPrivacy, VideoState } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
+import { WEBSERVER } from '@server/initializers/constants.js'
+import { UserNotificationModel } from '@server/models/user/user-notification.js'
+import { UserModel } from '@server/models/user/user.js'
+import { MUserWithNotificationSetting, MVideoAccountLight, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { AbstractNotification } from '../common/abstract-notification.js'
+import { t } from '@server/helpers/i18n.js'
 
-export class NewVideoOrLiveForSubscribers extends AbstractNotification <MVideoAccountLight> {
+const logger = createLogger()
+
+export class NewVideoOrLiveForSubscribers extends AbstractNotification<MVideoAccountLight> {
   private users: MUserWithNotificationSetting[]
 
   async prepare () {
     // List all followers that are users
-    this.users = await UserModel.listUserSubscribersOf(this.payload.VideoChannel.actorId)
+    this.users = await UserModel.listUserSubscribersOf(this.payload.VideoChannel.Actor.id)
   }
 
   log () {
@@ -50,39 +53,31 @@ export class NewVideoOrLiveForSubscribers extends AbstractNotification <MVideoAc
 
   // ---------------------------------------------------------------------------
 
-  createEmail (to: string) {
+  createEmail (user: MUserWithNotificationSetting) {
+    const to = { email: user.email, language: user.getLanguage() }
+
     const channelName = this.payload.VideoChannel.getDisplayName()
+    const channelUrl = WEBSERVER.URL + this.payload.VideoChannel.getClientUrl()
     const videoUrl = WEBSERVER.URL + this.payload.getWatchStaticPath()
+    const videoName = this.payload.name
+    const isLive = this.payload.isLive
 
-    if (this.payload.isLive) return this.createLiveEmail(to, channelName, videoUrl)
+    const subject = isLive
+      ? t('{channelName} is live streaming', to.language, { channelName })
+      : t('{channelName} just published a new video: { videoName }', to.language, { channelName, videoName })
 
-    return this.createVideoEmail(to, channelName, videoUrl)
-  }
-
-  private createVideoEmail (to: string, channelName: string, videoUrl: string) {
     return {
+      template: 'video-published-for-subscribers',
       to,
-      subject: channelName + ' just published a new video',
-      text: `Your subscription ${channelName} just published a new video: "${this.payload.name}".`,
+      subject,
       locals: {
-        title: 'New content ',
+        channelName,
+        channelUrl,
+        videoName,
+        videoUrl,
+        isLive,
         action: {
-          text: 'View video',
-          url: videoUrl
-        }
-      }
-    }
-  }
-
-  private createLiveEmail (to: string, channelName: string, videoUrl: string) {
-    return {
-      to,
-      subject: channelName + ' is live streaming',
-      text: `Your subscription ${channelName} is live streaming: "${this.payload.name}".`,
-      locals: {
-        title: 'New content ',
-        action: {
-          text: 'View video',
+          text: t('View video', to.language),
           url: videoUrl
         }
       }

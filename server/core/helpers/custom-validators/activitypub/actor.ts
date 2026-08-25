@@ -17,6 +17,8 @@ export function isActorEndpointsObjectValid (endpointObject: any) {
 }
 
 export function isActorPublicKeyObjectValid (publicKeyObject: any) {
+  if (!publicKeyObject) return false
+
   return isActivityPubUrlValid(publicKeyObject.id) &&
     isActivityPubUrlValid(publicKeyObject.owner) &&
     isActorPublicKeyValid(publicKeyObject.publicKeyPem)
@@ -73,6 +75,7 @@ export function sanitizeAndCheckActorObject (actor: ActivityPubActor) {
     isActivityPubUrlValid(actor.inbox) &&
     isActorPreferredUsernameValid(actor.preferredUsername) &&
     isActorPublicKeyObjectValid(actor.publicKey) &&
+    actor.publicKey.owner === actor.id &&
     isActorEndpointsObjectValid(actor.endpoints) &&
     (!actor.outbox || isActivityPubUrlValid(actor.outbox)) &&
     (!actor.following || isActivityPubUrlValid(actor.following)) &&
@@ -105,6 +108,7 @@ function normalizeActor (actor: ActivityPubActor) {
   setValidUrls(actor)
   setValidAttributedTo(actor)
   setValidDescription(actor)
+  setValidEmail(actor)
 
   if (!isDateValid(actor.published)) actor.published = undefined
 
@@ -119,6 +123,11 @@ function normalizeActor (actor: ActivityPubActor) {
 
 function setValidDescription (actor: ActivityPubActor) {
   if (!actor.summary) actor.summary = null
+}
+
+function setValidEmail (actor: ActivityPubActor) {
+  if (!actor.email) actor.email = null
+  else if (!validator.default.isEmail(actor.email)) actor.email = null
 }
 
 function setValidUrls (actor: any) {

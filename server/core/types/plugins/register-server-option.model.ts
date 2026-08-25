@@ -1,6 +1,3 @@
-import { Response, Router } from 'express'
-import { Server } from 'http'
-import { Logger } from 'winston'
 import {
   PluginPlaylistPrivacyManager,
   PluginSettingsManager,
@@ -13,11 +10,16 @@ import {
   RegisterServerHookOptions,
   RegisterServerSettingOptions,
   ServerConfig,
-  ThumbnailType_Type,
-  VideoBlacklistCreate
+  VideoBlacklistCreate,
+  VideoCommentPolicyType,
+  VideoPrivacyType
 } from '@peertube/peertube-models'
 import { ActorModel } from '@server/models/actor/actor.js'
-import { MUserDefault, MVideo, MVideoThumbnail, MVideoWithAllFiles, UserNotificationModelForApi } from '../models/index.js'
+import { Response, Router } from 'express'
+import { Server } from 'http'
+import { Logger } from 'winston'
+import { MAutomaticTag, MUserDefault, MVideo, MVideoThumbnails, MVideoWithAllFiles, UserNotificationModelForApi } from '../models/index.js'
+import { RegisterCommentAutoTaggerOptions, RegisterVideoAutoTaggerOptions } from './register-auto-tagger.model.js'
 import {
   RegisterServerAuthExternalOptions,
   RegisterServerAuthExternalResult,
@@ -33,17 +35,58 @@ export type PeerTubeHelpers = {
   }
 
   videos: {
-    loadByUrl: (url: string) => Promise<MVideoThumbnail>
+    loadByUrl: (url: string) => Promise<MVideoThumbnails>
     loadByIdOrUUIDWithFiles: (id: number | string) => Promise<MVideoWithAllFiles>
-    loadByIdOrUUID: (id: number | string) => Promise<MVideoThumbnail>
+    loadByIdOrUUID: (id: number | string) => Promise<MVideoThumbnails>
 
     removeVideo: (videoId: number) => Promise<void>
 
+    // PeerTube >= 8.3
+    // Update video metadata (does not handle thumbnail/preview files or the video channel)
+    updateVideo: (options: {
+      videoId: number | string
+      attributes: {
+        name?: string
+        category?: number
+        licence?: number
+        language?: string
+        description?: string
+        support?: string
+        privacy?: VideoPrivacyType
+        tags?: string[]
+
+        commentsPolicy?: VideoCommentPolicyType
+
+        downloadEnabled?: boolean
+
+        nsfw?: boolean
+        nsfwSummary?: string
+        nsfwFlags?: number
+
+        waitTranscoding?: boolean
+
+        originallyPublishedAt?: Date | string
+        videoPasswords?: string[]
+      }
+    }) => Promise<void>
+
     ffprobe: (path: string) => Promise<any>
+
+    // PeerTube >= 8.3
+    // Make a video file available on disk (downloading it from remote storage if needed) so it can be analyzed
+    // The video files of the video are locked until the promise returned by `cb` is resolved/rejected
+    withFile: <T>(
+      options: {
+        videoId: number | string
+        videoFileId: number
+      },
+      cb: (path: string) => Promise<T> | T
+    ) => Promise<T>
 
     getFiles: (id: number | string) => Promise<{
       webVideo: {
         videoFiles: {
+          id: number
           path: string // Could be null if using remote storage
           url: string
           resolution: number
@@ -54,6 +97,7 @@ export type PeerTubeHelpers = {
 
       hls: {
         videoFiles: {
+          id: number
           path: string // Could be null if using remote storage
           url: string
           resolution: number
@@ -63,7 +107,11 @@ export type PeerTubeHelpers = {
       }
 
       thumbnails: {
-        type: ThumbnailType_Type
+        // 1 = Thumbnail, 2 = Preview (deprecated, use width/height instead)
+        type: 1 | 2
+
+        height: number
+        width: number
         path: string
       }[]
     }>
@@ -120,6 +168,39 @@ export type PeerTubeHelpers = {
     // PeerTube >= 4.3
     loadById: (id: number) => Promise<MUserDefault>
   }
+
+  automaticTags: {
+    // PeerTube >= 8.3
+    getServerCommentAutomaticTags: (options: { commentId: number }) => Promise<MAutomaticTag[]>
+    // PeerTube >= 8.3
+    getAccountCommentAutomaticTags: (options: { accountId: number, commentId: number }) => Promise<MAutomaticTag[]>
+
+    // PeerTube >= 8.3
+    getServerVideoAutomaticTags: (options: { videoId: number }) => Promise<MAutomaticTag[]>
+  }
+
+  email: {
+    // PeerTube >= 8.3
+    createJob: (payload: {
+      // Language of the email to send. If not provided, the default language of the instance will be used
+      to: { email: string, language?: string }
+
+      // Email subject
+      subject: string
+
+      // Optional title, injected in HTML email
+      title?: string
+
+      // Text inside the HTML email
+      text: string
+
+      // Button that can be added at the end of the email
+      action?: {
+        url: string
+        text: string
+      }
+    }) => Promise<void>
+  }
 }
 
 export type RegisterServerOptions = {
@@ -144,6 +225,11 @@ export type RegisterServerOptions = {
   registerExternalAuth: (options: RegisterServerAuthExternalOptions) => RegisterServerAuthExternalResult
   unregisterIdAndPassAuth: (authName: string) => void
   unregisterExternalAuth: (authName: string) => void
+
+  registerCommentAutoTagger: (options: RegisterCommentAutoTaggerOptions) => void
+  registerVideoAutoTagger: (options: RegisterVideoAutoTaggerOptions) => void
+  unregisterCommentAutoTagger: (options: RegisterCommentAutoTaggerOptions) => void
+  unregisterVideoAutoTagger: (options: RegisterVideoAutoTaggerOptions) => void
 
   // Get plugin router to create custom routes
   // Base routes of this router are

@@ -1,21 +1,18 @@
-import {
-  RunnerJobState,
-  RunnerJobStateType,
-  RunnerJobSuccessPayload,
-  RunnerJobUpdatePayload,
-  RunnerJobVODPrivatePayload
-} from '@peertube/peertube-models'
+import { RunnerJobState, RunnerJobStateType, RunnerJobSuccessPayload, RunnerJobUpdatePayload } from '@peertube/peertube-models'
 import { retryTransactionWrapper } from '@server/helpers/database-utils.js'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { moveToFailedTranscodingState, moveToNextState } from '@server/lib/video-state.js'
 import { VideoJobInfoModel } from '@server/models/video/video-job-info.js'
 import { MRunnerJob } from '@server/types/models/runners/index.js'
 import { AbstractJobHandler } from './abstract-job-handler.js'
 import { loadRunnerVideo } from './shared/utils.js'
 
-// eslint-disable-next-line max-len
-export abstract class AbstractVODTranscodingJobHandler <C, U extends RunnerJobUpdatePayload, S extends RunnerJobSuccessPayload> extends AbstractJobHandler<C, U, S> {
+const logger = createLogger('vod', 'transcoding')
 
+// oxlint-disable-next-line max-len
+export abstract class AbstractVODTranscodingJobHandler<C, U extends RunnerJobUpdatePayload, S extends RunnerJobSuccessPayload>
+  extends AbstractJobHandler<C, U, S>
+{
   protected isAbortSupported () {
     return true
   }
@@ -38,12 +35,14 @@ export abstract class AbstractVODTranscodingJobHandler <C, U extends RunnerJobUp
   }) {
     if (options.nextState !== RunnerJobState.ERRORED) return
 
-    const video = await loadRunnerVideo(options.runnerJob, this.lTags)
+    const video = await loadRunnerVideo(options.runnerJob)
     if (!video) return
 
-    await moveToFailedTranscodingState(video)
+    await logger.withContext([ video.uuid ], async () => {
+      await moveToFailedTranscodingState(video)
 
-    await VideoJobInfoModel.decrease(video.uuid, 'pendingTranscode')
+      await VideoJobInfoModel.decrease(video.uuid, 'pendingTranscode')
+    })
   }
 
   protected async specificCancel (options: {
@@ -51,21 +50,19 @@ export abstract class AbstractVODTranscodingJobHandler <C, U extends RunnerJobUp
   }) {
     const { runnerJob } = options
 
-    const video = await loadRunnerVideo(options.runnerJob, this.lTags)
+    const video = await loadRunnerVideo(runnerJob)
     if (!video) return
 
-    const pending = await VideoJobInfoModel.decrease(video.uuid, 'pendingTranscode')
+    await logger.withContext([ video.uuid ], async () => {
+      const pending = await VideoJobInfoModel.decrease(video.uuid, 'pendingTranscode')
 
-    logger.debug(`Pending transcode decreased to ${pending} after cancel`, this.lTags(video.uuid))
+      logger.debug(`Pending transcode decreased to ${pending} after cancel`)
 
-    if (pending === 0) {
-      logger.info(
-        `All transcoding jobs of ${video.uuid} have been processed or canceled, moving it to its next state`,
-        this.lTags(video.uuid)
-      )
+      if (pending === 0) {
+        logger.info(`All transcoding jobs of ${video.uuid} have been processed or canceled, moving it to its next state`)
 
-      const privatePayload = runnerJob.privatePayload as RunnerJobVODPrivatePayload
-      await retryTransactionWrapper(moveToNextState, { video, isNewVideo: privatePayload.isNewVideo })
-    }
+        await retryTransactionWrapper(() => moveToNextState({ video }))
+      }
+    })
   }
 }

@@ -1,6 +1,8 @@
 import type { Span, Tracer } from '@opentelemetry/api'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
+
+const logger = createLogger()
 
 let tracer: Tracer | TrackerMock
 
@@ -68,8 +70,13 @@ async function registerOpentelemetryTracing () {
   }, DiagLogLevel.INFO)
 
   const tracerProvider = new NodeTracerProvider.default.NodeTracerProvider({
-    resource: new Resource.default.Resource({
-      [SemanticResourceAttributes.default.SemanticResourceAttributes.SERVICE_NAME]: 'peertube'
+    spanProcessors: [
+      new BatchSpanProcessor.default.BatchSpanProcessor(
+        new JaegerExporter({ endpoint: CONFIG.OPEN_TELEMETRY.TRACING.JAEGER_EXPORTER.ENDPOINT })
+      )
+    ],
+    resource: Resource.default.resourceFromAttributes({
+      [SemanticResourceAttributes.default.ATTR_SERVICE_NAME]: 'peertube'
     })
   })
 
@@ -92,16 +99,10 @@ async function registerOpentelemetryTracing () {
     ]
   })
 
-  tracerProvider.addSpanProcessor(
-    new BatchSpanProcessor.default.BatchSpanProcessor(
-      new JaegerExporter({ endpoint: CONFIG.OPEN_TELEMETRY.TRACING.JAEGER_EXPORTER.ENDPOINT })
-    )
-  )
-
   tracerProvider.register()
 }
 
-async function wrapWithSpanAndContext <T> (spanName: string, cb: () => Promise<T>) {
+async function wrapWithSpanAndContext<T> (spanName: string, cb: () => Promise<T>) {
   const { context, trace } = await import('@opentelemetry/api')
 
   if (CONFIG.OPEN_TELEMETRY.TRACING.ENABLED !== true) {
@@ -135,6 +136,5 @@ class TrackerMock {
 
 class SpanMock {
   end () {
-
   }
 }

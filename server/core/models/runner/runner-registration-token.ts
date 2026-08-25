@@ -1,14 +1,13 @@
+import { CONSTRAINTS_FIELDS } from '@server/initializers/constants.js'
 import { FindOptions, literal } from 'sequelize'
-import { AllowNull, Column, CreatedAt, HasMany, Table, UpdatedAt } from 'sequelize-typescript'
+import { AllowNull, Column, CreatedAt, DataType, HasMany, Table, UpdatedAt } from 'sequelize-typescript'
 import { MRunnerRegistrationToken } from '@server/types/models/runners/index.js'
 import { RunnerRegistrationToken } from '@peertube/peertube-models'
 import { SequelizeModel, getSort } from '../shared/index.js'
 import { RunnerModel } from './runner.js'
 
 /**
- *
  * Tokens used by PeerTube runners to register themselves to the PeerTube instance
- *
  */
 
 @Table({
@@ -21,16 +20,15 @@ import { RunnerModel } from './runner.js'
   ]
 })
 export class RunnerRegistrationTokenModel extends SequelizeModel<RunnerRegistrationTokenModel> {
-
   @AllowNull(false)
-  @Column
-  registrationToken: string
+  @Column(DataType.STRING(CONSTRAINTS_FIELDS.RUNNERS.TOKEN.max))
+  declare registrationToken: string
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @HasMany(() => RunnerModel, {
     foreignKey: {
@@ -38,7 +36,7 @@ export class RunnerRegistrationTokenModel extends SequelizeModel<RunnerRegistrat
     },
     onDelete: 'cascade'
   })
-  Runners: Awaited<RunnerModel>[]
+  declare Runners: Awaited<RunnerModel>[]
 
   static load (id: number) {
     return RunnerRegistrationTokenModel.findByPk(id)

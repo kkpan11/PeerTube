@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { HttpStatusCode, HttpStatusCodeType, VideoStudioTask } from '@peertube/peertube-models'
 import {
@@ -13,7 +13,10 @@ import {
 describe('Test video studio API validator', function () {
   let server: PeerTubeServer
   let command: VideoStudioCommand
+
   let userAccessToken: string
+  let editorToken: string
+
   let videoUUID: string
 
   // ---------------------------------------------------------------
@@ -25,6 +28,7 @@ describe('Test video studio API validator', function () {
 
     await setAccessTokensToServers([ server ])
     userAccessToken = await server.users.generateUserAndToken('user1')
+    editorToken = await server.channelCollaborators.createEditor('editor', 'root_channel')
 
     await server.config.enableMinimumTranscoding()
 
@@ -37,9 +41,7 @@ describe('Test video studio API validator', function () {
   })
 
   describe('Task creation', function () {
-
     describe('Config settings', function () {
-
       it('Should fail if studio is disabled', async function () {
         await server.config.updateExistingConfig({
           newConfig: {
@@ -85,7 +87,6 @@ describe('Test video studio API validator', function () {
     })
 
     describe('Common tasks', function () {
-
       it('Should fail without token', async function () {
         await command.createEditionTasks({
           token: null,
@@ -188,12 +189,13 @@ describe('Test video studio API validator', function () {
         })
       })
 
-      it('Should succeed with correct parameters', async function () {
+      it('Should succeed with correct parameters and editor token', async function () {
         await server.jobs.pauseJobQueue()
 
         await command.createEditionTasks({
           videoId: videoUUID,
           tasks: VideoStudioCommand.getComplexTask(),
+          token: editorToken,
           expectedStatus: HttpStatusCode.NO_CONTENT_204
         })
       })
@@ -214,7 +216,6 @@ describe('Test video studio API validator', function () {
     })
 
     describe('Cut task', function () {
-
       async function cut (start: number, end: number, expectedStatus: HttpStatusCodeType = HttpStatusCode.BAD_REQUEST_400) {
         await command.createEditionTasks({
           videoId: videoUUID,
@@ -248,12 +249,16 @@ describe('Test video studio API validator', function () {
         await cut(2, 2)
       })
 
-      it('Should fail with inconsistents start/end', async function () {
+      it('Should fail with inconsistent start/end', async function () {
         await cut(2, 1)
       })
 
       it('Should fail without start and end', async function () {
         await cut(undefined, undefined)
+      })
+
+      it('Should fail with a bad end', async function () {
+        await cut(undefined, 0)
       })
 
       it('Should succeed with the correct params', async function () {
@@ -266,7 +271,6 @@ describe('Test video studio API validator', function () {
     })
 
     describe('Watermark task', function () {
-
       async function addWatermark (file: string, expectedStatus: HttpStatusCodeType = HttpStatusCode.BAD_REQUEST_400) {
         await command.createEditionTasks({
           videoId: videoUUID,
@@ -293,14 +297,13 @@ describe('Test video studio API validator', function () {
       it('Should succeed with the correct params', async function () {
         this.timeout(360000)
 
-        await addWatermark('custom-thumbnail.jpg', HttpStatusCode.NO_CONTENT_204)
+        await addWatermark('custom-thumbnail-280x157.jpg', HttpStatusCode.NO_CONTENT_204)
 
         await waitJobs([ server ])
       })
     })
 
     describe('Intro/Outro task', function () {
-
       async function addIntroOutro (
         type: 'add-intro' | 'add-outro',
         file: string,
@@ -326,14 +329,13 @@ describe('Test video studio API validator', function () {
       })
 
       it('Should fail with an invalid file', async function () {
-        await addIntroOutro('add-intro', 'custom-thumbnail.jpg')
-        await addIntroOutro('add-outro', 'custom-thumbnail.jpg')
+        await addIntroOutro('add-intro', 'custom-thumbnail-280x157.jpg')
+        await addIntroOutro('add-outro', 'custom-thumbnail-280x157.jpg')
       })
 
       it('Should fail with a file that does not contain video stream', async function () {
         await addIntroOutro('add-intro', 'sample.ogg')
         await addIntroOutro('add-outro', 'sample.ogg')
-
       })
 
       it('Should succeed with the correct params', async function () {
@@ -350,10 +352,12 @@ describe('Test video studio API validator', function () {
         this.timeout(360000)
 
         const user = await server.users.create({ username: 'user_quota_1' })
-        const token = await server.login.getAccessToken('user_quota_1')
-        const { uuid } = await server.videos.quickUpload({ token, name: 'video_quota_1', fixture: 'video_short.mp4' })
+        const userToken = await server.login.getAccessToken('user_quota_1')
+        const editorToken = await server.channelCollaborators.createEditor('editor_quota_1', 'user_quota_1_channel')
 
-        const addIntroOutroByUser = (type: 'add-intro' | 'add-outro', expectedStatus: HttpStatusCodeType) => {
+        const { uuid } = await server.videos.quickUpload({ token: userToken, name: 'video_quota_1', fixture: 'video_short.mp4' })
+
+        const addIntroOutroByUser = (type: 'add-intro' | 'add-outro', token: string, expectedStatus: HttpStatusCodeType) => {
           return command.createEditionTasks({
             token,
             videoId: uuid,
@@ -371,17 +375,87 @@ describe('Test video studio API validator', function () {
 
         await waitJobs([ server ])
 
-        const { videoQuotaUsed } = await server.users.getMyQuotaUsed({ token })
+        const { videoQuotaUsed } = await server.users.getMyQuotaUsed({ token: userToken })
         await server.users.update({ userId: user.id, videoQuota: Math.round(videoQuotaUsed * 2.5) })
 
         // Still valid
-        await addIntroOutroByUser('add-intro', HttpStatusCode.NO_CONTENT_204)
+        await addIntroOutroByUser('add-intro', userToken, HttpStatusCode.NO_CONTENT_204)
 
         await waitJobs([ server ])
 
         // Too much quota
-        await addIntroOutroByUser('add-intro', HttpStatusCode.PAYLOAD_TOO_LARGE_413)
-        await addIntroOutroByUser('add-outro', HttpStatusCode.PAYLOAD_TOO_LARGE_413)
+        for (const token of [ userToken, editorToken ]) {
+          await addIntroOutroByUser('add-intro', token, HttpStatusCode.PAYLOAD_TOO_LARGE_413)
+          await addIntroOutroByUser('add-outro', token, HttpStatusCode.PAYLOAD_TOO_LARGE_413)
+        }
+      })
+    })
+
+    describe('Remove segments task', function () {
+      async function removeSegments (
+        segments: { start: number, end: number }[],
+        expectedStatus: HttpStatusCodeType = HttpStatusCode.BAD_REQUEST_400
+      ) {
+        await command.createEditionTasks({
+          videoId: videoUUID,
+          tasks: [
+            {
+              name: 'remove-segments',
+              options: { segments }
+            }
+          ],
+          expectedStatus
+        })
+      }
+
+      it('Should fail with empty segments', async function () {
+        await removeSegments([])
+      })
+
+      it('Should fail with invalid segment start', async function () {
+        const invalidStarts = [ 'tintin', -1, undefined ] as any[]
+
+        for (const start of invalidStarts) {
+          await removeSegments([ { start, end: 5 } ])
+        }
+      })
+
+      it('Should fail with invalid segment end', async function () {
+        await removeSegments([ { start: 1, end: 0 } ])
+        await removeSegments([ { start: 1, end: -1 } ])
+        await removeSegments([ { start: 1, end: 'tintin' } ] as any)
+      })
+
+      it('Should fail when start equals end', async function () {
+        await removeSegments([ { start: 3, end: 3 } ])
+      })
+
+      it('Should fail when start is greater than end', async function () {
+        await removeSegments([ { start: 5, end: 2 } ])
+      })
+
+      it('Should fail with overlapping segments', async function () {
+        await removeSegments([ { start: 1, end: 5 }, { start: 3, end: 7 } ])
+      })
+
+      it('Should fail with unordered overlapping segments', async function () {
+        await removeSegments([ { start: 5, end: 8 }, { start: 1, end: 6 } ])
+      })
+
+      it('Should succeed with a single valid segment', async function () {
+        this.timeout(360000)
+
+        await removeSegments([ { start: 1, end: 3 } ], HttpStatusCode.NO_CONTENT_204)
+
+        await waitJobs([ server ])
+      })
+
+      it('Should succeed with multiple valid non-overlapping segments', async function () {
+        this.timeout(360000)
+
+        await removeSegments([ { start: 1, end: 3 }, { start: 5, end: 7 } ], HttpStatusCode.NO_CONTENT_204)
+
+        await waitJobs([ server ])
       })
     })
   })

@@ -1,5 +1,7 @@
 import { isTestOrDevInstance } from '@peertube/peertube-node-utils'
 import { ActorCustomPageModel } from '@server/models/account/actor-custom-page.js'
+import { ActorReservedModel } from '@server/models/actor/actor-reserved.js'
+import { UploadImageModel } from '@server/models/application/upload-image.js'
 import { AccountAutomaticTagPolicyModel } from '@server/models/automatic-tag/account-automatic-tag-policy.js'
 import { AutomaticTagModel } from '@server/models/automatic-tag/automatic-tag.js'
 import { CommentAutomaticTagModel } from '@server/models/automatic-tag/comment-automatic-tag.js'
@@ -9,32 +11,39 @@ import { RunnerRegistrationTokenModel } from '@server/models/runner/runner-regis
 import { RunnerModel } from '@server/models/runner/runner.js'
 import { TrackerModel } from '@server/models/server/tracker.js'
 import { VideoTrackerModel } from '@server/models/server/video-tracker.js'
+import { LocalVideoViewerWatchSectionModel } from '@server/models/stat/local-video-viewer-watch-section.js'
+import { LocalVideoViewerModel } from '@server/models/stat/local-video-viewer.js'
 import { UserExportModel } from '@server/models/user/user-export.js'
 import { UserImportModel } from '@server/models/user/user-import.js'
 import { UserNotificationModel } from '@server/models/user/user-notification.js'
 import { UserRegistrationModel } from '@server/models/user/user-registration.js'
 import { UserVideoHistoryModel } from '@server/models/user/user-video-history.js'
 import { UserModel } from '@server/models/user/user.js'
+import { PlayerSettingModel } from '@server/models/video/player-setting.js'
 import { StoryboardModel } from '@server/models/video/storyboard.js'
+import { VideoChannelActivityModel } from '@server/models/video/video-channel-activity.js'
+import { VideoChannelCollaboratorModel } from '@server/models/video/video-channel-collaborator.js'
 import { VideoChannelSyncModel } from '@server/models/video/video-channel-sync.js'
 import { VideoChapterModel } from '@server/models/video/video-chapter.js'
+import { VideoEmbedPrivacyDomainModel } from '@server/models/video/video-embed-privacy-domain.js'
 import { VideoJobInfoModel } from '@server/models/video/video-job-info.js'
 import { VideoLiveReplaySettingModel } from '@server/models/video/video-live-replay-setting.js'
+import { VideoLiveScheduleModel } from '@server/models/video/video-live-schedule.js'
 import { VideoLiveSessionModel } from '@server/models/video/video-live-session.js'
 import { VideoPasswordModel } from '@server/models/video/video-password.js'
 import { VideoSourceModel } from '@server/models/video/video-source.js'
-import { LocalVideoViewerWatchSectionModel } from '@server/models/view/local-video-viewer-watch-section.js'
-import { LocalVideoViewerModel } from '@server/models/view/local-video-viewer.js'
 import { WatchedWordsListModel } from '@server/models/watched-words/watched-words-list.js'
+import { WatchedWordsSubscriptionModel } from '@server/models/watched-words/watched-words-subscription.js'
+import { readFileSync } from 'fs'
 import pg from 'pg'
 import { QueryTypes, Transaction } from 'sequelize'
 import { Sequelize as SequelizeTypescript } from 'sequelize-typescript'
-import { logger } from '../helpers/logger.js'
+import { createLogger } from '../helpers/logger.js'
 import { AbuseMessageModel } from '../models/abuse/abuse-message.js'
 import { AbuseModel } from '../models/abuse/abuse.js'
 import { VideoAbuseModel } from '../models/abuse/video-abuse.js'
 import { VideoCommentAbuseModel } from '../models/abuse/video-comment-abuse.js'
-import { AccountBlocklistModel } from '../models/account/account-blocklist.js'
+import { AccountBlocklistModel } from '../models/blocklist/account-blocklist.js'
 import { AccountVideoRateModel } from '../models/account/account-video-rate.js'
 import { AccountModel } from '../models/account/account.js'
 import { ActorFollowModel } from '../models/actor/actor-follow.js'
@@ -45,15 +54,19 @@ import { OAuthClientModel } from '../models/oauth/oauth-client.js'
 import { OAuthTokenModel } from '../models/oauth/oauth-token.js'
 import { VideoRedundancyModel } from '../models/redundancy/video-redundancy.js'
 import { PluginModel } from '../models/server/plugin.js'
-import { ServerBlocklistModel } from '../models/server/server-blocklist.js'
+import { BlocklistLogModel } from '../models/blocklist/blocklist-log.js'
+import { BlocklistSubscriptionModel } from '../models/blocklist/blocklist-subscription.js'
+import { ServerBlocklistModel } from '../models/blocklist/server-blocklist.js'
 import { ServerModel } from '../models/server/server.js'
+import { VideoStatModel } from '../models/stat/video-stat.js'
+import { UserLoginDeviceModel } from '../models/user/user-login-device.js'
 import { UserNotificationSettingModel } from '../models/user/user-notification-setting.js'
+import { ChangeOwnershipModel } from '../models/video/change-ownership.js'
 import { ScheduleVideoUpdateModel } from '../models/video/schedule-video-update.js'
 import { TagModel } from '../models/video/tag.js'
 import { ThumbnailModel } from '../models/video/thumbnail.js'
 import { VideoBlacklistModel } from '../models/video/video-blacklist.js'
 import { VideoCaptionModel } from '../models/video/video-caption.js'
-import { VideoChangeOwnershipModel } from '../models/video/video-change-ownership.js'
 import { VideoChannelModel } from '../models/video/video-channel.js'
 import { VideoCommentModel } from '../models/video/video-comment.js'
 import { VideoFileModel } from '../models/video/video-file.js'
@@ -61,12 +74,16 @@ import { VideoImportModel } from '../models/video/video-import.js'
 import { VideoLiveModel } from '../models/video/video-live.js'
 import { VideoPlaylistElementModel } from '../models/video/video-playlist-element.js'
 import { VideoPlaylistModel } from '../models/video/video-playlist.js'
+import { VideoSearchModel } from '../models/video/video-search.js'
 import { VideoShareModel } from '../models/video/video-share.js'
+import { VideoInfohashModel } from '../models/video/video-infohash.js'
 import { VideoStreamingPlaylistModel } from '../models/video/video-streaming-playlist.js'
 import { VideoTagModel } from '../models/video/video-tag.js'
 import { VideoModel } from '../models/video/video.js'
-import { VideoViewModel } from '../models/view/video-view.js'
 import { CONFIG } from './config.js'
+import { VIDEO_SEARCH_INDEXED_DESCRIPTION_LENGTH } from './constants.js'
+
+const logger = createLogger()
 
 pg.defaults.parseInt8 = true // Avoid BIGINT to be converted to string
 
@@ -80,10 +97,23 @@ const poolMax = CONFIG.DATABASE.POOL.MAX
 let dialectOptions: any = {}
 
 if (CONFIG.DATABASE.SSL) {
+  // For reference: https://node-postgres.com/features/ssl
   dialectOptions = {
     ssl: {
-      rejectUnauthorized: false
+      rejectUnauthorized: CONFIG.DATABASE.SSL_SETTINGS.REJECT_UNAUTHORIZED
     }
+  }
+
+  if (CONFIG.DATABASE.SSL_SETTINGS.CA) {
+    dialectOptions.ssl.ca = readFileSync(CONFIG.DATABASE.SSL_SETTINGS.CA, { encoding: 'utf-8' })
+  }
+
+  if (CONFIG.DATABASE.SSL_SETTINGS.CERT) {
+    dialectOptions.ssl.cert = readFileSync(CONFIG.DATABASE.SSL_SETTINGS.CERT, { encoding: 'utf-8' })
+  }
+
+  if (CONFIG.DATABASE.SSL_SETTINGS.KEY) {
+    dialectOptions.ssl.key = readFileSync(CONFIG.DATABASE.SSL_SETTINGS.KEY, { encoding: 'utf-8' })
   }
 }
 
@@ -100,12 +130,12 @@ export const sequelizeTypescript = new SequelizeTypescript({
   },
   benchmark: isTestOrDevInstance(),
   isolationLevel: Transaction.ISOLATION_LEVELS.SERIALIZABLE,
-  logging: (message: string, benchmark: number) => {
+  logging: (message: string, executionTimeMs: number) => {
     if (process.env.NODE_DB_LOG === 'false') return
 
     let newMessage = 'Executed SQL request'
-    if (isTestOrDevInstance() === true && benchmark !== undefined) {
-      newMessage += ' in ' + benchmark + 'ms'
+    if (isTestOrDevInstance() && executionTimeMs !== undefined) {
+      newMessage += ' in ' + executionTimeMs + 'ms'
     }
 
     logger.debug(newMessage, { sql: message, tags: [ 'sql' ] })
@@ -116,7 +146,6 @@ export function checkDatabaseConnectionOrDie () {
   sequelizeTypescript.authenticate()
     .then(() => logger.debug('Connection to PostgreSQL has been established successfully.'))
     .catch(err => {
-
       logger.error('Unable to connect to PostgreSQL database.', { err })
       process.exit(-1)
     })
@@ -140,11 +169,12 @@ export async function initDatabaseModels (silent: boolean) {
     VideoCommentAbuseModel,
     VideoAbuseModel,
     VideoModel,
-    VideoChangeOwnershipModel,
+    ChangeOwnershipModel,
     VideoChannelModel,
     VideoShareModel,
     VideoFileModel,
     VideoSourceModel,
+    VideoChannelActivityModel,
     VideoChapterModel,
     VideoCaptionModel,
     VideoBlacklistModel,
@@ -152,7 +182,7 @@ export async function initDatabaseModels (silent: boolean) {
     VideoCommentModel,
     ScheduleVideoUpdateModel,
     VideoImportModel,
-    VideoViewModel,
+    VideoStatModel,
     VideoRedundancyModel,
     UserVideoHistoryModel,
     VideoLiveModel,
@@ -160,9 +190,13 @@ export async function initDatabaseModels (silent: boolean) {
     VideoLiveReplaySettingModel,
     AccountBlocklistModel,
     ServerBlocklistModel,
+    BlocklistSubscriptionModel,
+    BlocklistLogModel,
     UserNotificationModel,
     UserNotificationSettingModel,
+    UserLoginDeviceModel,
     VideoStreamingPlaylistModel,
+    VideoInfohashModel,
     VideoPlaylistModel,
     VideoPlaylistElementModel,
     LocalVideoViewerModel,
@@ -186,7 +220,15 @@ export async function initDatabaseModels (silent: boolean) {
     CommentAutomaticTagModel,
     AutomaticTagModel,
     WatchedWordsListModel,
-    AccountAutomaticTagPolicyModel
+    WatchedWordsSubscriptionModel,
+    AccountAutomaticTagPolicyModel,
+    UploadImageModel,
+    VideoLiveScheduleModel,
+    PlayerSettingModel,
+    VideoChannelCollaboratorModel,
+    ActorReservedModel,
+    VideoEmbedPrivacyDomainModel,
+    VideoSearchModel
   ])
 
   // Check extensions exist in the database
@@ -210,7 +252,7 @@ async function checkPostgresExtensions () {
   return Promise.all(promises)
 }
 
-async function checkPostgresExtension (extension: string) {
+async function checkPostgresExtension (extension: 'pg_trgm' | 'unaccent') {
   const query = `SELECT 1 FROM pg_available_extensions WHERE name = '${extension}' AND installed_version IS NOT NULL;`
   const options = {
     type: QueryTypes.SELECT as QueryTypes.SELECT,
@@ -223,21 +265,30 @@ async function checkPostgresExtension (extension: string) {
     // Try to create the extension ourselves
     try {
       await sequelizeTypescript.query(`CREATE EXTENSION ${extension};`, { raw: true })
-
-    } catch {
+    } catch (err) {
       const errorMessage = `You need to enable ${extension} extension in PostgreSQL. ` +
         `You can do so by running 'CREATE EXTENSION ${extension};' as a PostgreSQL super user in ${CONFIG.DATABASE.DBNAME} database.`
-      throw new Error(errorMessage)
+
+      throw new Error(errorMessage, { cause: err })
     }
   }
 }
 
-function createFunctions () {
-  const query = `CREATE OR REPLACE FUNCTION immutable_unaccent(text)
+async function createFunctions () {
+  const unaccentQuery = `CREATE OR REPLACE FUNCTION immutable_unaccent(text)
   RETURNS text AS
 $func$
 SELECT public.unaccent('public.unaccent', $1::text)
 $func$  LANGUAGE sql IMMUTABLE;`
 
-  return sequelizeTypescript.query(query, { raw: true })
+  await sequelizeTypescript.query(unaccentQuery, { raw: true })
+
+  const searchVectorQuery = `CREATE OR REPLACE FUNCTION video_search_vector(name text, description text)
+  RETURNS tsvector AS
+$func$
+SELECT setweight(to_tsvector('simple', immutable_unaccent(coalesce(name, ''))), 'A') ||
+       setweight(to_tsvector('simple', immutable_unaccent(left(coalesce(description, ''), ${VIDEO_SEARCH_INDEXED_DESCRIPTION_LENGTH}))), 'B')
+$func$  LANGUAGE sql IMMUTABLE;`
+
+  await sequelizeTypescript.query(searchVectorQuery, { raw: true })
 }

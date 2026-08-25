@@ -1,19 +1,22 @@
+import { getVideoStreamDimensionsInfo } from '@peertube/peertube-ffmpeg'
+import { VideoFileImportPayload } from '@peertube/peertube-models'
+import { CONFIG } from '@server/initializers/config.js'
+import { scheduleVideoFederation } from '@server/lib/activitypub/videos/index.js'
+import { buildNewFile } from '@server/lib/video-file.js'
+import { buildMoveVideoJob } from '@server/lib/video-jobs.js'
+import { VideoPathManager } from '@server/lib/video-path-manager.js'
+import { createTorrentForFile } from '@server/lib/webtorrent.js'
+import { VideoInfohashModel } from '@server/models/video/video-infohash.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { MVideoFull } from '@server/types/models/index.js'
 import { Job } from 'bullmq'
 import { copy } from 'fs-extra/esm'
-import { VideoFileImportPayload } from '@peertube/peertube-models'
-import { createTorrentAndSetInfoHash } from '@server/helpers/webtorrent.js'
-import { CONFIG } from '@server/initializers/config.js'
-import { federateVideoIfNeeded } from '@server/lib/activitypub/videos/index.js'
-import { VideoPathManager } from '@server/lib/video-path-manager.js'
-import { VideoModel } from '@server/models/video/video.js'
-import { MVideoFullLight } from '@server/types/models/index.js'
-import { getVideoStreamDimensionsInfo } from '@peertube/peertube-ffmpeg'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { JobQueue } from '../job-queue.js'
-import { buildMoveVideoJob } from '@server/lib/video-jobs.js'
-import { buildNewFile } from '@server/lib/video-file.js'
 
-async function processVideoFileImport (job: Job) {
+const logger = createLogger()
+
+export async function processVideoFileImport (job: Job) {
   const payload = job.data as VideoFileImportPayload
   logger.info('Processing video file import in job %s.', job.id)
 
@@ -24,26 +27,32 @@ async function processVideoFileImport (job: Job) {
     return undefined
   }
 
-  await updateVideoFile(video, payload.filePath)
+  return logger.withContext([ video.uuid ], async () => {
+    await updateVideoFile(video, payload.filePath)
 
-  if (CONFIG.OBJECT_STORAGE.ENABLED) {
-    await JobQueue.Instance.createJob(await buildMoveVideoJob({ video, previousVideoState: video.state, type: 'move-to-object-storage' }))
-  } else {
-    await federateVideoIfNeeded(video, false)
-  }
+    if (CONFIG.OBJECT_STORAGE.ENABLED) {
+      await JobQueue.Instance.createJob(
+        await buildMoveVideoJob({
+          type: 'move-to-object-storage',
+          video,
+          moveVideoState: {
+            previousVideoState: video.state
+          }
+        })
+      )
+    } else {
+      scheduleVideoFederation({ video })
+    }
 
-  return video
+    return video
+  })
 }
 
 // ---------------------------------------------------------------------------
-
-export {
-  processVideoFileImport
-}
-
+// Private
 // ---------------------------------------------------------------------------
 
-async function updateVideoFile (video: MVideoFullLight, inputFilePath: string) {
+async function updateVideoFile (video: MVideoFull, inputFilePath: string) {
   const { resolution } = await getVideoStreamDimensionsInfo(inputFilePath)
   const currentVideoFile = video.VideoFiles.find(videoFile => videoFile.resolution === resolution)
 
@@ -62,8 +71,11 @@ async function updateVideoFile (video: MVideoFullLight, inputFilePath: string) {
   const outputPath = VideoPathManager.Instance.getFSVideoFileOutputPath(video, newVideoFile)
   await copy(inputFilePath, outputPath)
 
-  video.VideoFiles.push(newVideoFile)
-  await createTorrentAndSetInfoHash(video, newVideoFile)
-
+  const { infoHash, torrentFilename } = await createTorrentForFile(video, newVideoFile)
+  newVideoFile.torrentFilename = torrentFilename
   await newVideoFile.save()
+
+  const infohashModel = await VideoInfohashModel.replaceFileInfohash(newVideoFile.id, infoHash)
+
+  video.VideoFiles.push(Object.assign(newVideoFile, { InfoHash: infohashModel }))
 }

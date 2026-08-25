@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { wait } from '@peertube/peertube-core-utils'
@@ -12,12 +12,12 @@ import {
   PeerTubeServer,
   setAccessTokensToServers
 } from '@peertube/peertube-server-commands'
-import { MockBlocklist } from '../shared/mock-servers/index.js'
+import { MockPluginBlocklist } from '../shared/mock-servers/mock-plugin-blocklist.js'
 
 describe('Official plugin auto-mute', function () {
   const autoMuteListPath = '/plugins/auto-mute/router/api/v1/mute-list'
   let servers: PeerTubeServer[]
-  let blocklistServer: MockBlocklist
+  let blocklistServer: MockPluginBlocklist
   let port: number
 
   before(async function () {
@@ -30,7 +30,7 @@ describe('Official plugin auto-mute', function () {
       await server.plugins.install({ npmName: 'peertube-plugin-auto-mute' })
     }
 
-    blocklistServer = new MockBlocklist()
+    blocklistServer = new MockPluginBlocklist()
     port = await blocklistServer.initialize()
 
     await servers[0].videos.quickUpload({ name: 'video server 1' })

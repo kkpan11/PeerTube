@@ -19,6 +19,20 @@ rates_limit:
   api:
     window: 10 seconds
     max: 500
+  confirm_token:
+    window: 10 seconds
+    max: 500
+  report_abuse:
+    window: 10 seconds
+    max: 500
+  create_comment:
+    window: 10 seconds
+    max: 500
+  login_lockout:
+    enabled: true
+    window: 5 seconds
+    max: 10
+    max_per_ip: 3
 
 database:
   hostname: '127.0.0.1'
@@ -85,6 +99,7 @@ transcoding:
   enabled: true
   allow_additional_extensions: false
   allow_audio_files: false
+  always_transcode_podcast_optimized_audio: false
   threads: 2
   concurrency: 2
   resolutions:
@@ -168,7 +183,15 @@ open_telemetry:
 
 search:
   search_index:
-    url: 'https://search.joinpeertube.org/'
+    url: 'https://sepiasearch.org/'
 
 video_transcription:
   model: 'tiny'
+
+user:
+  password_constraints:
+    min_length: 6
+
+defaults:
+  live:
+    save_replay: false

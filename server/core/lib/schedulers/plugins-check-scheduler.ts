@@ -1,6 +1,6 @@
 import { compareSemVer } from '@peertube/peertube-core-utils'
 import chunk from 'lodash-es/chunk.js'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { CONFIG } from '../../initializers/config.js'
 import { SCHEDULER_INTERVALS_MS } from '../../initializers/constants.js'
 import { PluginModel } from '../../models/server/plugin.js'
@@ -8,14 +8,15 @@ import { Notifier } from '../notifier/index.js'
 import { getLatestPluginsVersion } from '../plugins/plugin-index.js'
 import { AbstractScheduler } from './abstract-scheduler.js'
 
-export class PluginsCheckScheduler extends AbstractScheduler {
+const logger = createLogger('schedulers')
 
+export class PluginsCheckScheduler extends AbstractScheduler {
   private static instance: AbstractScheduler
 
   protected schedulerIntervalMs = SCHEDULER_INTERVALS_MS.CHECK_PLUGINS
 
   private constructor () {
-    super()
+    super({ randomRunOnEnable: true })
   }
 
   protected async internalExecute () {
@@ -59,7 +60,7 @@ export class PluginsCheckScheduler extends AbstractScheduler {
               Notifier.Instance.notifyOfNewPluginVersion(plugin)
             }
 
-            logger.info('Plugin %s has a new latest version %s.', result.npmName, plugin.latestVersion)
+            logger.info(`Plugin ${result.npmName} has a new latest version ${plugin.latestVersion}`)
           }
         }
       } catch (err) {

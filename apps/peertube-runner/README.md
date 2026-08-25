@@ -10,8 +10,7 @@ Commands below has to be run at the root of PeerTube git repository.
 
 ```bash
 cd peertube-root
-yarn install --pure-lockfile
-cd apps/peertube-runner && yarn install --pure-lockfile
+npm run install-node-dependencies
 ```
 
 ### Develop
@@ -32,12 +31,12 @@ npm run build:peertube-runner
 
 ```bash
 cd peertube-root
-node apps/peertube-runner/dist/peertube-runner.js --help
+node apps/peertube-runner/dist/peertube-runner.mjs --help
 ```
 
 ### Publish on NPM
 
 ```bash
 cd peertube-root
-(cd apps/peertube-runner && npm version patch) && npm run build:peertube-runner && (cd apps/peertube-runner && npm publish --access=public)
+(cd apps/peertube-runner && npm version patch) && npm run build:peertube-runner && (cd apps/peertube-runner && npm login && npm publish --access=public)
 ```

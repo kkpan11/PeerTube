@@ -1,14 +1,16 @@
-import { remove } from 'fs-extra/esm'
-import { join } from 'path'
-import { AfterDestroy, AllowNull, BelongsTo, Column, CreatedAt, DataType, ForeignKey, Table, UpdatedAt } from 'sequelize-typescript'
+import { Storyboard } from '@peertube/peertube-models'
 import { CONFIG } from '@server/initializers/config.js'
 import { MStoryboard, MStoryboardVideo, MVideo } from '@server/types/models/index.js'
-import { Storyboard } from '@peertube/peertube-models'
-import { logger } from '../../helpers/logger.js'
-import { CONSTRAINTS_FIELDS, LAZY_STATIC_PATHS, WEBSERVER } from '../../initializers/constants.js'
-import { VideoModel } from './video.js'
-import { Transaction } from 'sequelize'
+import { remove } from 'fs-extra/esm'
+import { join } from 'path'
+import { Op, Transaction } from 'sequelize'
+import { AfterDestroy, AllowNull, BelongsTo, Column, CreatedAt, DataType, ForeignKey, Table, UpdatedAt } from 'sequelize-typescript'
+import { createLogger } from '../../helpers/logger.js'
+import { CONSTRAINTS_FIELDS, FILES_CACHE, LAZY_STATIC_PATHS, WEBSERVER } from '../../initializers/constants.js'
 import { SequelizeModel } from '../shared/index.js'
+import { VideoModel } from './video.js'
+
+const logger = createLogger()
 
 @Table({
   tableName: 'storyboard',
@@ -24,38 +26,41 @@ import { SequelizeModel } from '../shared/index.js'
   ]
 })
 export class StoryboardModel extends SequelizeModel<StoryboardModel> {
+  @AllowNull(false)
+  @Column
+  declare filename: string
 
   @AllowNull(false)
   @Column
-  filename: string
+  declare totalHeight: number
 
   @AllowNull(false)
   @Column
-  totalHeight: number
+  declare totalWidth: number
 
   @AllowNull(false)
   @Column
-  totalWidth: number
+  declare spriteHeight: number
 
   @AllowNull(false)
   @Column
-  spriteHeight: number
+  declare spriteWidth: number
 
   @AllowNull(false)
   @Column
-  spriteWidth: number
-
-  @AllowNull(false)
-  @Column
-  spriteDuration: number
+  declare spriteDuration: number
 
   @AllowNull(true)
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.COMMONS.URL.max))
-  fileUrl: string
+  declare fileUrl: string
+
+  @AllowNull(false)
+  @Column
+  declare cached: boolean
 
   @ForeignKey(() => VideoModel)
   @Column
-  videoId: number
+  declare videoId: number
 
   @BelongsTo(() => VideoModel, {
     foreignKey: {
@@ -63,21 +68,19 @@ export class StoryboardModel extends SequelizeModel<StoryboardModel> {
     },
     onDelete: 'CASCADE'
   })
-  Video: Awaited<VideoModel>
+  declare Video: Awaited<VideoModel>
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @AfterDestroy
   static removeInstanceFile (instance: StoryboardModel) {
-    logger.info('Removing storyboard file %s.', instance.filename)
-
     // Don't block the transaction
     instance.removeFile()
-            .catch(err => logger.error('Cannot remove storyboard file %s.', instance.filename, { err }))
+      .catch(err => logger.error('Cannot remove storyboard file %s.', instance.filename, { err }))
   }
 
   static loadByVideo (videoId: number, transaction?: Transaction): Promise<MStoryboard> {
@@ -101,22 +104,6 @@ export class StoryboardModel extends SequelizeModel<StoryboardModel> {
     return StoryboardModel.findOne(query)
   }
 
-  static loadWithVideoByFilename (filename: string): Promise<MStoryboardVideo> {
-    const query = {
-      where: {
-        filename
-      },
-      include: [
-        {
-          model: VideoModel.unscoped(),
-          required: true
-        }
-      ]
-    }
-
-    return StoryboardModel.findOne(query)
-  }
-
   // ---------------------------------------------------------------------------
 
   static async listStoryboardsOf (video: MVideo): Promise<MStoryboardVideo[]> {
@@ -131,36 +118,54 @@ export class StoryboardModel extends SequelizeModel<StoryboardModel> {
     return storyboards.map(s => Object.assign(s, { Video: video }))
   }
 
+  static listRemoteCached () {
+    return this.findAll<MStoryboard>({
+      where: {
+        cached: true,
+        fileUrl: {
+          [Op.ne]: null
+        }
+      }
+    })
+  }
+
   // ---------------------------------------------------------------------------
 
-  getOriginFileUrl (video: MVideo) {
-    if (video.isOwned()) {
-      return WEBSERVER.URL + this.getLocalStaticPath()
-    }
-
-    return this.fileUrl
+  getLocalFileUrl () {
+    // Remote files are cached by our instance
+    return WEBSERVER.URL + this.getFileStaticPath()
   }
 
-  getFileUrl () {
-    return WEBSERVER.URL + this.getLocalStaticPath()
-  }
-
-  getLocalStaticPath () {
+  getFileStaticPath () {
     return LAZY_STATIC_PATHS.STORYBOARDS + this.filename
   }
 
-  getPath () {
+  getFSPath () {
     return join(CONFIG.STORAGE.STORYBOARDS_DIR, this.filename)
   }
 
+  getFSCachedPath () {
+    return join(FILES_CACHE.STORYBOARDS.DIRECTORY, this.filename)
+  }
+
+  isLocal () {
+    return !this.fileUrl
+  }
+
   removeFile () {
-    return remove(this.getPath())
+    const path = this.cached
+      ? this.getFSCachedPath()
+      : this.getFSPath()
+
+    logger.info('Removing storyboard file ' + path)
+
+    return remove(path)
   }
 
   toFormattedJSON (this: MStoryboardVideo): Storyboard {
     return {
-      fileUrl: this.getFileUrl(),
-      storyboardPath: this.getLocalStaticPath(),
+      fileUrl: this.getLocalFileUrl(),
+      storyboardPath: this.getFileStaticPath(),
 
       totalHeight: this.totalHeight,
       totalWidth: this.totalWidth,

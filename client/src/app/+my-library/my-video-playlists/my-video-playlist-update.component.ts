@@ -1,9 +1,8 @@
-import { NgClass, NgIf } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { CommonModule, NgClass } from '@angular/common'
+import { ChangeDetectionStrategy, Component, inject, OnDestroy, OnInit } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
 import { AuthService, Notifier, ServerService } from '@app/core'
-import { listUserChannelsForSelect } from '@app/helpers'
 import {
   setPlaylistChannelValidator,
   VIDEO_PLAYLIST_CHANNEL_ID_VALIDATOR,
@@ -12,14 +11,16 @@ import {
   VIDEO_PLAYLIST_PRIVACY_VALIDATOR
 } from '@app/shared/form-validators/video-playlist-validators'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
+import { PeertubeCheckboxComponent } from '@app/shared/shared-forms/peertube-checkbox.component'
+import { isSameOwnerForAccountId, listChannelsForSelect } from '@app/shared/shared-forms/select/channel/select-channel-helpers'
+import { SelectChannelUserComponent } from '@app/shared/shared-forms/select/channel/select-channel-user.component'
 import { AlertComponent } from '@app/shared/shared-main/common/alert.component'
 import { VideoPlaylistService } from '@app/shared/shared-video-playlist/video-playlist.service'
 import { VideoPlaylistUpdate } from '@peertube/peertube-models'
 import { forkJoin, Subscription } from 'rxjs'
-import { map, switchMap } from 'rxjs/operators'
+import { first, map, switchMap } from 'rxjs/operators'
+import { ImageInputComponent } from '../../shared/shared-forms/image-input.component'
 import { MarkdownTextareaComponent } from '../../shared/shared-forms/markdown-textarea.component'
-import { PreviewUploadComponent } from '../../shared/shared-forms/preview-upload.component'
-import { SelectChannelComponent } from '../../shared/shared-forms/select/select-channel.component'
 import { SelectOptionsComponent } from '../../shared/shared-forms/select/select-options.component'
 import { HelpComponent } from '../../shared/shared-main/buttons/help.component'
 import { MyVideoPlaylistEdit } from './my-video-playlist-edit'
@@ -27,18 +28,20 @@ import { MyVideoPlaylistEdit } from './my-video-playlist-edit'
 @Component({
   templateUrl: './my-video-playlist-edit.component.html',
   styleUrls: [ './my-video-playlist-edit.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
+    CommonModule,
     RouterLink,
     FormsModule,
     ReactiveFormsModule,
-    PreviewUploadComponent,
+    ImageInputComponent,
     NgClass,
     HelpComponent,
     MarkdownTextareaComponent,
     SelectOptionsComponent,
-    SelectChannelComponent,
-    AlertComponent
+    SelectChannelUserComponent,
+    AlertComponent,
+    PeertubeCheckboxComponent
   ]
 })
 export class MyVideoPlaylistUpdateComponent extends MyVideoPlaylistEdit implements OnInit, OnDestroy {
@@ -67,23 +70,40 @@ export class MyVideoPlaylistUpdateComponent extends MyVideoPlaylistEdit implemen
       setPlaylistChannelValidator(this.form.get('videoChannelId'), privacy)
     })
 
-    listUserChannelsForSelect(this.authService)
-      .subscribe(channels => this.userVideoChannels = channels)
-
-    this.paramsSub = this.route.params
+    this.paramsSub = this.authService.userInformationLoaded
       .pipe(
+        first(),
+        switchMap(() => this.route.params),
         map(routeParams => routeParams['videoPlaylistId']),
         switchMap(videoPlaylistId => {
           return forkJoin([
-            this.videoPlaylistService.getVideoPlaylist(videoPlaylistId),
+            this.videoPlaylistService.getVideoPlaylist(videoPlaylistId)
+              .pipe(
+                switchMap(videoPlaylist => {
+                  return listChannelsForSelect({
+                    authService: this.authService,
+                    includeCollaborations: true
+                  }).pipe(map(channels => ({ videoPlaylist, channels })))
+                })
+              ),
             this.serverService.getVideoPlaylistPrivacies()
           ])
         })
       )
       .subscribe({
-        next: ([ videoPlaylistToUpdate, videoPlaylistPrivacies ]) => {
-          this.videoPlaylistToUpdate = videoPlaylistToUpdate
+        next: ([ { videoPlaylist, channels }, videoPlaylistPrivacies ]) => {
+          this.videoPlaylistToUpdate = videoPlaylist
           this.videoPlaylistPrivacies = videoPlaylistPrivacies
+
+          const user = this.authService.getUser()
+
+          this.channels = channels.filter(c => {
+            return isSameOwnerForAccountId({
+              user,
+              channel: c,
+              accountId: this.videoPlaylistToUpdate.ownerAccount.id
+            })
+          })
 
           this.hydrateFormFromPlaylist()
         },
@@ -131,6 +151,16 @@ export class MyVideoPlaylistUpdateComponent extends MyVideoPlaylistEdit implemen
     return $localize`Update`
   }
 
+  isEditor () {
+    if (!this.videoPlaylistToUpdate) return false
+
+    return this.videoPlaylistToUpdate?.ownerAccount.id !== this.authService.getUser().account.id
+  }
+
+  getOwnerAccountDisplayName () {
+    return this.videoPlaylistToUpdate?.ownerAccount.displayName
+  }
+
   private hydrateFormFromPlaylist () {
     this.form.patchValue({
       displayName: this.videoPlaylistToUpdate.displayName,
@@ -139,7 +169,8 @@ export class MyVideoPlaylistUpdateComponent extends MyVideoPlaylistEdit implemen
       videoChannelId: this.videoPlaylistToUpdate.videoChannel ? this.videoPlaylistToUpdate.videoChannel.id : null
     })
 
-    fetch(this.videoPlaylistToUpdate.thumbnailUrl)
+    // Keep it sync with image size set in the SASS file
+    fetch(this.videoPlaylistToUpdate.getThumbnailUrl(223))
       .then(response => response.blob())
       .then(data => {
         this.form.patchValue({

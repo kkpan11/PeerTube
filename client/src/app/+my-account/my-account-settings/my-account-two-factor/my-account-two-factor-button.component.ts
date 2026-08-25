@@ -1,5 +1,4 @@
-import { NgIf } from '@angular/common'
-import { Component, OnInit, inject, input } from '@angular/core'
+import { Component, OnInit, inject, input, ChangeDetectionStrategy } from '@angular/core'
 import { AuthService, ConfirmService, Notifier, User } from '@app/core'
 import { TwoFactorService } from '@app/shared/shared-users/two-factor.service'
 import { ButtonComponent } from '../../../shared/shared-main/buttons/button.component'
@@ -7,7 +6,8 @@ import { ButtonComponent } from '../../../shared/shared-main/buttons/button.comp
 @Component({
   selector: 'my-account-two-factor-button',
   templateUrl: './my-account-two-factor-button.component.html',
-  imports: [ NgIf, ButtonComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ ButtonComponent ]
 })
 export class MyAccountTwoFactorButtonComponent implements OnInit {
   private notifier = inject(Notifier)
@@ -39,7 +39,7 @@ export class MyAccountTwoFactorButtonComponent implements OnInit {
           this.notifier.success($localize`Two factor authentication disabled`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 }

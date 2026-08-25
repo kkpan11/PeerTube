@@ -99,7 +99,6 @@ async function listRedundanciesCLI (options: CommonProgramOptions & { target: Vi
     if (target === 'remote-videos') {
       const tmp = streamingPlaylists.reduce((a, b) => a + b.size, 0)
 
-      // FIXME: don't use external dependency to stringify bytes: we already have the functions in the client
       totalSize = bytes(tmp)
     }
 
@@ -137,11 +136,11 @@ async function addRedundancyCLI (options: { video: number } & CommonProgramOptio
     console.log('Video will be duplicated by your instance!')
   } catch (err) {
     if (err.message.includes(HttpStatusCode.CONFLICT_409)) {
-      throw new Error('This video is already duplicated by your instance.')
+      throw new Error('This video is already duplicated by your instance.', { cause: err })
     }
 
     if (err.message.includes(HttpStatusCode.NOT_FOUND_404)) {
-      throw new Error('This video id does not exist.')
+      throw new Error('This video id does not exist.', { cause: err })
     }
 
     throw err

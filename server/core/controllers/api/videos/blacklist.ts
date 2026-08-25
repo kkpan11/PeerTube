@@ -1,7 +1,7 @@
-import express from 'express'
+import { HttpStatusCode, UserRight, VideoBlacklistCreate, VideoBlacklistUpdate } from '@peertube/peertube-models'
 import { blacklistVideo, unblacklistVideo } from '@server/lib/video-blacklist.js'
-import { HttpStatusCode, UserRight, VideoBlacklistCreate } from '@peertube/peertube-models'
-import { logger } from '../../../helpers/logger.js'
+import express from 'express'
+import { createLogger } from '../../../helpers/logger.js'
 import { getFormattedObjects } from '../../../helpers/utils.js'
 import { sequelizeTypescript } from '../../../initializers/database.js'
 import {
@@ -20,9 +20,12 @@ import {
 } from '../../../middlewares/index.js'
 import { VideoBlacklistModel } from '../../../models/video/video-blacklist.js'
 
+const logger = createLogger()
+
 const blacklistRouter = express.Router()
 
-blacklistRouter.post('/:videoId/blacklist',
+blacklistRouter.post(
+  '/:videoId/blacklist',
   openapiOperationDoc({ operationId: 'addVideoBlock' }),
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEO_BLACKLIST),
@@ -30,7 +33,8 @@ blacklistRouter.post('/:videoId/blacklist',
   asyncMiddleware(addVideoToBlacklistController)
 )
 
-blacklistRouter.get('/blacklist',
+blacklistRouter.get(
+  '/blacklist',
   openapiOperationDoc({ operationId: 'getVideoBlocks' }),
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEO_BLACKLIST),
@@ -42,14 +46,16 @@ blacklistRouter.get('/blacklist',
   asyncMiddleware(listBlacklist)
 )
 
-blacklistRouter.put('/:videoId/blacklist',
+blacklistRouter.put(
+  '/:videoId/blacklist',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEO_BLACKLIST),
   asyncMiddleware(videosBlacklistUpdateValidator),
   asyncMiddleware(updateVideoBlacklistController)
 )
 
-blacklistRouter.delete('/:videoId/blacklist',
+blacklistRouter.delete(
+  '/:videoId/blacklist',
   openapiOperationDoc({ operationId: 'delVideoBlock' }),
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEO_BLACKLIST),
@@ -66,20 +72,24 @@ export {
 // ---------------------------------------------------------------------------
 
 async function addVideoToBlacklistController (req: express.Request, res: express.Response) {
-  const videoInstance = res.locals.videoAll
+  const videoInstance = res.locals.videoWithRights
   const body: VideoBlacklistCreate = req.body
 
-  await blacklistVideo(videoInstance, body)
+  await logger.withContext([ videoInstance.uuid ], async () => {
+    await blacklistVideo(videoInstance, body)
 
-  logger.info('Video %s blacklisted.', videoInstance.uuid)
+    logger.info('Video %s blacklisted.', videoInstance.uuid)
 
-  return res.type('json').status(HttpStatusCode.NO_CONTENT_204).end()
+    return res.type('json').status(HttpStatusCode.NO_CONTENT_204).end()
+  })
 }
 
 async function updateVideoBlacklistController (req: express.Request, res: express.Response) {
   const videoBlacklist = res.locals.videoBlacklist
+  const body: VideoBlacklistUpdate = req.body
 
-  if (req.body.reason !== undefined) videoBlacklist.reason = req.body.reason
+  if (body.reason !== undefined) videoBlacklist.reason = body.reason
+  if (body.internalNote !== undefined) videoBlacklist.internalNote = body.internalNote
 
   await sequelizeTypescript.transaction(t => {
     return videoBlacklist.save({ transaction: t })
@@ -102,7 +112,7 @@ async function listBlacklist (req: express.Request, res: express.Response) {
 
 async function removeVideoFromBlacklistController (req: express.Request, res: express.Response) {
   const videoBlacklist = res.locals.videoBlacklist
-  const video = res.locals.videoAll
+  const video = res.locals.videoWithRights
 
   await unblacklistVideo(videoBlacklist, video)
 

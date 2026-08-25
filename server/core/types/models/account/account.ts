@@ -12,10 +12,12 @@ import {
   MActorId,
   MActorSummary,
   MActorSummaryFormattable,
-  MActorUrl
+  MActorUrl,
+  MActorUsername
 } from '../actor/index.js'
 import { MChannelDefault } from '../video/video-channel.js'
-import { MAccountBlocklistId } from './account-blocklist.js'
+import { MAccountBlocklistId } from '../blocklist/account-blocklist.js'
+import { MChannelCollaboratorChannel } from '../video/video-channel-collaborator.js'
 
 type Use<K extends keyof AccountModel, M> = PickWith<AccountModel, K, M>
 
@@ -57,6 +59,12 @@ export type MAccountDefaultChannelDefault =
   & Use<'Actor', MActorDefault>
   & Use<'VideoChannels', MChannelDefault[]>
 
+export type MAccountDefaultAllChannelDefault =
+  & MAccount
+  & Use<'Actor', MActorDefault>
+  & Use<'VideoChannels', MChannelDefault[]>
+  & Use<'VideoChannelCollaborators', MChannelCollaboratorChannel[]>
+
 // We don't need some actors attributes
 export type MAccountLight =
   & MAccount
@@ -64,7 +72,6 @@ export type MAccountLight =
 
 // ############################################################################
 
-// Full actor
 export type MAccountActor =
   & MAccount
   & Use<'Actor', MActor>
@@ -76,6 +83,10 @@ export type MAccountIdHost =
 export type MAccountHost =
   & MAccount
   & Use<'Actor', MActorHost>
+
+export type MAccountNames =
+  & Pick<MAccount, 'id' | 'name'>
+  & Use<'Actor', MActorUsername>
 
 // ############################################################################
 

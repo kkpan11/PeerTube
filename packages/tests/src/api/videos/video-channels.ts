@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { ActorImageType, User, VideoChannel } from '@peertube/peertube-models'
@@ -35,8 +35,8 @@ describe('Test video channels', function () {
   let accountName: string
   let secondUserChannelName: string
 
-  const avatarPaths: { [ port: number ]: string } = {}
-  const bannerPaths: { [ port: number ]: string } = {}
+  const avatarUrls: { [port: number]: string } = {}
+  const bannerUrls: { [port: number]: string } = {}
 
   before(async function () {
     this.timeout(60000)
@@ -193,7 +193,8 @@ describe('Test video channels', function () {
     const videoChannelAttributes = {
       displayName: 'video channel updated',
       description: 'video channel description updated',
-      support: 'support updated'
+      support: 'support updated',
+      publicEmail: 'public-email@example.com'
     }
 
     await servers[0].channels.update({ channelName: 'second_video_channel', attributes: videoChannelAttributes })
@@ -213,6 +214,7 @@ describe('Test video channels', function () {
       expect(body.data[0].displayName).to.equal('video channel updated')
       expect(body.data[0].description).to.equal('video channel description updated')
       expect(body.data[0].support).to.equal('support updated')
+      expect(body.data[0].publicEmail).to.equal('public-email@example.com')
     }
   })
 
@@ -271,8 +273,6 @@ describe('Test video channels', function () {
   })
 
   it('Should update video channel avatar', async function () {
-    this.timeout(15000)
-
     const fixture = 'avatar.png'
 
     await servers[0].channels.updateImage({
@@ -292,11 +292,16 @@ describe('Test video channels', function () {
       expect(videoChannel.avatars.length).to.equal(expectedSizes.length, 'Expected avatars to be generated in all sizes')
 
       for (const avatar of videoChannel.avatars) {
-        avatarPaths[server.port] = avatar.path
-        await testImage(server.url, `avatar-resized-${avatar.width}x${avatar.width}`, avatarPaths[server.port], '.png')
-        await testFileExistsOnFSOrNot(server, 'avatars', basename(avatarPaths[server.port]), true)
+        avatarUrls[server.port] = avatar.fileUrl
+        await testImage({ url: avatarUrls[server.port], name: `avatar-resized-${avatar.width}x${avatar.width}.png` })
 
-        const row = await sqlCommands[i].getActorImage(basename(avatarPaths[server.port]))
+        if (i === 0) {
+          await testFileExistsOnFSOrNot(server, 'avatars', basename(avatarUrls[server.port]), true)
+        } else {
+          await testFileExistsOnFSOrNot(server, 'avatars', basename(avatarUrls[server.port]), false)
+        }
+
+        const row = await sqlCommands[i].getActorImage(basename(avatarUrls[server.port]))
 
         expect(expectedSizes.some(({ height, width }) => row.height === height && row.width === width)).to.equal(true)
       }
@@ -325,11 +330,16 @@ describe('Test video channels', function () {
       expect(videoChannel.banners.length).to.equal(expectedSizes.length, 'Expected banners to be generated in all sizes')
 
       for (const banner of videoChannel.banners) {
-        bannerPaths[server.port] = banner.path
-        await testImage(server.url, `banner-resized-${banner.width}`, bannerPaths[server.port])
-        await testFileExistsOnFSOrNot(server, 'avatars', basename(bannerPaths[server.port]), true)
+        bannerUrls[server.port] = banner.fileUrl
+        await testImage({ url: bannerUrls[server.port], name: `banner-resized-${banner.width}.jpg` })
 
-        const row = await sqlCommands[i].getActorImage(basename(bannerPaths[server.port]))
+        if (i === 0) {
+          await testFileExistsOnFSOrNot(server, 'avatars', basename(bannerUrls[server.port]), true)
+        } else {
+          await testFileExistsOnFSOrNot(server, 'avatars', basename(bannerUrls[server.port]), false)
+        }
+
+        const row = await sqlCommands[i].getActorImage(basename(bannerUrls[server.port]))
         expect(expectedSizes.some(({ height, width }) => row.height === height && row.width === width)).to.equal(true)
       }
     }
@@ -361,7 +371,7 @@ describe('Test video channels', function () {
 
     for (const server of servers) {
       const videoChannel = await findChannel(server, secondVideoChannelId)
-      await testFileExistsOnFSOrNot(server, 'avatars', basename(avatarPaths[server.port]), false)
+      await testFileExistsOnFSOrNot(server, 'avatars', basename(avatarUrls[server.port]), false)
 
       expect(videoChannel.avatars).to.be.empty
     }
@@ -376,7 +386,7 @@ describe('Test video channels', function () {
 
     for (const server of servers) {
       const videoChannel = await findChannel(server, secondVideoChannelId)
-      await testFileExistsOnFSOrNot(server, 'avatars', basename(bannerPaths[server.port]), false)
+      await testFileExistsOnFSOrNot(server, 'avatars', basename(bannerUrls[server.port]), false)
 
       expect(videoChannel.banners).to.be.empty
     }
@@ -450,12 +460,57 @@ describe('Test video channels', function () {
     }
   })
 
+  // Must run before any view is simulated
+  it('Should aggregate channel views by statsDays range', async function () {
+    {
+      const { data } = await servers[0].channels.listByAccount({
+        accountName,
+        token: servers[0].accessToken,
+        withStats: true,
+        statsDays: 90
+      })
+
+      const lengths = new Set<number>()
+
+      for (const channel of data) {
+        expect(channel.totalViews).to.equal(0)
+
+        // No videoStat history, so the group interval comes from the full 90 day range
+        expect(channel.viewsGroupInterval).to.equal('week')
+
+        expect(channel.viewsPerDay.length).to.be.at.least(12)
+        expect(channel.viewsPerDay.length).to.be.below(16)
+
+        lengths.add(channel.viewsPerDay.length)
+      }
+
+      // The series spans the requested range, not the channel history, so every channel has the same points
+      expect(lengths.size).to.equal(1)
+    }
+
+    {
+      const { data } = await servers[0].channels.listByAccount({
+        accountName,
+        token: servers[0].accessToken,
+        withStats: true,
+        statsDays: 0
+      })
+
+      for (const channel of data) {
+        expect(channel.viewsGroupInterval).to.equal('day')
+        expect(channel.viewsPerDay).to.have.length(1)
+      }
+    }
+  })
+
   it('Should report correct channel views per days', async function () {
     {
-      const { data } = await servers[0].channels.listByAccount({ accountName, withStats: true })
+      const { data } = await servers[0].channels.listByAccount({ accountName, token: servers[0].accessToken, withStats: true })
 
       for (const channel of data) {
         expect(channel).to.haveOwnProperty('viewsPerDay')
+        expect(channel).to.haveOwnProperty('viewsGroupInterval')
+        expect(channel.viewsGroupInterval).to.equal('day')
         expect(channel.viewsPerDay).to.have.length(30 + 1) // daysPrior + today
 
         for (const v of channel.viewsPerDay) {
@@ -473,7 +528,7 @@ describe('Test video channels', function () {
       // Wait the repeatable job
       await wait(8000)
 
-      const { data } = await servers[0].channels.listByAccount({ accountName, withStats: true })
+      const { data } = await servers[0].channels.listByAccount({ accountName, token: servers[0].accessToken, withStats: true })
       const channelWithView = data.find(channel => channel.id === servers[0].store.channel.id)
       expect(channelWithView.viewsPerDay.slice(-1)[0].views).to.equal(2)
     }
@@ -482,7 +537,7 @@ describe('Test video channels', function () {
   it('Should report correct total views count', async function () {
     // check if there's the property
     {
-      const { data } = await servers[0].channels.listByAccount({ accountName, withStats: true })
+      const { data } = await servers[0].channels.listByAccount({ accountName, token: servers[0].accessToken, withStats: true })
 
       for (const channel of data) {
         expect(channel).to.haveOwnProperty('totalViews')
@@ -492,14 +547,29 @@ describe('Test video channels', function () {
 
     // Check if the totalViews count can be updated
     {
-      const { data } = await servers[0].channels.listByAccount({ accountName, withStats: true })
+      const { data } = await servers[0].channels.listByAccount({ accountName, token: servers[0].accessToken, withStats: true })
       const channelWithView = data.find(channel => channel.id === servers[0].store.channel.id)
       expect(channelWithView.totalViews).to.equal(2)
+    }
+
+    // totalViews is lifetime
+    {
+      for (const statsDays of [ 90, 365, 0 ]) {
+        const { data } = await servers[0].channels.listByAccount({
+          accountName,
+          token: servers[0].accessToken,
+          withStats: true,
+          statsDays
+        })
+
+        const channelWithView = data.find(channel => channel.id === servers[0].store.channel.id)
+        expect(channelWithView.totalViews).to.equal(2)
+      }
     }
   })
 
   it('Should report correct videos count', async function () {
-    const { data } = await servers[0].channels.listByAccount({ accountName, withStats: true })
+    const { data } = await servers[0].channels.listByAccount({ accountName, token: servers[0].accessToken, withStats: true })
 
     const totoChannel = data.find(c => c.name === 'toto_channel')
     const rootChannel = data.find(c => c.name === 'root_channel')
@@ -511,10 +581,11 @@ describe('Test video channels', function () {
   it('Should search among account video channels', async function () {
     {
       const body = await servers[0].channels.listByAccount({ accountName, search: 'root' })
-      expect(body.total).to.equal(1)
+      expect(body.total).to.equal(2)
 
       const channels = body.data
-      expect(channels).to.have.lengthOf(1)
+      expect(channels).to.have.lengthOf(2)
+      expect(channels.map(c => c.name)).to.have.members([ 'root_channel', 'toto_channel' ])
     }
 
     {

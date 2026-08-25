@@ -1,9 +1,21 @@
-import { NgClass, NgIf, ViewportScroller } from '@angular/common'
-import { booleanAttribute, Component, ElementRef, forwardRef, inject, input, model, OnDestroy, OnInit, viewChild } from '@angular/core'
+import { CommonModule, NgTemplateOutlet, ViewportScroller } from '@angular/common'
+import {
+  booleanAttribute,
+  ChangeDetectionStrategy,
+  Component,
+  ElementRef,
+  forwardRef,
+  inject,
+  input,
+  model,
+  OnDestroy,
+  OnInit,
+  viewChild
+} from '@angular/core'
 import { ControlValueAccessor, FormsModule, NG_VALUE_ACCESSOR } from '@angular/forms'
 import { SafeHtml } from '@angular/platform-browser'
 import { MarkdownService, ScreenService } from '@app/core'
-import { NgbNav, NgbNavContent, NgbNavItem, NgbNavLink, NgbNavLinkBase, NgbNavOutlet, NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
+import { NgbCollapseModule } from '@ng-bootstrap/ng-bootstrap'
 import { Video } from '@peertube/peertube-models'
 import { Subject } from 'rxjs'
 import { debounceTime, distinctUntilChanged } from 'rxjs/operators'
@@ -21,18 +33,13 @@ import { FormReactiveErrors } from './form-reactive.service'
       multi: true
     }
   ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgClass,
+    CommonModule,
     FormsModule,
-    NgbNav,
-    NgIf,
-    NgbNavItem,
-    NgbNavLink,
-    NgbNavLinkBase,
-    NgbNavContent,
-    GlobalIconComponent,
-    NgbTooltip,
-    NgbNavOutlet
+    NgbCollapseModule,
+    NgTemplateOutlet,
+    GlobalIconComponent
   ]
 })
 export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, OnDestroy {
@@ -40,36 +47,39 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
   private screenService = inject(ScreenService)
   private markdownService = inject(MarkdownService)
 
+  readonly previewEl = viewChild<ElementRef<HTMLElement>>('previewEl')
+
   readonly content = model('')
 
   readonly formError = input<string | FormReactiveErrors | FormReactiveErrors[]>(undefined)
-
-  readonly truncateTo3Lines = input<boolean, unknown>(undefined, { transform: booleanAttribute })
 
   readonly markdownType = input<'text' | 'enhanced' | 'to-unsafe-html'>('text')
   readonly customMarkdownRenderer = input<(text: string) => Promise<string | HTMLElement>>(undefined)
 
   readonly debounceTime = input(150)
 
-  readonly markdownVideo = input<Video>(undefined)
+  readonly markdownVideo = input<Pick<Video, 'shortUUID'>>(undefined)
 
   readonly inputId = input.required<string>()
 
   readonly dir = input<string>(undefined)
 
+  readonly withPreview = input(true, { transform: booleanAttribute })
   readonly withHtml = input(false, { transform: booleanAttribute })
   readonly withEmoji = input(false, { transform: booleanAttribute })
+  readonly withShowMoreButton = input(false, { transform: booleanAttribute })
+
+  readonly monospace = input(false, { transform: booleanAttribute })
 
   readonly textareaElement = viewChild<ElementRef>('textarea')
   readonly previewElement = viewChild<ElementRef>('previewElement')
 
   previewHTML: SafeHtml | string = ''
 
-  isMaximized = false
+  maximized = false
   disabled = false
-
-  maximizeInText = $localize`Maximize editor`
-  maximizeOutText = $localize`Exit maximized editor`
+  previewCollapsed = true
+  truncated = false
 
   private contentChanged = new Subject<string>()
   private scrollPosition: [number, number]
@@ -83,6 +93,8 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
       .subscribe(() => this.updatePreviews())
 
     this.contentChanged.next(this.content())
+
+    this.truncated = this.withShowMoreButton()
   }
 
   ngOnDestroy () {
@@ -117,7 +129,7 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
   onMaximizeClick () {
     if (this.disabled) return
 
-    this.isMaximized = !this.isMaximized
+    this.maximized = !this.maximized
 
     // Make sure textarea have the focus
     // Except on touchscreens devices, the virtual keyboard may move up and hide the textarea in maximized mode
@@ -126,7 +138,7 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
     }
 
     // Make sure the window has no scrollbars
-    if (!this.isMaximized) {
+    if (!this.maximized) {
       this.unlockBodyScroll()
     } else {
       this.lockBodyScroll()
@@ -135,6 +147,13 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
 
   setDisabledState (isDisabled: boolean) {
     this.disabled = isDisabled
+  }
+
+  hasEllipsis () {
+    const el = this.previewEl()?.nativeElement
+    if (!el) return false
+
+    return el.offsetHeight < el.scrollHeight
   }
 
   private lockBodyScroll () {
@@ -167,7 +186,9 @@ export class MarkdownTextareaComponent implements ControlValueAccessor, OnInit, 
 
       if (result instanceof HTMLElement) {
         setTimeout(() => {
-          const wrapperElement = this.previewElement().nativeElement as HTMLElement
+          const wrapperElement = this.previewElement()?.nativeElement as HTMLElement
+          if (!wrapperElement) return
+
           wrapperElement.innerHTML = ''
           wrapperElement.appendChild(result)
         })

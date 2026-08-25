@@ -1,22 +1,20 @@
 import express from 'express'
 import { handleToNameAndHost } from '@server/helpers/actors.js'
-import { logger } from '@server/helpers/logger.js'
-import { AccountBlocklistModel } from '@server/models/account/account-blocklist.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { AccountBlocklistModel } from '@server/models/blocklist/account-blocklist.js'
 import { getServerActor } from '@server/models/application/application.js'
-import { ServerBlocklistModel } from '@server/models/server/server-blocklist.js'
+import { ServerBlocklistModel } from '@server/models/blocklist/server-blocklist.js'
 import { MActorAccountId, MUserAccountId } from '@server/types/models/index.js'
 import { BlockStatus } from '@peertube/peertube-models'
 import { apiRateLimiter, asyncMiddleware, blocklistStatusValidator, optionalAuthenticate } from '../../middlewares/index.js'
+
+const logger = createLogger()
 
 const blocklistRouter = express.Router()
 
 blocklistRouter.use(apiRateLimiter)
 
-blocklistRouter.get('/status',
-  optionalAuthenticate,
-  blocklistStatusValidator,
-  asyncMiddleware(getBlocklistStatus)
-)
+blocklistRouter.get('/status', optionalAuthenticate, blocklistStatusValidator, asyncMiddleware(getBlocklistStatus))
 
 // ---------------------------------------------------------------------------
 
@@ -72,9 +70,9 @@ async function populateServerBlocklistStatus (options: {
   logger.debug('Got server blocklist status.', { serverBlocklistStatus, byAccountIds, hosts })
 
   for (const host of hosts) {
-    const block = serverBlocklistStatus.find(b => b.host === host)
+    const blocks = serverBlocklistStatus.filter(b => b.host === host)
 
-    status.hosts[host] = getStatus(block, serverActor, user)
+    status.hosts[host] = getStatus(blocks, serverActor, user)
   }
 }
 
@@ -96,15 +94,22 @@ async function populateAccountBlocklistStatus (options: {
   for (const account of accounts) {
     const sanitizedHandle = handleToNameAndHost(account)
 
-    const block = accountBlocklistStatus.find(b => b.name === sanitizedHandle.name && b.host === sanitizedHandle.host)
+    const blocks = accountBlocklistStatus.filter(b => b.name === sanitizedHandle.name && b.host === sanitizedHandle.host)
 
-    status.accounts[sanitizedHandle.handle] = getStatus(block, serverActor, user)
+    status.accounts[sanitizedHandle.handle] = getStatus(blocks, serverActor, user)
   }
 }
 
-function getStatus (block: { accountId: number }, serverActor: MActorAccountId, user?: MUserAccountId) {
+function getStatus (
+  blocks: { accountId: number, blocklistSubscriptionName: string }[],
+  serverActor: MActorAccountId,
+  user?: MUserAccountId
+) {
+  const serverBlock = blocks.find(block => block.accountId === serverActor.Account.id)
+
   return {
-    blockedByServer: !!(block && block.accountId === serverActor.Account.id),
-    blockedByUser: !!(block && user && block.accountId === user.Account.id)
+    blockedByServer: !!serverBlock,
+    blockedByServerSubscription: serverBlock?.blocklistSubscriptionName ?? null,
+    blockedByUser: blocks.some(block => block.accountId === user?.Account.id)
   }
 }

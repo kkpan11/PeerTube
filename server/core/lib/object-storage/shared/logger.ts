@@ -1,7 +1,3 @@
-import { loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 
-const lTags = loggerTagsFactory('object-storage')
-
-export {
-  lTags
-}
+export const objectStorageLogger = createLogger('object-storage')

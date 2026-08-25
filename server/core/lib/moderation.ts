@@ -3,7 +3,7 @@ import { PathLike } from 'fs-extra/esm'
 import { Transaction } from 'sequelize'
 import { AbuseAuditView, auditLoggerFactory } from '@server/helpers/audit-logger.js'
 import { afterCommitIfTransaction } from '@server/helpers/database-utils.js'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { AbuseModel } from '@server/models/abuse/abuse.js'
 import { VideoAbuseModel } from '@server/models/abuse/video-abuse.js'
 import { VideoCommentAbuseModel } from '@server/models/abuse/video-comment-abuse.js'
@@ -19,7 +19,7 @@ import {
   MUser,
   MUserDefault,
   MVideoAbuseVideoFull,
-  MVideoAccountLightBlacklistAllFiles
+  MVideoAccountLightBlacklist
 } from '@server/types/models/index.js'
 import { LiveVideoCreate, VideoCommentCreate, VideoCreate, VideoImportCreate } from '@peertube/peertube-models'
 import { UserModel } from '../models/user/user.js'
@@ -27,6 +27,8 @@ import { VideoCommentModel } from '../models/video/video-comment.js'
 import { VideoModel } from '../models/video/video.js'
 import { sendAbuse } from './activitypub/send/send-flag.js'
 import { Notifier } from './notifier/index.js'
+
+const logger = createLogger()
 
 export type AcceptResult = {
   accepted: boolean
@@ -109,7 +111,7 @@ function isPostImportVideoAccepted (object: {
 
 async function createVideoAbuse (options: {
   baseAbuse: FilteredModelAttributes<AbuseModel>
-  videoInstance: MVideoAccountLightBlacklistAllFiles
+  videoInstance: MVideoAccountLightBlacklist
   startAt: number
   endAt: number
   transaction: Transaction
@@ -129,7 +131,7 @@ async function createVideoAbuse (options: {
     videoAbuseInstance.Video = videoInstance
     abuseInstance.VideoAbuse = videoAbuseInstance
 
-    return { isOwned: videoInstance.isOwned() }
+    return { isLocal: videoInstance.isLocal() }
   }
 
   return createAbuse({
@@ -160,7 +162,7 @@ function createVideoCommentAbuse (options: {
     commentAbuseInstance.VideoComment = commentInstance
     abuseInstance.VideoCommentAbuse = commentAbuseInstance
 
-    return { isOwned: commentInstance.isOwned() }
+    return { isLocal: commentInstance.isLocal() }
   }
 
   return createAbuse({
@@ -183,7 +185,7 @@ function createAccountAbuse (options: {
   const { baseAbuse, accountInstance, transaction, reporterAccount, skipNotification } = options
 
   const associateFun = () => {
-    return Promise.resolve({ isOwned: accountInstance.isOwned() })
+    return Promise.resolve({ isLocal: accountInstance.isLocal() })
   }
 
   return createAbuse({
@@ -200,15 +202,12 @@ function createAccountAbuse (options: {
 
 export {
   isLocalLiveVideoAccepted,
-
   isLocalVideoFileAccepted,
   isLocalVideoThreadAccepted,
   isRemoteVideoCommentAccepted,
   isLocalVideoCommentReplyAccepted,
   isPreImportVideoAccepted,
   isPostImportVideoAccepted,
-
-  createAbuse,
   createVideoAbuse,
   createVideoCommentAbuse,
   createAccountAbuse
@@ -220,7 +219,7 @@ async function createAbuse (options: {
   base: FilteredModelAttributes<AbuseModel>
   reporterAccount: MAccountDefault
   flaggedAccount: MAccountLight
-  associateFun: (abuseInstance: MAbuseFull) => Promise<{ isOwned: boolean }>
+  associateFun: (abuseInstance: MAbuseFull) => Promise<{ isLocal: boolean }>
   skipNotification: boolean
   transaction: Transaction
 }) {
@@ -233,9 +232,9 @@ async function createAbuse (options: {
   abuseInstance.ReporterAccount = reporterAccount
   abuseInstance.FlaggedAccount = flaggedAccount
 
-  const { isOwned } = await associateFun(abuseInstance)
+  const { isLocal } = await associateFun(abuseInstance)
 
-  if (isOwned === false) {
+  if (isLocal === false) {
     sendAbuse(reporterAccount.Actor, abuseInstance, abuseInstance.FlaggedAccount, transaction)
   }
 

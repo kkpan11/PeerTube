@@ -1,9 +1,10 @@
 import { omit } from '@peertube/peertube-core-utils'
-import { HttpStatusCode, HttpStatusCodeType, UserRole } from '@peertube/peertube-models'
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '@tests/shared/checks.js'
+import { HttpStatusCode, HttpStatusCodeType, UserRegistrationState, UserRole } from '@peertube/peertube-models'
+import { checkBadCountPagination, checkBadSort, checkBadStartPagination } from '@tests/shared/checks.js'
 import {
   cleanupTests,
   createSingleServer,
+  makeGetRequest,
   makePostBodyRequest,
   PeerTubeServer,
   setAccessTokensToServers,
@@ -27,10 +28,9 @@ describe('Test registrations API validators', function () {
     await setDefaultAccountAvatar([ server ])
     await setDefaultChannelAvatar([ server ])
 
-    await server.config.enableSignup(false);
-
-    ({ token: moderatorToken } = await server.users.generate('moderator', UserRole.MODERATOR));
-    ({ token: userToken } = await server.users.generate('user', UserRole.USER))
+    await server.config.enableSignup(false)
+    ;({ token: moderatorToken } = await server.users.generate('moderator', UserRole.MODERATOR))
+    ;({ token: userToken } = await server.users.generate('user', UserRole.USER))
   })
 
   describe('Register', function () {
@@ -46,7 +46,6 @@ describe('Test registrations API validators', function () {
     }
 
     describe('When registering a new user or requesting user registration', function () {
-
       async function check (fields: any, expectedStatus: HttpStatusCodeType = HttpStatusCode.BAD_REQUEST_400) {
         await server.config.enableSignup(false)
         await makePostBodyRequest({ url: server.url, path: registrationPath, fields, expectedStatus })
@@ -197,10 +196,10 @@ describe('Test registrations API validators', function () {
         const { total } = await server.users.list()
 
         await server.config.enableSignup(false, total + 1)
-        await server.registrations.register({ username: 'user43', expectedStatus: HttpStatusCode.NO_CONTENT_204 })
+        await server.registrations.register({ username: 'user43', expectedStatus: HttpStatusCode.OK_200 })
 
         await server.config.enableSignup(true, total + 2)
-        await server.registrations.requestRegistration({
+        await server.registrations.register({
           username: 'user44',
           registrationReason: 'reason',
           expectedStatus: HttpStatusCode.OK_200
@@ -209,7 +208,6 @@ describe('Test registrations API validators', function () {
     })
 
     describe('On direct registration', function () {
-
       it('Should succeed with the correct params', async function () {
         await server.config.enableSignup(false)
 
@@ -221,19 +219,18 @@ describe('Test registrations API validators', function () {
           channel: { name: 'super_user_direct_1_channel', displayName: 'super user direct 1 channel' }
         }
 
-        await makePostBodyRequest({ url: server.url, path: registrationPath, fields, expectedStatus: HttpStatusCode.NO_CONTENT_204 })
+        await makePostBodyRequest({ url: server.url, path: registrationPath, fields, expectedStatus: HttpStatusCode.OK_200 })
       })
 
       it('Should fail if the instance requires approval', async function () {
         this.timeout(60000)
 
         await server.config.enableSignup(true)
-        await server.registrations.register({ username: 'user42', expectedStatus: HttpStatusCode.FORBIDDEN_403 })
+        await server.registrations.register({ username: 'user42', expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
       })
     })
 
     describe('On registration request', function () {
-
       before(async function () {
         this.timeout(60000)
 
@@ -321,10 +318,19 @@ describe('Test registrations API validators', function () {
     before(async function () {
       this.timeout(60000)
 
-      await server.config.enableSignup(true);
+      await server.config.enableSignup(true)
+      await server.registrations.requestRegistration({ username: 'request_2', registrationReason: 'toto' })
 
-      ({ id: id1 } = await server.registrations.requestRegistration({ username: 'request_2', registrationReason: 'toto' }));
-      ({ id: id2 } = await server.registrations.requestRegistration({ username: 'request_3', registrationReason: 'toto' }))
+      {
+        const registrations = await server.registrations.list()
+        id1 = registrations.data[0].id
+      }
+
+      {
+        await server.registrations.requestRegistration({ username: 'request_3', registrationReason: 'toto' })
+        const registrations = await server.registrations.list()
+        id2 = registrations.data[0].id
+      }
     })
 
     it('Should fail to accept/reject registration without token', async function () {
@@ -384,9 +390,24 @@ describe('Test registrations API validators', function () {
     let id3: number
 
     before(async function () {
-      ({ id: id1 } = await server.registrations.requestRegistration({ username: 'request_4', registrationReason: 'toto' }));
-      ({ id: id2 } = await server.registrations.requestRegistration({ username: 'request_5', registrationReason: 'toto' }));
-      ({ id: id3 } = await server.registrations.requestRegistration({ username: 'request_6', registrationReason: 'toto' }))
+
+      {
+        await server.registrations.requestRegistration({ username: 'request_4', registrationReason: 'toto' })
+        const registrations = await server.registrations.list()
+        id1 = registrations.data[0].id
+      }
+
+      {
+        await server.registrations.requestRegistration({ username: 'request_5', registrationReason: 'toto' })
+        const registrations = await server.registrations.list()
+        id2 = registrations.data[0].id
+      }
+
+      {
+        await server.registrations.requestRegistration({ username: 'request_6', registrationReason: 'toto' })
+        const registrations = await server.registrations.list()
+        id3 = registrations.data[0].id
+      }
 
       await server.registrations.accept({ id: id2, moderationResponse: 'tt' })
       await server.registrations.reject({ id: id3, moderationResponse: 'tt' })
@@ -424,7 +445,7 @@ describe('Test registrations API validators', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, server.accessToken)
+      await checkBadSort(server.url, path, server.accessToken)
     })
 
     it('Should fail with a non authenticated user', async function () {
@@ -441,10 +462,27 @@ describe('Test registrations API validators', function () {
       })
     })
 
+    it('Should fail with an invalid stateOneOf', async function () {
+      await makeGetRequest({
+        url: server.url,
+        path,
+        token: moderatorToken,
+        query: { stateOneOf: 'invalid' },
+        expectedStatus: HttpStatusCode.BAD_REQUEST_400
+      })
+    })
+
     it('Should succeed with the correct params', async function () {
       await server.registrations.list({
         token: moderatorToken,
         search: 'toto'
+      })
+    })
+
+    it('Should succeed with stateOneOf filter', async function () {
+      await server.registrations.list({
+        token: moderatorToken,
+        stateOneOf: [ UserRegistrationState.ACCEPTED, UserRegistrationState.REJECTED ]
       })
     })
   })

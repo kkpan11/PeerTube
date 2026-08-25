@@ -1,9 +1,7 @@
 # NPM instalation
 node_modules
 *npm-debug.log
-yarn-error.log
 *-ci.log
-.yarn
 
 # Testing
 /test1/
@@ -60,9 +58,6 @@ yarn-error.log
 
 # TypeScript
 *.tsbuildinfo
-
-# EsLint
-.eslintcache
 
 # Compiled output
 dist

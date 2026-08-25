@@ -10,7 +10,7 @@ import {
 import { isArray, isUUIDValid } from '@server/helpers/custom-validators/misc.js'
 import { CONSTRAINTS_FIELDS, RUNNER_JOB_STATES } from '@server/initializers/constants.js'
 import { MRunnerJob, MRunnerJobRunner, MRunnerJobRunnerParent } from '@server/types/models/runners/index.js'
-import { Op, Transaction } from 'sequelize'
+import { literal, Op, Transaction } from 'sequelize'
 import {
   AllowNull,
   BelongsTo,
@@ -19,11 +19,12 @@ import {
   DataType,
   Default,
   ForeignKey,
-  IsUUID, Scopes,
+  IsUUID,
+  Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
-import { SequelizeModel, getSort, searchAttribute } from '../shared/index.js'
+import { SequelizeModel, getSort, parseAggregateResult, searchAttribute } from '../shared/index.js'
 import { RunnerModel } from './runner.js'
 
 enum ScopeNames {
@@ -62,72 +63,74 @@ enum ScopeNames {
     },
     {
       fields: [ 'runnerId' ]
+    },
+    {
+      fields: [ 'dependsOnRunnerJobId' ]
     }
   ]
 })
 export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
-
   @AllowNull(false)
   @IsUUID(4)
   @Column(DataType.UUID)
-  uuid: string
+  declare uuid: string
 
   @AllowNull(false)
   @Column
-  type: RunnerJobType
+  declare type: RunnerJobType
 
   @AllowNull(false)
   @Column(DataType.JSONB)
-  payload: RunnerJobPayload
+  declare payload: RunnerJobPayload
 
   @AllowNull(false)
   @Column(DataType.JSONB)
-  privatePayload: RunnerJobPrivatePayload
+  declare privatePayload: RunnerJobPrivatePayload
 
   @AllowNull(false)
   @Column
-  state: RunnerJobStateType
+  declare state: RunnerJobStateType
 
   @AllowNull(false)
   @Default(0)
   @Column
-  failures: number
+  declare failures: number
 
   @AllowNull(true)
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.RUNNER_JOBS.ERROR_MESSAGE.max))
-  error: string
+  declare error: string
 
   // Less has priority
   @AllowNull(false)
   @Column
-  priority: number
+  declare priority: number
 
   // Used to fetch the appropriate job when the runner wants to post the result
   @AllowNull(true)
-  @Column
-  processingJobToken: string
+  @Column(DataType.STRING(CONSTRAINTS_FIELDS.RUNNER_JOBS.TOKEN.max))
+  declare processingJobToken: string
 
   @AllowNull(true)
   @Column
-  progress: number
+  declare progress: number
 
   @AllowNull(true)
   @Column
-  startedAt: Date
+  declare startedAt: Date
 
   @AllowNull(true)
   @Column
-  finishedAt: Date
+  declare finishedAt: Date
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @ForeignKey(() => RunnerJobModel)
   @Column
-  dependsOnRunnerJobId: number
+  declare dependsOnRunnerJobId: number
 
   @BelongsTo(() => RunnerJobModel, {
     foreignKey: {
@@ -136,11 +139,11 @@ export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
     },
     onDelete: 'cascade'
   })
-  DependsOnRunnerJob: Awaited<RunnerJobModel>
+  declare DependsOnRunnerJob: Awaited<RunnerJobModel>
 
   @ForeignKey(() => RunnerModel)
   @Column
-  runnerId: number
+  declare runnerId: number
 
   @BelongsTo(() => RunnerModel, {
     foreignKey: {
@@ -149,7 +152,7 @@ export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
     },
     onDelete: 'SET NULL'
   })
-  Runner: Awaited<RunnerModel>
+  declare Runner: Awaited<RunnerModel>
 
   // ---------------------------------------------------------------------------
 
@@ -241,8 +244,9 @@ export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
     sort: string
     search?: string
     stateOneOf?: RunnerJobStateType[]
+    typeOneOf?: RunnerJobType[]
   }) {
-    const { start, count, sort, search, stateOneOf } = options
+    const { start, count, sort, search, stateOneOf, typeOneOf } = options
 
     const query = {
       offset: start,
@@ -272,10 +276,36 @@ export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
       })
     }
 
+    if (isArray(typeOneOf) && typeOneOf.length !== 0) {
+      query.where.push({
+        type: {
+          [Op.in]: typeOneOf
+        }
+      })
+    }
+
     return Promise.all([
       RunnerJobModel.scope([ ScopeNames.WITH_RUNNER ]).count(query),
       RunnerJobModel.scope([ ScopeNames.WITH_RUNNER, ScopeNames.WITH_PARENT ]).findAll<MRunnerJobRunnerParent>(query)
     ]).then(([ total, data ]) => ({ total, data }))
+  }
+
+  static getStats () {
+    return RunnerJobModel.findAll<MRunnerJob>({
+      attributes: [
+        'type',
+        'state',
+        [ literal('COUNT(*)'), 'count' ]
+      ],
+      group: [ 'type', 'state' ],
+      raw: true
+    }).then(rows => {
+      return (rows as any[]).map(row => ({
+        jobType: row.type as RunnerJobType,
+        state: row.state as RunnerJobStateType,
+        count: parseAggregateResult(row.count)
+      }))
+    })
   }
 
   static updateDependantJobsOf (runnerJob: MRunnerJob) {
@@ -308,8 +338,12 @@ export class RunnerJobModel extends SequelizeModel<RunnerJobModel> {
   }
 
   setToErrorOrCancel (
-    // eslint-disable-next-line max-len
-    state: typeof RunnerJobState.PARENT_ERRORED | typeof RunnerJobState.ERRORED | typeof RunnerJobState.CANCELLED | typeof RunnerJobState.PARENT_CANCELLED
+    // oxlint-disable-next-line max-len
+    state:
+      | typeof RunnerJobState.PARENT_ERRORED
+      | typeof RunnerJobState.ERRORED
+      | typeof RunnerJobState.CANCELLED
+      | typeof RunnerJobState.PARENT_CANCELLED
   ) {
     this.state = state
     this.processingJobToken = null

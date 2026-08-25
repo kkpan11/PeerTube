@@ -1,17 +1,17 @@
 import memoizee from 'memoizee'
 import { Meter } from '@opentelemetry/api'
-import { MEMOIZE_TTL } from '@server/initializers/constants.js'
+import { MEMOIZE_TTL, VIDEO_PRIVACIES } from '@server/initializers/constants.js'
 import { buildAvailableActivities } from '@server/lib/activitypub/activity.js'
 import { StatsManager } from '@server/lib/stat-manager.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { getAllPrivacies } from '@peertube/peertube-core-utils'
 
 export class StatsObserversBuilder {
-
   private readonly getInstanceStats = memoizee(() => {
     return StatsManager.Instance.getStats()
   }, { maxAge: MEMOIZE_TTL.GET_STATS_FOR_OPEN_TELEMETRY_METRICS })
 
   constructor (private readonly meter: Meter) {
-
   }
 
   buildObservers () {
@@ -71,7 +71,12 @@ export class StatsObserversBuilder {
     }).addCallback(async observableResult => {
       const stats = await this.getInstanceStats()
 
-      observableResult.observe(stats.totalLocalVideos, { videoOrigin: 'local' })
+      for (const videoPrivacy of getAllPrivacies()) {
+        const total = await VideoModel.getTotalLocalVideosByPrivacy(videoPrivacy)
+
+        observableResult.observe(total, { videoOrigin: 'local', privacy: VIDEO_PRIVACIES[videoPrivacy] })
+      }
+
       observableResult.observe(stats.totalVideos - stats.totalLocalVideos, { videoOrigin: 'remote' })
     })
 
@@ -81,6 +86,14 @@ export class StatsObserversBuilder {
       const stats = await this.getInstanceStats()
 
       observableResult.observe(stats.totalLocalVideoViews, { viewOrigin: 'local' })
+    })
+
+    this.meter.createObservableGauge('peertube_video_downloads_total', {
+      description: 'Total video downloads made on the instance'
+    }).addCallback(async observableResult => {
+      const stats = await this.getInstanceStats()
+
+      observableResult.observe(stats.totalLocalVideoDownloads, { viewOrigin: 'local' })
     })
 
     this.meter.createObservableGauge('peertube_video_bytes_total', {
@@ -147,6 +160,8 @@ export class StatsObserversBuilder {
       const stats = await this.getInstanceStats()
 
       for (const r of stats.videosRedundancy) {
+        if (r.totalSize === 0) continue
+
         observableResult.observe(r.totalSize, { strategy: r.strategy })
       }
     })

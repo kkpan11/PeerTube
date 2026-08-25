@@ -1,19 +1,14 @@
 import { pick } from '@peertube/peertube-core-utils'
 import { ffprobePromise, getVideoStreamDuration } from '@peertube/peertube-ffmpeg'
-import {
-  LiveVideoLatencyMode,
-  ThumbnailType,
-  VideoCommentPolicy,
-  VideoExportJSON,
-  VideoPrivacy,
-  VideoState
-} from '@peertube/peertube-models'
+import { LiveVideoLatencyMode, VideoEmbedPrivacyPolicy, VideoExportJSON, VideoPrivacy, VideoState } from '@peertube/peertube-models'
 import { buildUUID, getFileSize } from '@peertube/peertube-node-utils'
 import { isArray, isBooleanValid, isUUIDValid } from '@server/helpers/custom-validators/misc.js'
+import { isPlayerVideoThemeSettingValid } from '@server/helpers/custom-validators/player-settings.js'
 import { isVideoCaptionLanguageValid } from '@server/helpers/custom-validators/video-captions.js'
 import { isVideoChannelUsernameValid } from '@server/helpers/custom-validators/video-channels.js'
 import { isVideoChapterTimecodeValid, isVideoChapterTitleValid } from '@server/helpers/custom-validators/video-chapters.js'
-import { isLiveLatencyModeValid } from '@server/helpers/custom-validators/video-lives.js'
+import { areVideoEmbedPrivacyDomainsValid, isVideoEmbedPrivacyPolicyValid } from '@server/helpers/custom-validators/video-embed-privacy.js'
+import { isLiveDvrWindowValid, isLiveLatencyModeValid, isLiveScheduleValid } from '@server/helpers/custom-validators/video-lives.js'
 import {
   isPasswordValid,
   isVideoCategoryValid,
@@ -23,38 +18,64 @@ import {
   isVideoLanguageValid,
   isVideoLicenceValid,
   isVideoNameValid,
-  isVideoOriginallyPublishedAtValid,
   isVideoPrivacyValid,
+  isVideoPublicationDateValid,
   isVideoReplayPrivacyValid,
   isVideoSourceFilenameValid,
   isVideoSupportValid,
   isVideoTagValid
 } from '@server/helpers/custom-validators/videos.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { CONSTRAINTS_FIELDS } from '@server/initializers/constants.js'
-import { LocalVideoCreator, ThumbnailOptions } from '@server/lib/local-video-creator.js'
+import { LocalVideoCreator } from '@server/lib/local-video-creator.js'
 import { isLocalVideoFileAccepted } from '@server/lib/moderation.js'
 import { Hooks } from '@server/lib/plugins/hooks.js'
 import { isUserQuotaValid } from '@server/lib/user.js'
-import { createLocalCaption } from '@server/lib/video-captions.js'
+import { createLocalCaption, updateHLSMasterOnCaptionChange } from '@server/lib/video-captions.js'
 import { buildNextVideoState } from '@server/lib/video-state.js'
+import { PlayerSettingModel } from '@server/models/video/player-setting.js'
 import { VideoChannelModel } from '@server/models/video/video-channel.js'
+import { VideoEmbedPrivacyDomainModel } from '@server/models/video/video-embed-privacy-domain.js'
 import { VideoModel } from '@server/models/video/video.js'
-import { MChannelId, MVideoFullLight } from '@server/types/models/index.js'
+import { MChannelId, MVideoFull } from '@server/types/models/index.js'
 import { FfprobeData } from 'fluent-ffmpeg'
 import { parse } from 'path'
 import { AbstractUserImporter } from './abstract-user-importer.js'
 
-const lTags = loggerTagsFactory('user-import')
+const logger = createLogger()
 
 type ImportObject = VideoExportJSON['videos'][0]
-type SanitizedObject = Pick<ImportObject, 'name' | 'duration' | 'channel' | 'privacy' | 'archiveFiles' | 'captions' | 'category' |
-'licence' | 'language' | 'description' | 'support' | 'nsfw' | 'isLive' | 'commentsPolicy' | 'downloadEnabled' | 'waitTranscoding' |
-'originallyPublishedAt' | 'tags' | 'live' | 'passwords' | 'source' | 'chapters'>
+type SanitizedObject = Pick<
+  ImportObject,
+  | 'name'
+  | 'duration'
+  | 'channel'
+  | 'privacy'
+  | 'archiveFiles'
+  | 'captions'
+  | 'category'
+  | 'licence'
+  | 'language'
+  | 'description'
+  | 'support'
+  | 'nsfw'
+  | 'isLive'
+  | 'commentsPolicy'
+  | 'downloadEnabled'
+  | 'videoEmbedPrivacy'
+  | 'waitTranscoding'
+  | 'originallyPublishedAt'
+  | 'publishedAt'
+  | 'tags'
+  | 'live'
+  | 'passwords'
+  | 'source'
+  | 'chapters'
+  | 'playerSettings'
+>
 
-export class VideosImporter extends AbstractUserImporter <VideoExportJSON, ImportObject, SanitizedObject> {
-
+export class VideosImporter extends AbstractUserImporter<VideoExportJSON, ImportObject, SanitizedObject> {
   protected getImportObjects (json: VideoExportJSON) {
     return json.videos
   }
@@ -78,19 +99,17 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
     if (!isBooleanValid(o.waitTranscoding)) o.waitTranscoding = true
 
     if (!o.commentsPolicy || !isVideoCommentsPolicyValid(o.commentsPolicy)) {
-      // Fallback to deprecated property
-      if (isBooleanValid(o.commentsEnabled)) {
-        o.commentsPolicy = o.commentsEnabled === true
-          ? VideoCommentPolicy.ENABLED
-          : VideoCommentPolicy.DISABLED
-      } else {
-        o.commentsPolicy = CONFIG.DEFAULTS.PUBLISH.COMMENTS_POLICY
-      }
+      o.commentsPolicy = CONFIG.DEFAULTS.PUBLISH.COMMENTS_POLICY
     }
 
     if (!isVideoSourceFilenameValid(o.source?.inputFilename)) o.source = undefined
 
-    if (!isVideoOriginallyPublishedAtValid(o.originallyPublishedAt)) o.originallyPublishedAt = null
+    if (!o.publishedAt || !isVideoPublicationDateValid(o.publishedAt)) o.publishedAt = null
+    if (!o.originallyPublishedAt || !isVideoPublicationDateValid(o.originallyPublishedAt)) o.originallyPublishedAt = null
+
+    if (!o.videoEmbedPrivacy) o.videoEmbedPrivacy = { policy: VideoEmbedPrivacyPolicy.ALL_ALLOWED, domains: [] }
+    if (!isVideoEmbedPrivacyPolicyValid(o.videoEmbedPrivacy.policy)) o.videoEmbedPrivacy.policy = VideoEmbedPrivacyPolicy.ALL_ALLOWED
+    if (!areVideoEmbedPrivacyDomainsValid(o.videoEmbedPrivacy.domains)) o.videoEmbedPrivacy.domains = []
 
     if (!isArray(o.tags)) o.tags = []
     if (!isArray(o.captions)) o.captions = []
@@ -108,10 +127,22 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
       if (!isBooleanValid(o.live.saveReplay)) o.live.saveReplay = false
       if (o.live.saveReplay && !isVideoReplayPrivacyValid(o.live.replaySettings.privacy)) return undefined
 
+      if (!isLiveDvrWindowValid(o.live.dvrWindow, CONFIG.LIVE.DVR.MAX_WINDOW)) {
+        o.live.dvrWindow = CONFIG.LIVE.DVR.MAX_WINDOW
+      }
+
       if (!o.live.latencyMode || !isLiveLatencyModeValid(o.live.latencyMode)) o.live.latencyMode = LiveVideoLatencyMode.DEFAULT
 
       if (!o.live.streamKey) o.live.streamKey = buildUUID()
       else if (!isUUIDValid(o.live.streamKey)) return undefined
+
+      if (!isArray(o.live.schedules)) o.live.schedules = []
+
+      o.live.schedules = o.live.schedules.filter(s => isLiveScheduleValid(s))
+    }
+
+    if (o.playerSettings) {
+      if (!isPlayerVideoThemeSettingValid(o.playerSettings.theme)) o.playerSettings.theme = undefined
     }
 
     if (o.privacy === VideoPrivacy.PASSWORD_PROTECTED) {
@@ -135,14 +166,17 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
       'isLive',
       'commentsPolicy',
       'downloadEnabled',
+      'videoEmbedPrivacy',
       'waitTranscoding',
       'originallyPublishedAt',
+      'publishedAt',
       'tags',
       'captions',
       'live',
       'passwords',
       'source',
-      'chapters'
+      'chapters',
+      'playerSettings'
     ])
   }
 
@@ -152,14 +186,14 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
       : null
 
     const videoChannel = await VideoChannelModel.loadLocalByNameAndPopulateAccount(videoImportData.channel.name)
-    if (!videoChannel) throw new Error(`Channel ${videoImportData} not found`)
+    if (!videoChannel) throw new Error(`Channel ${videoImportData.channel.name} not found`)
     if (videoChannel.accountId !== this.user.Account.id) {
       throw new Error(`Channel ${videoChannel.name} is not owned by user ${this.user.username}`)
     }
 
     const existingVideo = await VideoModel.loadByNameAndChannel(videoChannel, videoImportData.name)
     if (existingVideo && Math.abs(existingVideo.duration - videoImportData.duration) <= 1) {
-      logger.info(`Do not import video ${videoImportData.name} that already exists in the account`, lTags())
+      logger.info(`Do not import video ${videoImportData.name} that already exists in the account`)
       return { duplicate: true }
     }
 
@@ -171,7 +205,7 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
 
     let ffprobe: FfprobeData
     if (videoFilePath) {
-      if (await isUserQuotaValid({ userId: this.user.id, uploadSize: videoSize, checkDaily: false }) === false) {
+      if (await isUserQuotaValid({ channelUserId: this.user.id, uploadSize: videoSize, checkDaily: false }) === false) {
         throw new Error(`Cannot import video ${videoImportData.name} for user ${this.user.username} because of exceeded quota`)
       }
 
@@ -183,21 +217,7 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
 
     const thumbnailPath = this.getSafeArchivePathOrThrow(videoImportData.archiveFiles.thumbnail)
 
-    const thumbnails: ThumbnailOptions = []
-    for (const type of [ ThumbnailType.MINIATURE, ThumbnailType.PREVIEW ]) {
-      if (!await this.isFileValidOrLog(thumbnailPath, CONSTRAINTS_FIELDS.VIDEOS.IMAGE.FILE_SIZE.max)) continue
-
-      thumbnails.push({
-        path: thumbnailPath,
-        automaticallyGenerated: false,
-        keepOriginal: true,
-        type
-      })
-    }
-
     const localVideoCreator = new LocalVideoCreator({
-      lTags,
-
       videoFile: videoFilePath
         ? { path: videoFilePath, probe: ffprobe }
         : undefined,
@@ -229,6 +249,8 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
           'originallyPublishedAt'
         ]),
 
+        originallyPublishedAt: videoImportData.originallyPublishedAt || videoImportData.publishedAt,
+
         videoPasswords: videoImportData.passwords,
         duration,
 
@@ -236,33 +258,46 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
 
         state: videoImportData.isLive
           ? VideoState.WAITING_FOR_LIVE
-          : buildNextVideoState()
+          : buildNextVideoState(),
+
+        embedPrivacyPolicy: videoImportData.videoEmbedPrivacy.policy
       },
 
       liveAttributes: videoImportData.live,
 
       videoAttributeResultHook: 'filter:api.video.user-import.video-attribute.result',
 
-      thumbnails
+      thumbnail: await this.isFileValidOrLog(thumbnailPath, CONSTRAINTS_FIELDS.VIDEOS.IMAGE.FILE_SIZE.max)
+        ? {
+          path: thumbnailPath,
+          automaticallyGenerated: false,
+          keepOriginal: true
+        }
+        : undefined
     })
 
     const { video } = await localVideoCreator.create()
 
-    await this.importCaptions(video, videoImportData)
+    await logger.withContext([ video.uuid ], async () => {
+      await this.importCaptions(video, videoImportData)
+      await this.importPlayerSettings(video, videoImportData)
+      await this.importVideoEmbedPrivacyDomains(video, videoImportData)
 
-    logger.info('Video %s imported.', video.name, lTags(video.uuid))
+      logger.info('Video %s imported.', video.name)
+    })
 
     return { duplicate: false }
   }
 
-  private async importCaptions (video: MVideoFullLight, videoImportData: SanitizedObject) {
+  private async importCaptions (video: MVideoFull, videoImportData: SanitizedObject) {
     const captionPaths: string[] = []
+    let updateHLS = false
 
     for (const captionImport of videoImportData.captions) {
       const relativeFilePath = videoImportData.archiveFiles?.captions?.[captionImport.language]
 
       if (!relativeFilePath) {
-        logger.warn('Cannot import caption ' + captionImport.language + ': file does not exist in the archive', lTags(video.uuid))
+        logger.warn('Cannot import caption ' + captionImport.language + ': file does not exist in the archive')
         continue
       }
 
@@ -270,7 +305,7 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
 
       if (!await this.isFileValidOrLog(absoluteFilePath, CONSTRAINTS_FIELDS.VIDEO_CAPTIONS.CAPTION_FILE.FILE_SIZE.max)) continue
 
-      await createLocalCaption({
+      const caption = await createLocalCaption({
         video,
         language: captionImport.language,
         path: absoluteFilePath,
@@ -278,9 +313,31 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
       })
 
       captionPaths.push(absoluteFilePath)
+
+      if (caption.m3u8Filename) updateHLS = true
+    }
+
+    if (updateHLS && video.getHLSPlaylist()) {
+      await updateHLSMasterOnCaptionChange(video, video.getHLSPlaylist())
     }
 
     return captionPaths
+  }
+
+  private async importPlayerSettings (video: MVideoFull, videoImportData: SanitizedObject) {
+    const playerSettings = videoImportData.playerSettings
+    if (!playerSettings?.theme) return
+
+    await PlayerSettingModel.create({
+      theme: playerSettings.theme,
+      videoId: video.id
+    })
+  }
+
+  private async importVideoEmbedPrivacyDomains (video: MVideoFull, videoImportData: SanitizedObject) {
+    if (videoImportData.videoEmbedPrivacy.domains.length === 0) return
+
+    await VideoEmbedPrivacyDomainModel.addDomains(videoImportData.videoEmbedPrivacy.domains, video.id)
   }
 
   private async checkVideoFileIsAcceptedOrThrow (options: {
@@ -308,8 +365,8 @@ export class VideosImporter extends AbstractUserImporter <VideoExportJSON, Impor
     }
     const acceptedResult = await Hooks.wrapFun(isLocalVideoFileAccepted, acceptParameters, 'filter:api.video.user-import.accept.result')
 
-    if (!acceptedResult || acceptedResult.accepted !== true) {
-      logger.info('Refused local video file to import.', { acceptedResult, acceptParameters, ...lTags() })
+    if (acceptedResult?.accepted !== true) {
+      logger.info('Refused local video file to import.', { acceptedResult, acceptParameters })
 
       throw new Error('Video file is not accepted: ' + acceptedResult.errorMessage || 'unknown reason')
     }

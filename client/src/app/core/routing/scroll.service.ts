@@ -1,10 +1,11 @@
-import debug from 'debug'
-import { pairwise } from 'rxjs'
 import { ViewportScroller } from '@angular/common'
 import { Injectable, inject } from '@angular/core'
+import { NavigationSkipped, Scroll } from '@angular/router'
+import { logger } from '@root-helpers/logger'
+import debug from 'debug'
+import { pairwise } from 'rxjs'
 import { RouterSetting } from '../'
 import { PeerTubeRouterService } from './peertube-router.service'
-import { logger } from '@root-helpers/logger'
 
 const debugLogger = debug('peertube:main:ScrollService')
 
@@ -34,25 +35,29 @@ export class ScrollService {
           const nextUrl = new URL(window.location.origin + e2.urlAfterRedirects)
 
           if (previousUrl.pathname !== nextUrl.pathname) {
+            debugLogger('Schedule reset scroll after pathname change', { previousUrl, nextUrl })
+
             this.resetScroll = true
             return
           }
 
           if (this.peertubeRouter.hasRouteSetting(RouterSetting.DISABLE_SCROLL_RESTORE)) {
+            debugLogger('Do not reset scroll after because router state disabled scroll restore')
+
             this.resetScroll = false
             return
           }
 
           // Remove route settings from the comparison
           const nextSearchParams = nextUrl.searchParams
-          nextSearchParams.delete(PeerTubeRouterService.ROUTE_SETTING_NAME)
-
           const previousSearchParams = previousUrl.searchParams
 
           nextSearchParams.sort()
           previousSearchParams.sort()
 
           if (nextSearchParams.toString() !== previousSearchParams.toString()) {
+            debugLogger('Schedule reset scroll after search params change', { previousUrl, nextUrl })
+
             this.resetScroll = true
           }
         } catch (err) {
@@ -63,26 +68,49 @@ export class ScrollService {
   }
 
   private consumeScroll () {
+    let unhandledScrollEvent: Scroll | undefined
+
     // Handle anchors/restore position
     this.peertubeRouter.getScrollEvents().subscribe(e => {
-      debugLogger('Will schedule scroll after router event %o.', { e, resetScroll: this.resetScroll })
+      unhandledScrollEvent = undefined
 
       // scrollToAnchor first to preserve anchor position when using history navigation
       if (e.anchor) {
+        debugLogger('Scroll to anchor.', { e, resetScroll: this.resetScroll })
+
         setTimeout(() => this.viewportScroller.scrollToAnchor(e.anchor))
 
         return
       }
 
       if (e.position) {
-        setTimeout(() => this.viewportScroller.scrollToPosition(e.position))
+        debugLogger('Scroll to position.', { e, resetScroll: this.resetScroll })
+
+        this.viewportScroller.scrollToPosition(e.position)
+
+        if (e.position[1] > document.documentElement.scrollHeight) {
+          debugLogger('Could not scroll to position, marking scroll event as unhandled')
+          unhandledScrollEvent = e
+        }
 
         return
       }
 
-      if (this.resetScroll) {
+      if (this.resetScroll && !(e.routerEvent instanceof NavigationSkipped)) {
+        debugLogger('Reset scroll.', { e, resetScroll: this.resetScroll })
+
         return this.viewportScroller.scrollToPosition([ 0, 0 ])
       }
     })
+
+    new ResizeObserver(() => {
+      if (!unhandledScrollEvent) return
+      if (unhandledScrollEvent.position[1] > document.documentElement.scrollHeight) return
+
+      debugLogger('Can now scroll to position, handling previous scroll event')
+
+      this.viewportScroller.scrollToPosition(unhandledScrollEvent.position)
+      unhandledScrollEvent = undefined
+    }).observe(document.documentElement)
   }
 }

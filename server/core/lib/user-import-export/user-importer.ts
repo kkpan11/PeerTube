@@ -1,7 +1,8 @@
 import { UserImportResultSummary, UserImportState } from '@peertube/peertube-models'
-import { getFilenameWithoutExt } from '@peertube/peertube-node-utils'
+import { getFilenameWithoutExt, getFileSize } from '@peertube/peertube-node-utils'
+import { parseBytes } from '@server/helpers/core-utils.js'
 import { saveInTransactionWithRetries } from '@server/helpers/database-utils.js'
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { unzip } from '@server/helpers/unzip.js'
 import { UserModel } from '@server/models/user/user.js'
 import { MUserDefault, MUserImport } from '@server/types/models/index.js'
@@ -21,7 +22,7 @@ import { VideoPlaylistsImporter } from './importers/video-playlists-importer.js'
 import { VideosImporter } from './importers/videos-importer.js'
 import { WatchedWordsListsImporter } from './importers/watched-words-lists-importer.js'
 
-const lTags = loggerTagsFactory('user-import')
+const logger = createLogger('user-import')
 
 export class UserImporter {
   private extractedDirectory: string
@@ -51,29 +52,38 @@ export class UserImporter {
       const inputZip = getFSUserImportFilePath(importModel)
       this.extractedDirectory = join(dirname(inputZip), getFilenameWithoutExt(inputZip))
 
-      await unzip(inputZip, this.extractedDirectory)
+      await unzip({
+        source: inputZip,
+        destination: this.extractedDirectory,
+        // Videos that take a lot of space don't have a good compression ratio
+        // Keep a minimum of 1GB if the archive doesn't contain video files
+        maxSize: Math.max(await getFileSize(inputZip) * 2, parseBytes('1GB')),
+        maxFiles: 10000
+      })
 
       const user = await UserModel.loadByIdFull(importModel.userId)
 
-      for (const { name, importer } of this.buildImporters(user)) {
-        try {
-          const { duplicates, errors, success } = await importer.import()
+      await logger.withContext([ user.username ], async () => {
+        for (const { name, importer } of this.buildImporters(user)) {
+          try {
+            const { duplicates, errors, success } = await importer.import()
 
-          resultSummary.stats[name].duplicates += duplicates
-          resultSummary.stats[name].errors += errors
-          resultSummary.stats[name].success += success
-        } catch (err) {
-          logger.error(`Cannot import ${importer.getJSONFilePath()} from ${inputZip}`, { err, ...lTags() })
+            resultSummary.stats[name].duplicates += duplicates
+            resultSummary.stats[name].errors += errors
+            resultSummary.stats[name].success += success
+          } catch (err) {
+            logger.error(`Cannot import ${importer.getJSONFilePath()} from ${inputZip}`, { err })
 
-          resultSummary.stats[name].errors++
+            resultSummary.stats[name].errors++
+          }
         }
-      }
 
-      importModel.state = UserImportState.COMPLETED
-      importModel.resultSummary = resultSummary
-      await saveInTransactionWithRetries(importModel)
+        importModel.state = UserImportState.COMPLETED
+        importModel.resultSummary = resultSummary
+        await saveInTransactionWithRetries(importModel)
+      })
     } catch (err) {
-      logger.error('Cannot import user archive', { err, ...lTags() })
+      logger.error('Cannot import user archive', { err })
 
       try {
         importModel.state = UserImportState.ERRORED
@@ -81,7 +91,7 @@ export class UserImporter {
 
         await saveInTransactionWithRetries(importModel)
       } catch (innerErr) {
-        logger.error('Cannot set import error state', { err: innerErr, ...lTags() })
+        logger.error('Cannot set import error state', { err: innerErr })
       }
 
       throw err
@@ -90,7 +100,7 @@ export class UserImporter {
         await remove(getFSUserImportFilePath(importModel))
         await remove(this.extractedDirectory)
       } catch (innerErr) {
-        logger.error('Cannot remove import archive and directory after failure', { err: innerErr, ...lTags() })
+        logger.error('Cannot remove import archive and directory after failure', { err: innerErr })
       }
     }
   }
@@ -99,51 +109,51 @@ export class UserImporter {
     // Keep consistency in import order (don't import videos before channels for example)
     return [
       {
-        name: 'account' as 'account',
+        name: 'account' as const,
         importer: new AccountImporter(this.buildImporterOptions(user, 'account.json'))
       },
       {
-        name: 'userSettings' as 'userSettings',
+        name: 'userSettings' as const,
         importer: new UserSettingsImporter(this.buildImporterOptions(user, 'user-settings.json'))
       },
       {
-        name: 'channels' as 'channels',
+        name: 'channels' as const,
         importer: new ChannelsImporter(this.buildImporterOptions(user, 'channels.json'))
       },
       {
-        name: 'blocklist' as 'blocklist',
+        name: 'blocklist' as const,
         importer: new BlocklistImporter(this.buildImporterOptions(user, 'blocklist.json'))
       },
       {
-        name: 'following' as 'following',
+        name: 'following' as const,
         importer: new FollowingImporter(this.buildImporterOptions(user, 'following.json'))
       },
       {
-        name: 'videos' as 'videos',
+        name: 'videos' as const,
         importer: new VideosImporter(this.buildImporterOptions(user, 'videos.json'))
       },
       {
-        name: 'likes' as 'likes',
+        name: 'likes' as const,
         importer: new LikesImporter(this.buildImporterOptions(user, 'likes.json'))
       },
       {
-        name: 'dislikes' as 'dislikes',
+        name: 'dislikes' as const,
         importer: new DislikesImporter(this.buildImporterOptions(user, 'dislikes.json'))
       },
       {
-        name: 'videoPlaylists' as 'videoPlaylists',
+        name: 'videoPlaylists' as const,
         importer: new VideoPlaylistsImporter(this.buildImporterOptions(user, 'video-playlists.json'))
       },
       {
-        name: 'userVideoHistory' as 'userVideoHistory',
+        name: 'userVideoHistory' as const,
         importer: new UserVideoHistoryImporter(this.buildImporterOptions(user, 'video-history.json'))
       },
       {
-        name: 'watchedWordsLists' as 'watchedWordsLists',
+        name: 'watchedWordsLists' as const,
         importer: new WatchedWordsListsImporter(this.buildImporterOptions(user, 'watched-words-lists.json'))
       },
       {
-        name: 'commentAutoTagPolicies' as 'commentAutoTagPolicies',
+        name: 'commentAutoTagPolicies' as const,
         importer: new ReviewCommentsTagPoliciesImporter(this.buildImporterOptions(user, 'automatic-tag-policies.json'))
       }
     ]

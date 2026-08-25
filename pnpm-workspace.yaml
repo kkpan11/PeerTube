@@ -1,0 +1,40 @@
+packages:
+  - packages/*
+  - apps/*
+  - server
+  - client
+  - client/packages/*
+  - client/src/standalone/player
+
+blockExoticSubdeps: false
+
+ignoredBuiltDependencies:
+  - sharp
+
+minimumReleaseAge: 1440
+
+onlyBuiltDependencies:
+  - '@parcel/watcher'
+  - '@swc/core'
+  - bcrypt
+  - bufferutil
+  - core-js
+  - edgedriver
+  - es5-ext
+  - esbuild
+  - geckodriver
+  - lmdb
+  - msgpackr-extract
+  - node-datachannel
+  - protobufjs
+  - utf-8-validate
+  - utp-native
+
+overrides:
+  '@types/express': 4.17.9
+  '@types/express-serve-static-core': 4.19.5
+
+patchedDependencies:
+  sharp: pnpm-patches/sharp.patch
+  tinykeys: pnpm-patches/tinykeys.patch
+  video.js: pnpm-patches/video.js.patch

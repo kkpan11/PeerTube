@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { wait } from '@peertube/peertube-core-utils'
@@ -94,7 +94,8 @@ describe('Test application behind a reverse proxy', function () {
   })
 
   it('Should rate limit logins', async function () {
-    const user = { username: 'root', password: 'fail' }
+    // Use an account that does not exist so the IP rate limiter is tested, not the per-account login lockout
+    const user = { username: 'unknown-user', password: 'fail' }
 
     for (let i = 0; i < 18; i++) {
       await server.login.login({ user, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
@@ -124,8 +125,7 @@ describe('Test application behind a reverse proxy', function () {
       await server.registrations.register({ username: 'test' + i, expectedStatus: HttpStatusCode.CONFLICT_409 })
     }
 
-    await server.registrations.register({ username: 'test43', expectedStatus: HttpStatusCode.NO_CONTENT_204 })
-
+    await server.registrations.register({ username: 'test43', expectedStatus: HttpStatusCode.OK_200 })
   })
 
   it('Should rate limit API calls', async function () {

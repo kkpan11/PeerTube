@@ -1,9 +1,9 @@
-import videojs from 'video.js'
 import { VideoPlaylistElement } from '@peertube/peertube-models'
-import { PlaylistPluginOptions } from '../../types'
+import videojs from 'video.js'
+import { PlaylistPluginOptions, VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 import { PlaylistMenuItem } from './playlist-menu-item'
 
-const Component = videojs.getComponent('Component')
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
 
 class PlaylistMenu extends Component {
   declare private menuItems: PlaylistMenuItem[]
@@ -14,9 +14,9 @@ class PlaylistMenu extends Component {
 
   declare private readonly onPlayerCick: (event: Event) => void
 
-  declare options_: PlaylistPluginOptions & videojs.ComponentOptions
+  declare options_: PlaylistPluginOptions & VideojsComponentOptions
 
-  constructor (player: videojs.Player, options?: PlaylistPluginOptions & videojs.ComponentOptions) {
+  constructor (player: VideojsPlayer, options?: PlaylistPluginOptions & VideojsComponentOptions) {
     super(player, options)
 
     this.menuItems = []
@@ -60,8 +60,10 @@ class PlaylistMenu extends Component {
     this.el().removeEventListener('mouseenter', this.onMouseEnter)
     this.el().removeEventListener('mouseleave', this.onMouseLeave)
 
-    this.player().off('userinactive', this.userInactiveHandler)
-    this.player().off('click', this.onPlayerCick)
+    if (this.player()) {
+      this.player().off('userinactive', this.userInactiveHandler)
+      this.player().off('click', this.onPlayerCick)
+    }
 
     for (const item of this.menuItems) {
       item.dispose()
@@ -152,6 +154,6 @@ class PlaylistMenu extends Component {
   }
 }
 
-Component.registerComponent('PlaylistMenu', PlaylistMenu)
+videojs.registerComponent('PlaylistMenu', PlaylistMenu)
 
 export { PlaylistMenu }

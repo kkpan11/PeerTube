@@ -1,5 +1,4 @@
-import { NgIf } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { Component, inject, OnDestroy, OnInit, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { ComponentPaginationLight, DisableForReuseHook, ScreenService } from '@app/core'
 import { Account } from '@app/shared/shared-main/account/account.model'
 import { AccountService } from '@app/shared/shared-main/account/account.service'
@@ -12,7 +11,8 @@ import { VideosListComponent } from '../../shared/shared-video-miniature/videos-
 @Component({
   selector: 'my-account-videos',
   templateUrl: './account-videos.component.html',
-  imports: [ NgIf, VideosListComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ VideosListComponent ]
 })
 export class AccountVideosComponent implements OnInit, OnDestroy, DisableForReuseHook {
   private screenService = inject(ScreenService)
@@ -37,6 +37,8 @@ export class AccountVideosComponent implements OnInit, OnDestroy, DisableForReus
     // Parent get the account for us
     this.accountSub = this.accountService.accountLoaded
       .subscribe(account => {
+        if (account.id === this.account?.id) return
+
         this.account = account
         if (this.alreadyLoaded) this.videosList().reloadVideos()
 
@@ -49,15 +51,14 @@ export class AccountVideosComponent implements OnInit, OnDestroy, DisableForReus
   }
 
   getVideosObservable (pagination: ComponentPaginationLight, filters: VideoFilters) {
-    const options = {
+    return this.videoService.listAccountVideos({
       ...filters.toVideosAPIObject(),
 
       videoPagination: pagination,
       account: this.account,
-      skipCount: true
-    }
-
-    return this.videoService.getAccountVideos(options)
+      skipCount: true,
+      includeScheduledLive: true
+    })
   }
 
   getSyndicationItems () {

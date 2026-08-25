@@ -49,7 +49,7 @@ export class ServersCommand extends AbstractCommand {
       if (!isGithubCI()) return
 
       await ensureDir('artifacts')
-      const destname = join('artifacts', 'databases', `peertube-${this.server.internalServerNumber}.sql`)
+      const destname = join('artifacts', `peertube-${this.server.internalServerNumber}.sql`)
       console.log('Saving database %s.', destname)
 
       exec(`pg_dump peertube_test${this.server.internalServerNumber} > ${destname}`)
@@ -77,7 +77,7 @@ export class ServersCommand extends AbstractCommand {
       const buf = await readFile(logfile)
 
       const matches = buf.toString().match(new RegExp(str, 'g'))
-      if (matches && matches.length === count) return
+      if (matches?.length === count) return
       if (matches && strictCount === false && matches.length >= count) return
 
       await wait(1000)

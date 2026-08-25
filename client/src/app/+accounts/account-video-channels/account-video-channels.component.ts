@@ -1,27 +1,27 @@
-import { from, Subject, Subscription } from 'rxjs'
-import { concatMap, map, switchMap, tap } from 'rxjs/operators'
-import { Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { Component, inject, OnDestroy, OnInit, ChangeDetectionStrategy } from '@angular/core'
+import { RouterLink } from '@angular/router'
 import { ComponentPagination, hasMoreItems, MarkdownService, User, UserService } from '@app/core'
 import { SimpleMemoize } from '@app/helpers'
 import { NSFWPolicyType, VideoSortField } from '@peertube/peertube-models'
-import { MiniatureDisplayOptions, VideoMiniatureComponent } from '../../shared/shared-video-miniature/video-miniature.component'
-import { SubscribeButtonComponent } from '../../shared/shared-user-subscription/subscribe-button.component'
-import { RouterLink } from '@angular/router'
+import { from, Subject, Subscription } from 'rxjs'
+import { concatMap, map, switchMap, tap } from 'rxjs/operators'
 import { ActorAvatarComponent } from '../../shared/shared-actor-image/actor-avatar.component'
 import { InfiniteScrollerDirective } from '../../shared/shared-main/common/infinite-scroller.directive'
-import { NgIf, NgFor } from '@angular/common'
-import { AccountService } from '@app/shared/shared-main/account/account.service'
-import { VideoChannelService } from '@app/shared/shared-main/channel/video-channel.service'
-import { VideoService } from '@app/shared/shared-main/video/video.service'
-import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
+import { SubscribeButtonComponent } from '../../shared/shared-user-subscription/subscribe-button.component'
+import { MiniatureDisplayOptions, VideoMiniatureComponent } from '../../shared/shared-video-miniature/video-miniature.component'
 import { Account } from '@app/shared/shared-main/account/account.model'
+import { AccountService } from '@app/shared/shared-main/account/account.service'
+import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
+import { VideoChannelService } from '@app/shared/shared-main/channel/video-channel.service'
 import { Video } from '@app/shared/shared-main/video/video.model'
+import { VideoService } from '@app/shared/shared-main/video/video.service'
 
 @Component({
   selector: 'my-account-video-channels',
   templateUrl: './account-video-channels.component.html',
   styleUrls: [ './account-video-channels.component.scss' ],
-  imports: [ NgIf, InfiniteScrollerDirective, NgFor, ActorAvatarComponent, RouterLink, SubscribeButtonComponent, VideoMiniatureComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ InfiniteScrollerDirective, ActorAvatarComponent, RouterLink, SubscribeButtonComponent, VideoMiniatureComponent ]
 })
 export class AccountVideoChannelsComponent implements OnInit, OnDestroy {
   private accountService = inject(AccountService)
@@ -59,10 +59,7 @@ export class AccountVideoChannelsComponent implements OnInit, OnDestroy {
     views: true,
     by: false,
     avatar: false,
-    privacyLabel: false,
-    privacyText: false,
-    state: false,
-    blacklistInfo: false
+    privacyLabel: false
   }
 
   private accountSub: Subscription
@@ -96,7 +93,7 @@ export class AccountVideoChannelsComponent implements OnInit, OnDestroy {
       sort: '-updatedAt'
     }
 
-    this.videoChannelService.listAccountVideoChannels(options)
+    this.videoChannelService.listAccountChannels(options)
       .pipe(
         tap(res => {
           this.channelPagination.totalItems = res.total
@@ -110,7 +107,7 @@ export class AccountVideoChannelsComponent implements OnInit, OnDestroy {
             nsfw: this.videoService.nsfwPolicyToParam(this.nsfwPolicy)
           }
 
-          return this.videoService.getVideoChannelVideos(options)
+          return this.videoService.listChannelVideos(options)
             .pipe(map(data => ({ videoChannel, videos: data.data, total: data.total })))
         })
       )

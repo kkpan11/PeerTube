@@ -1,32 +1,48 @@
+import {
+  VideoStatsOverallQuery,
+  VideoStatsTimeserieMetric,
+  VideoStatsTimeserieQuery,
+  VideoStatsUserAgentQuery
+} from '@peertube/peertube-models'
+import { LocalVideoViewerModel } from '@server/models/stat/local-video-viewer.js'
+import { VideoStatModel } from '@server/models/stat/video-stat.js'
 import express from 'express'
-import { LocalVideoViewerModel } from '@server/models/view/local-video-viewer.js'
-import { VideoStatsOverallQuery, VideoStatsTimeserieMetric, VideoStatsTimeserieQuery } from '@peertube/peertube-models'
 import {
   asyncMiddleware,
   authenticate,
-  videoOverallStatsValidator,
+  videoOverallOrUserAgentStatsValidator,
   videoRetentionStatsValidator,
-  videoTimeserieStatsValidator
+  videoTimeseriesStatsValidator
 } from '../../../middlewares/index.js'
 
 const statsRouter = express.Router()
 
-statsRouter.get('/:videoId/stats/overall',
+statsRouter.get(
+  '/:videoId/stats/overall',
   authenticate,
-  asyncMiddleware(videoOverallStatsValidator),
+  asyncMiddleware(videoOverallOrUserAgentStatsValidator),
   asyncMiddleware(getOverallStats)
 )
 
-statsRouter.get('/:videoId/stats/timeseries/:metric',
+statsRouter.get(
+  '/:videoId/stats/timeseries/:metric',
   authenticate,
-  asyncMiddleware(videoTimeserieStatsValidator),
-  asyncMiddleware(getTimeserieStats)
+  asyncMiddleware(videoTimeseriesStatsValidator),
+  asyncMiddleware(getTimeseriesStats)
 )
 
-statsRouter.get('/:videoId/stats/retention',
+statsRouter.get(
+  '/:videoId/stats/retention',
   authenticate,
   asyncMiddleware(videoRetentionStatsValidator),
   asyncMiddleware(getRetentionStats)
+)
+
+statsRouter.get(
+  '/:videoId/stats/user-agent',
+  authenticate,
+  asyncMiddleware(videoOverallOrUserAgentStatsValidator),
+  asyncMiddleware(getUserAgentStats)
 )
 
 // ---------------------------------------------------------------------------
@@ -38,7 +54,7 @@ export {
 // ---------------------------------------------------------------------------
 
 async function getOverallStats (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
+  const video = res.locals.videoWithRights
   const query = req.query as VideoStatsOverallQuery
 
   const stats = await LocalVideoViewerModel.getOverallStats({
@@ -50,26 +66,41 @@ async function getOverallStats (req: express.Request, res: express.Response) {
   return res.json(stats)
 }
 
+async function getUserAgentStats (req: express.Request, res: express.Response) {
+  const video = res.locals.videoWithRights
+  const query = req.query as VideoStatsUserAgentQuery
+
+  const stats = await LocalVideoViewerModel.getUserAgentStats({
+    video,
+    startDate: query.startDate,
+    endDate: query.endDate
+  })
+
+  return res.json(stats)
+}
+
 async function getRetentionStats (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
+  const video = res.locals.videoWithRights
 
   const stats = await LocalVideoViewerModel.getRetentionStats(video)
 
   return res.json(stats)
 }
 
-async function getTimeserieStats (req: express.Request, res: express.Response) {
-  const video = res.locals.videoAll
+async function getTimeseriesStats (req: express.Request, res: express.Response) {
+  const video = res.locals.videoWithRights
   const metric = req.params.metric as VideoStatsTimeserieMetric
-
   const query = req.query as VideoStatsTimeserieQuery
 
-  const stats = await LocalVideoViewerModel.getTimeserieStats({
+  const options = {
     video,
-    metric,
     startDate: query.startDate ?? video.createdAt.toISOString(),
     endDate: query.endDate ?? new Date().toISOString()
-  })
+  }
+
+  const stats = metric === 'downloads'
+    ? await VideoStatModel.getDownloadTimeserieStats(options)
+    : await LocalVideoViewerModel.getTimeserieStats({ ...options, metric })
 
   return res.json(stats)
 }

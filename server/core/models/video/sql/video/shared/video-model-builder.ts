@@ -1,39 +1,42 @@
 import { VideoInclude, VideoIncludeType } from '@peertube/peertube-models'
-import { AccountBlocklistModel } from '@server/models/account/account-blocklist.js'
 import { AccountModel } from '@server/models/account/account.js'
 import { ActorImageModel } from '@server/models/actor/actor-image.js'
 import { ActorModel } from '@server/models/actor/actor.js'
 import { AutomaticTagModel } from '@server/models/automatic-tag/automatic-tag.js'
 import { VideoAutomaticTagModel } from '@server/models/automatic-tag/video-automatic-tag.js'
+import { AccountBlocklistModel } from '@server/models/blocklist/account-blocklist.js'
+import { ServerBlocklistModel } from '@server/models/blocklist/server-blocklist.js'
 import { VideoRedundancyModel } from '@server/models/redundancy/video-redundancy.js'
-import { ServerBlocklistModel } from '@server/models/server/server-blocklist.js'
 import { ServerModel } from '@server/models/server/server.js'
 import { TrackerModel } from '@server/models/server/tracker.js'
 import { UserVideoHistoryModel } from '@server/models/user/user-video-history.js'
+import { VideoCaptionModel } from '@server/models/video/video-caption.js'
+import { VideoLiveScheduleModel } from '@server/models/video/video-live-schedule.js'
 import { VideoSourceModel } from '@server/models/video/video-source.js'
 import { ScheduleVideoUpdateModel } from '../../../schedule-video-update.js'
+import { StoryboardModel } from '../../../storyboard.js'
 import { TagModel } from '../../../tag.js'
 import { ThumbnailModel } from '../../../thumbnail.js'
 import { VideoBlacklistModel } from '../../../video-blacklist.js'
 import { VideoChannelModel } from '../../../video-channel.js'
 import { VideoFileModel } from '../../../video-file.js'
+import { VideoInfohashModel } from '../../../video-infohash.js'
 import { VideoLiveModel } from '../../../video-live.js'
 import { VideoStreamingPlaylistModel } from '../../../video-streaming-playlist.js'
 import { VideoModel } from '../../../video.js'
+import { TableAttributeOptions } from './table-attributes-options.model.js'
 import { VideoTableAttributes } from './video-table-attributes.js'
 
 type SQLRow = { [id: string]: string | number }
 
 /**
- *
  * Build video models from SQL rows
- *
  */
 
 export class VideoModelBuilder {
-  private videosMemo: { [ id: number ]: VideoModel }
-  private videoStreamingPlaylistMemo: { [ id: number ]: VideoStreamingPlaylistModel }
-  private videoFileMemo: { [ id: number ]: VideoFileModel }
+  private videosMemo: { [id: number]: VideoModel }
+  private videoStreamingPlaylistMemo: { [id: number]: VideoStreamingPlaylistModel }
+  private videoFileMemo: { [id: number]: VideoFileModel }
 
   private thumbnailsDone: Set<any>
   private actorImagesDone: Set<any>
@@ -43,14 +46,19 @@ export class VideoModelBuilder {
   private serverBlocklistDone: Set<any>
   private liveDone: Set<any>
   private sourceDone: Set<any>
+  private liveScheduleDone: Set<any>
   private redundancyDone: Set<any>
   private scheduleVideoUpdateDone: Set<any>
+  private storyboardDone: Set<any>
 
   private trackersDone: Set<string>
   private tagsDone: Set<string>
   private autoTagsDone: Set<string>
+  private captionsDone: Set<any>
 
   private videos: VideoModel[]
+
+  private tableAttributeOptions: TableAttributeOptions
 
   private readonly buildOpts = { raw: true, isNewRecord: false }
 
@@ -58,26 +66,32 @@ export class VideoModelBuilder {
     private readonly mode: 'get' | 'list',
     private readonly tables: VideoTableAttributes
   ) {
-
   }
 
   buildVideosFromRows (options: {
     rows: SQLRow[]
+    addCaptions: boolean
     include?: VideoIncludeType
     rowsWebVideoFiles?: SQLRow[]
     rowsStreamingPlaylist?: SQLRow[]
+
+    tableAttributes?: TableAttributeOptions
   }) {
-    const { rows, rowsWebVideoFiles, rowsStreamingPlaylist, include } = options
+    const { rows, rowsWebVideoFiles, rowsStreamingPlaylist, include, addCaptions, tableAttributes } = options
+
+    this.tableAttributeOptions = tableAttributes
 
     this.reinit()
 
     for (const row of rows) {
-      this.buildVideoAndAccount(row)
+      this.buildVideoAndAccount(row, { addCaptions })
 
       const videoModel = this.videosMemo[row.id as number]
 
       this.setUserHistory(row, videoModel)
       this.addThumbnail(row, videoModel)
+      this.setLive(row, videoModel)
+      this.addLiveSchedule(row, videoModel)
 
       const channelActor = videoModel.VideoChannel?.Actor
       if (channelActor) {
@@ -101,9 +115,10 @@ export class VideoModelBuilder {
       if (this.mode === 'get') {
         this.addTag(row, videoModel)
         this.addTracker(row, videoModel)
+        this.addCaption(row, videoModel)
         this.setBlacklisted(row, videoModel)
         this.setScheduleVideoUpdate(row, videoModel)
-        this.setLive(row, videoModel)
+        this.setStoryboard(row, videoModel)
       } else {
         if (include & VideoInclude.BLACKLISTED) {
           this.setBlacklisted(row, videoModel)
@@ -112,6 +127,10 @@ export class VideoModelBuilder {
         if (include & VideoInclude.BLOCKED_OWNER) {
           this.setBlockedOwner(row, videoModel)
           this.setBlockedServer(row, videoModel)
+        }
+
+        if (include & VideoInclude.NOT_PUBLISHED_STATE) {
+          this.setScheduleVideoUpdate(row, videoModel)
         }
 
         if (include & VideoInclude.SOURCE) {
@@ -147,6 +166,8 @@ export class VideoModelBuilder {
     this.sourceDone = new Set()
     this.redundancyDone = new Set()
     this.scheduleVideoUpdateDone = new Set()
+    this.liveScheduleDone = new Set()
+    this.storyboardDone = new Set()
 
     this.accountBlocklistDone = new Set()
     this.serverBlocklistDone = new Set()
@@ -154,11 +175,12 @@ export class VideoModelBuilder {
     this.trackersDone = new Set()
     this.tagsDone = new Set()
     this.autoTagsDone = new Set()
+    this.captionsDone = new Set()
 
     this.videos = []
   }
 
-  private grabSeparateWebVideoFiles (rowsWebVideoFiles?: SQLRow[]) {
+  private grabSeparateWebVideoFiles (rowsWebVideoFiles: SQLRow[]) {
     if (!rowsWebVideoFiles) return
 
     for (const row of rowsWebVideoFiles) {
@@ -170,7 +192,7 @@ export class VideoModelBuilder {
     }
   }
 
-  private grabSeparateStreamingPlaylistFiles (rowsStreamingPlaylist?: SQLRow[]) {
+  private grabSeparateStreamingPlaylistFiles (rowsStreamingPlaylist: SQLRow[]) {
     if (!rowsStreamingPlaylist) return
 
     for (const row of rowsStreamingPlaylist) {
@@ -185,7 +207,9 @@ export class VideoModelBuilder {
     }
   }
 
-  private buildVideoAndAccount (row: SQLRow) {
+  private buildVideoAndAccount (row: SQLRow, options: {
+    addCaptions: boolean
+  }) {
     if (this.videosMemo[row.id]) return
 
     const videoModel = new VideoModel(this.grab(row, this.tables.getVideoAttributes(), ''), this.buildOpts)
@@ -197,6 +221,10 @@ export class VideoModelBuilder {
     videoModel.Tags = []
     videoModel.VideoAutomaticTags = []
     videoModel.Trackers = []
+
+    if (options.addCaptions === true) {
+      videoModel.VideoCaptions = []
+    }
 
     this.buildAccount(row, videoModel)
 
@@ -252,28 +280,50 @@ export class VideoModelBuilder {
   }
 
   private addActorAvatar (row: SQLRow, actorPrefix: string, actor: ActorModel) {
-    const avatarPrefix = `${actorPrefix}.Avatars`
-    const id = row[`${avatarPrefix}.id`]
-    const key = `${row.id}${id}`
-
-    if (!id || this.actorImagesDone.has(key)) return
-
-    const attributes = this.grab(row, this.tables.getAvatarAttributes(), avatarPrefix)
-    const avatarModel = new ActorImageModel(attributes, this.buildOpts)
-    actor.Avatars.push(avatarModel)
-
+    const key = `${actorPrefix}${row.id}`
+    if (this.actorImagesDone.has(key)) return
     this.actorImagesDone.add(key)
+
+    const avatars = row[`${actorPrefix}.AvatarsJSON`] as any || []
+    for (const avatar of avatars) {
+      const avatarModel = new ActorImageModel({
+        ...avatar,
+
+        createdAt: avatar.createdAt
+          ? new Date(avatar.createdAt)
+          : null,
+
+        updatedAt: avatar.updatedAt
+          ? new Date(avatar.updatedAt)
+          : null
+      }, this.buildOpts)
+
+      actor.Avatars.push(avatarModel)
+    }
   }
 
   private addThumbnail (row: SQLRow, videoModel: VideoModel) {
-    const id = row['Thumbnails.id']
-    if (!id || this.thumbnailsDone.has(id)) return
+    if (this.thumbnailsDone.has(videoModel.id)) return
 
-    const attributes = this.grab(row, this.tables.getThumbnailAttributes(), 'Thumbnails')
-    const thumbnailModel = new ThumbnailModel(attributes, this.buildOpts)
-    videoModel.Thumbnails.push(thumbnailModel)
+    const thumbnails = row['ThumbnailsJSON'] as any || []
 
-    this.thumbnailsDone.add(id)
+    for (const thumbnail of thumbnails) {
+      const thumbnailModel = new ThumbnailModel({
+        ...thumbnail,
+
+        createdAt: thumbnail.createdAt
+          ? new Date(thumbnail.createdAt)
+          : null,
+
+        updatedAt: thumbnail.updatedAt
+          ? new Date(thumbnail.updatedAt)
+          : null
+      }, this.buildOpts)
+
+      videoModel.Thumbnails.push(thumbnailModel)
+    }
+
+    this.thumbnailsDone.add(videoModel.id)
   }
 
   private addWebVideoFile (row: SQLRow, videoModel: VideoModel) {
@@ -282,6 +332,7 @@ export class VideoModelBuilder {
 
     const attributes = this.grab(row, this.tables.getFileAttributes(), 'VideoFiles')
     const videoFileModel = new VideoFileModel(attributes, this.buildOpts)
+    this.addFileInfohash(row, 'VideoFiles', videoFileModel)
     videoModel.VideoFiles.push(videoFileModel)
 
     this.videoFileMemo[id] = videoFileModel
@@ -294,6 +345,8 @@ export class VideoModelBuilder {
     const attributes = this.grab(row, this.tables.getStreamingPlaylistAttributes(), 'VideoStreamingPlaylists')
     const streamingPlaylist = new VideoStreamingPlaylistModel(attributes, this.buildOpts)
     streamingPlaylist.VideoFiles = []
+
+    this.addPlaylistInfohashes(row, streamingPlaylist)
 
     videoModel.VideoStreamingPlaylists.push(streamingPlaylist)
 
@@ -308,9 +361,32 @@ export class VideoModelBuilder {
 
     const attributes = this.grab(row, this.tables.getFileAttributes(), 'VideoStreamingPlaylists.VideoFiles')
     const videoFileModel = new VideoFileModel(attributes, this.buildOpts)
+
+    this.addFileInfohash(row, 'VideoStreamingPlaylists.VideoFiles', videoFileModel)
+
     streamingPlaylist.VideoFiles.push(videoFileModel)
 
     this.videoFileMemo[id] = videoFileModel
+  }
+
+  private addPlaylistInfohashes (row: SQLRow, streamingPlaylist: VideoStreamingPlaylistModel) {
+    const key = 'VideoStreamingPlaylists.InfohashesJSON'
+    if (!(key in row)) return
+
+    const hashes = row[key] as any as string[] || []
+
+    streamingPlaylist.InfoHashes = hashes.map(h => new VideoInfohashModel({ infohash: Buffer.from(h, 'hex') }, this.buildOpts))
+  }
+
+  private addFileInfohash (row: SQLRow, prefixKey: string, videoFile: VideoFileModel) {
+    const key = `${prefixKey}.InfohashJSON`
+    if (!(key in row)) return
+
+    const hashes = row[key] as any as string[] || []
+
+    videoFile.InfoHash = hashes.length !== 0
+      ? new VideoInfohashModel({ infohash: Buffer.from(hashes[0], 'hex') }, this.buildOpts)
+      : null
   }
 
   private addRedundancy (row: SQLRow, prefix: string, to: VideoStreamingPlaylistModel) {
@@ -321,7 +397,7 @@ export class VideoModelBuilder {
 
     if (!id || this.redundancyDone.has(id)) return
 
-    const attributes = this.grab(row, this.tables.getRedundancyAttributes(), redundancyPrefix)
+    const attributes = this.grab(row, this.tables.getRedundancyAttributes(this.tableAttributeOptions), redundancyPrefix)
     const redundancyModel = new VideoRedundancyModel(attributes, this.buildOpts)
     to.RedundancyVideos.push(redundancyModel)
 
@@ -371,6 +447,19 @@ export class VideoModelBuilder {
     this.trackersDone.add(key)
   }
 
+  private addCaption (row: SQLRow, videoModel: VideoModel) {
+    const id = row['VideoCaptions.id']
+
+    if (!id || this.captionsDone.has(id)) return
+
+    const attributes = this.grab(row, this.tables.getCaptionAttributes(), 'VideoCaptions')
+    const captionModel = new VideoCaptionModel(attributes, this.buildOpts)
+
+    videoModel.VideoCaptions.push(captionModel)
+
+    this.captionsDone.add(id)
+  }
+
   private setBlacklisted (row: SQLRow, videoModel: VideoModel) {
     const id = row['VideoBlacklist.id']
     if (!id || this.blacklistDone.has(id)) return
@@ -396,7 +485,7 @@ export class VideoModelBuilder {
 
   private setBlockedServer (row: SQLRow, videoModel: VideoModel) {
     const id = row['VideoChannel.Account.Actor.Server.ServerBlocklist.id']
-    if (!id || this.serverBlocklistDone.has(id)) return
+    if (!id) return
 
     const key = `${videoModel.id}-${id}`
     if (this.serverBlocklistDone.has(key)) return
@@ -422,9 +511,38 @@ export class VideoModelBuilder {
     if (!id || this.liveDone.has(id)) return
 
     const attributes = this.grab(row, this.tables.getLiveAttributes(), 'VideoLive')
+
     videoModel.VideoLive = new VideoLiveModel(attributes, this.buildOpts)
 
     this.liveDone.add(id)
+  }
+
+  private addLiveSchedule (row: SQLRow, videoModel: VideoModel) {
+    const id = row['VideoLive.VideoLiveSchedules.id']
+    if (!id) return
+    if (this.liveScheduleDone.has(id)) return
+
+    const videoLiveScheduleAttributes = this.grab(row, this.tables.getLiveScheduleAttributes(), 'VideoLive.VideoLiveSchedules')
+
+    const liveScheduleModel = new VideoLiveScheduleModel(videoLiveScheduleAttributes, this.buildOpts)
+
+    if (!videoModel.VideoLive.LiveSchedules) {
+      videoModel.VideoLive.LiveSchedules = []
+    }
+
+    videoModel.VideoLive.LiveSchedules.push(liveScheduleModel)
+
+    this.liveScheduleDone.add(id)
+  }
+
+  private setStoryboard (row: SQLRow, videoModel: VideoModel) {
+    const id = row['Storyboard.id']
+    if (!id || this.storyboardDone.has(id)) return
+
+    const attributes = this.grab(row, this.tables.getStoryboardAttributes(), 'Storyboard')
+    videoModel.Storyboard = new StoryboardModel(attributes, this.buildOpts)
+
+    this.storyboardDone.add(id)
   }
 
   private setSource (row: SQLRow, videoModel: VideoModel) {
@@ -438,7 +556,7 @@ export class VideoModelBuilder {
   }
 
   private grab (row: SQLRow, attributes: string[], prefix: string) {
-    const result: { [ id: string ]: string | number } = {}
+    const result: { [id: string]: string | number } = {}
 
     for (const a of attributes) {
       const key = prefix

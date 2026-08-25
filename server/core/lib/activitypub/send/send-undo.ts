@@ -1,6 +1,6 @@
-import { Transaction } from 'sequelize'
 import { ActivityAudience, ActivityDislike, ActivityLike, ActivityUndo, ActivityUndoObject, ContextType } from '@peertube/peertube-models'
-import { logger } from '../../../helpers/logger.js'
+import { Transaction } from 'sequelize'
+import { createLogger } from '../../../helpers/logger.js'
 import { VideoModel } from '../../../models/video/video.js'
 import {
   MActor,
@@ -12,14 +12,22 @@ import {
   MVideoRedundancyVideo,
   MVideoShare
 } from '../../../types/models/index.js'
-import { audiencify, getAudience } from '../audience.js'
+import { audiencify, getPublicAudience } from '../audience.js'
 import { getUndoActivityPubUrl, getVideoDislikeActivityPubUrlByLocalActor, getVideoLikeActivityPubUrlByLocalActor } from '../url.js'
 import { buildAnnounceWithVideoAudience } from './send-announce.js'
 import { buildCreateActivity } from './send-create.js'
 import { buildDislikeActivity } from './send-dislike.js'
 import { buildFollowActivity } from './send-follow.js'
 import { buildLikeActivity } from './send-like.js'
-import { broadcastToFollowers, sendVideoActivityToOrigin, sendVideoRelatedActivity, unicastTo } from './shared/send-utils.js'
+import {
+  broadcastToFollowers,
+  getActorsInvolvedInVideo,
+  sendVideoRelatedActivity,
+  sendVideoRelatedActivityToOrigin,
+  unicastTo
+} from './shared/send-utils.js'
+
+const logger = createLogger()
 
 function sendUndoFollow (actorFollow: MActorFollowActors, t: Transaction) {
   const me = actorFollow.ActorFollower
@@ -52,13 +60,13 @@ async function sendUndoAnnounce (byActor: MActorLight, videoShare: MVideoShare, 
 
   const undoUrl = getUndoActivityPubUrl(videoShare.url)
 
-  const { activity: announce, actorsInvolvedInVideo } = await buildAnnounceWithVideoAudience(byActor, videoShare, video, transaction)
+  const announce = buildAnnounceWithVideoAudience(byActor, videoShare, video)
   const undoActivity = undoActivityData(undoUrl, byActor, announce)
 
   return broadcastToFollowers({
     data: undoActivity,
     byActor,
-    toFollowersOf: actorsInvolvedInVideo,
+    toFollowersOf: await getActorsInvolvedInVideo(video, transaction),
     transaction,
     actorsException: [ byActor ],
     contextType: 'Announce'
@@ -110,26 +118,26 @@ async function sendUndoDislike (byActor: MActor, video: MVideoAccountLight, t: T
 // ---------------------------------------------------------------------------
 
 export {
-  sendUndoFollow,
-  sendUndoLike,
-  sendUndoDislike,
   sendUndoAnnounce,
-  sendUndoCacheFile
+  sendUndoCacheFile,
+  sendUndoDislike,
+  sendUndoFollow,
+  sendUndoLike
 }
 
 // ---------------------------------------------------------------------------
 
-function undoActivityData <T extends ActivityUndoObject> (
+function undoActivityData<T extends ActivityUndoObject> (
   url: string,
   byActor: MActorAudience,
   object: T,
   audience?: ActivityAudience
 ): ActivityUndo<T> {
-  if (!audience) audience = getAudience(byActor)
+  if (!audience) audience = getPublicAudience(byActor)
 
   return audiencify(
     {
-      type: 'Undo' as 'Undo',
+      type: 'Undo',
       id: url,
       actor: byActor.url,
       object
@@ -168,5 +176,5 @@ async function sendUndoVideoRateToOriginActivity (options: {
     return undoActivityData(undoUrl, options.byActor, options.activity, audience)
   }
 
-  return sendVideoActivityToOrigin(activityBuilder, { ...options, contextType: 'Rate' })
+  return sendVideoRelatedActivityToOrigin(activityBuilder, { ...options, contextType: 'Rate' })
 }

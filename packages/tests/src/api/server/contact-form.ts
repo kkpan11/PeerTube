@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
-import { MockSmtpServer } from '@tests/shared/mock-servers/index.js'
+import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 import { wait } from '@peertube/peertube-core-utils'
 import { HttpStatusCode } from '@peertube/peertube-models'
 import {
@@ -94,7 +94,7 @@ describe('Test contact form', function () {
   })
 
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests([ server ])
   })

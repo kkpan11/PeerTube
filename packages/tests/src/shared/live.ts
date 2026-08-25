@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { getVideoStreamDimensionsInfo, getVideoStreamFPS } from '@peertube/peertube-ffmpeg'
 import { LiveVideo, VideoResolution, VideoStreamingPlaylistType } from '@peertube/peertube-models'
@@ -81,9 +81,9 @@ async function testLiveVideoResolutions (options: {
   } = options
 
   // Live is always audio/video splitted
-  const splittedAudio = transcoded
+  const splittedAudio = transcoded && hasAudio && hasVideo
 
-  const resolutions = splittedAudio && options.resolutions.length > 1 && !options.resolutions.includes(VideoResolution.H_NOVIDEO)
+  const resolutions = splittedAudio && options.resolutions.length !== 0 && !options.resolutions.includes(VideoResolution.H_NOVIDEO)
     ? [ VideoResolution.H_NOVIDEO, ...options.resolutions ]
     : [ ...options.resolutions ]
 

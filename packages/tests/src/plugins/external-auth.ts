@@ -1,8 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
 import { wait } from '@peertube/peertube-core-utils'
-import { HttpStatusCode, HttpStatusCodeType, UserAdminFlag, UserRole } from '@peertube/peertube-models'
+import { HttpStatusCode, UserAdminFlag, UserRole } from '@peertube/peertube-models'
 import {
   cleanupTests,
   createSingleServer,
@@ -11,37 +10,8 @@ import {
   PluginsCommand,
   setAccessTokensToServers
 } from '@peertube/peertube-server-commands'
-
-async function loginExternal (options: {
-  server: PeerTubeServer
-  npmName: string
-  authName: string
-  username: string
-  query?: any
-  expectedStatus?: HttpStatusCodeType
-  expectedStatusStep2?: HttpStatusCodeType
-}) {
-  const res = await options.server.plugins.getExternalAuth({
-    npmName: options.npmName,
-    npmVersion: '0.0.1',
-    authName: options.authName,
-    query: options.query,
-    expectedStatus: options.expectedStatus || HttpStatusCode.FOUND_302
-  })
-
-  if (res.status !== HttpStatusCode.FOUND_302) return
-
-  const location = res.header.location
-  const { externalAuthToken } = decodeQueryString(location)
-
-  const resLogin = await options.server.login.loginUsingExternalToken({
-    username: options.username,
-    externalAuthToken: externalAuthToken as string,
-    expectedStatus: options.expectedStatusStep2
-  })
-
-  return resLogin.body
-}
+import { fetchExternalToken, loginExternal } from '@tests/shared/plugins.js'
+import { expect } from 'chai'
 
 describe('Test external auth plugins', function () {
   let server: PeerTubeServer
@@ -53,7 +23,17 @@ describe('Test external auth plugins', function () {
   let kefkaRefreshToken: string
   let kefkaId: number
 
-  let externalAuthToken: string
+  async function fetchCyanExternalToken () {
+    return fetchExternalToken({
+      server,
+      npmName: 'test-external-auth-one',
+      authName: 'external-auth-1',
+      query: {
+        username: 'cyan'
+      },
+      expectedStatus: HttpStatusCode.FOUND_302
+    })
+  }
 
   before(async function () {
     this.timeout(30000)
@@ -77,9 +57,9 @@ describe('Test external auth plugins', function () {
     const config = await server.config.getConfig()
 
     const auths = config.plugin.registeredExternalAuths
-    expect(auths).to.have.lengthOf(9)
+    expect(auths).to.have.lengthOf(10)
 
-    const auth2 = auths.find((a) => a.authName === 'external-auth-2')
+    const auth2 = auths.find(a => a.authName === 'external-auth-2')
     expect(auth2).to.exist
     expect(auth2.authDisplayName).to.equal('External Auth 2')
     expect(auth2.npmName).to.equal('peertube-plugin-test-external-auth-one')
@@ -103,8 +83,6 @@ describe('Test external auth plugins', function () {
 
     expect(searchParams.externalAuthToken).to.exist
     expect(searchParams.username).to.equal('cyan')
-
-    externalAuthToken = searchParams.externalAuthToken as string
   })
 
   it('Should reject auto external login with a missing or invalid token', async function () {
@@ -117,12 +95,21 @@ describe('Test external auth plugins', function () {
   it('Should reject auto external login with a missing or invalid username', async function () {
     const command = server.login
 
-    await command.loginUsingExternalToken({ username: '', externalAuthToken, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
-    await command.loginUsingExternalToken({ username: '', externalAuthToken, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    {
+      const externalAuthToken = await fetchCyanExternalToken()
+      await command.loginUsingExternalToken({ username: '', externalAuthToken, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    }
+
+    {
+      const externalAuthToken = await fetchCyanExternalToken()
+      await command.loginUsingExternalToken({ username: '', externalAuthToken, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    }
   })
 
   it('Should reject auto external login with an expired token', async function () {
     this.timeout(30000)
+
+    const externalAuthToken = await fetchCyanExternalToken()
 
     await wait(5000)
 
@@ -160,7 +147,42 @@ describe('Test external auth plugins', function () {
       expect(body.adminFlags).to.equal(UserAdminFlag.NONE)
       expect(body.videoQuota).to.equal(5242880)
       expect(body.videoQuotaDaily).to.equal(-1)
+      expect(body.language).to.be.null
     }
+  })
+
+  it('Should auto login a user with a language provided by the plugin and create it with that language', async function () {
+    const res = await loginExternal({
+      server,
+      npmName: 'test-external-auth-one',
+      authName: 'external-auth-1',
+      query: {
+        username: 'sabin',
+        language: 'fr'
+      },
+      username: 'sabin'
+    })
+
+    const body = await server.users.getMyInfo({ token: res.access_token })
+    expect(body.username).to.equal('sabin')
+    expect(body.language).to.equal('fr')
+  })
+
+  it('Should reject an invalid language returned by an external auth plugin', async function () {
+    const res = await loginExternal({
+      server,
+      npmName: 'test-external-auth-one',
+      authName: 'external-auth-1',
+      query: {
+        username: 'shadow',
+        language: 'not-a-valid-locale'
+      },
+      username: 'shadow'
+    })
+
+    const body = await server.users.getMyInfo({ token: res.access_token })
+    expect(body.username).to.equal('shadow')
+    expect(body.language).to.be.null
   })
 
   it('Should auto login Kefka, create the user and use the token', async function () {
@@ -185,6 +207,7 @@ describe('Test external auth plugins', function () {
       expect(body.adminFlags).to.equal(UserAdminFlag.BYPASS_VIDEO_AUTO_BLACKLIST)
       expect(body.videoQuota).to.equal(42000)
       expect(body.videoQuotaDaily).to.equal(42100)
+      expect(body.language).to.equal('fr')
 
       kefkaId = body.id
     }
@@ -252,13 +275,14 @@ describe('Test external auth plugins', function () {
   it('Should login Kefka and update the profile', async function () {
     {
       await server.users.update({ userId: kefkaId, videoQuota: 43000, videoQuotaDaily: 43100 })
-      await server.users.updateMe({ token: kefkaAccessToken, displayName: 'kefka updated' })
+      await server.users.updateMe({ token: kefkaAccessToken, displayName: 'kefka updated', language: 'en' })
 
       const body = await server.users.getMyInfo({ token: kefkaAccessToken })
       expect(body.username).to.equal('kefka')
       expect(body.account.displayName).to.equal('kefka updated')
       expect(body.videoQuota).to.equal(43000)
       expect(body.videoQuotaDaily).to.equal(43100)
+      expect(body.language).to.equal('en')
     }
 
     {
@@ -277,6 +301,8 @@ describe('Test external auth plugins', function () {
       expect(body.account.displayName).to.equal('Kefka Palazzo')
       expect(body.videoQuota).to.equal(42000)
       expect(body.videoQuotaDaily).to.equal(43100)
+      // userUpdater always uses the plugin's new value for language, like it does for displayName/role/videoQuota
+      expect(body.language).to.equal('fr')
     }
   })
 
@@ -319,7 +345,7 @@ describe('Test external auth plugins', function () {
     const config = await server.config.getConfig()
 
     const auths = config.plugin.registeredExternalAuths
-    expect(auths).to.have.lengthOf(8)
+    expect(auths).to.have.lengthOf(9)
 
     const auth1 = auths.find(a => a.authName === 'external-auth-2')
     expect(auth1).to.not.exist
@@ -400,14 +426,10 @@ describe('Test external auth plugins', function () {
     const config = await server.config.getConfig()
 
     const auths = config.plugin.registeredExternalAuths
-    expect(auths).to.have.lengthOf(7)
+    expect(auths).to.have.lengthOf(8)
 
-    const auth2 = auths.find((a) => a.authName === 'external-auth-2')
+    const auth2 = auths.find(a => a.authName === 'external-auth-2')
     expect(auth2).to.not.exist
-  })
-
-  after(async function () {
-    await cleanupTests([ server ])
   })
 
   it('Should forward the redirectUrl if the plugin returns one', async function () {
@@ -422,7 +444,7 @@ describe('Test external auth plugins', function () {
     expect(redirectUrl).to.equal('https://example.com/redirectUrl')
   })
 
-  it('Should call the plugin\'s onLogout method with the request', async function () {
+  it('Should call the plugin\'s onLogout method with the request headers and cookies', async function () {
     const resLogin = await loginExternal({
       server,
       npmName: 'test-external-auth-three',
@@ -430,7 +452,124 @@ describe('Test external auth plugins', function () {
       username: 'cid'
     })
 
-    const { redirectUrl } = await server.login.logout({ token: resLogin.access_token })
-    expect(redirectUrl).to.equal('https://example.com/redirectUrl?access_token=' + resLogin.access_token)
+    const { redirectUrl } = await server.login.logout({
+      token: resLogin.access_token,
+      headers: { cookie: 'session_id=toto' }
+    })
+
+    expect(redirectUrl).to.equal('https://example.com/redirectUrl?access_token=' + resLogin.access_token + '&session_id=toto')
+  })
+
+  it('Should redirect to an external site after login if externalRedirectUri is set', async function () {
+    const res = await server.plugins.getExternalAuth({
+      npmName: 'test-external-auth-three',
+      npmVersion: '0.0.1',
+      authName: 'external-auth-9',
+      query: {
+        username: 'cid'
+      },
+      expectedStatus: HttpStatusCode.FOUND_302
+    })
+
+    const location = res.header.location
+    expect(location.startsWith('https://external.com/some/redirect/path?')).to.be.true
+
+    const searchParams = decodeQueryString(location)
+
+    expect(searchParams.externalAuthToken).to.exist
+    expect(searchParams.username).to.equal('cid')
+
+    const externalAuthToken = searchParams.externalAuthToken as string
+
+    await server.login.loginUsingExternalToken({ username: 'cid', externalAuthToken, expectedStatus: HttpStatusCode.OK_200 })
+  })
+
+  after(async function () {
+    await cleanupTests([ server ])
+  })
+})
+
+describe('Test external auth plugins with some non-default config options', function () {
+  let server: PeerTubeServer
+
+  before(async function () {
+    this.timeout(30000)
+
+    server = await createSingleServer(1, {
+      user: {
+        allow_cross_provider_auth: true
+      }
+    })
+
+    await setAccessTokensToServers([ server ])
+
+    for (const suffix of [ 'two', 'three' ]) {
+      await server.plugins.install({ path: PluginsCommand.getPluginTestPath('-external-auth-' + suffix) })
+    }
+  })
+
+  it('Should allow cross-provider auth when the option is enabled', async function () {
+    {
+      const res = await loginExternal({
+        server,
+        npmName: 'test-external-auth-three',
+        authName: 'external-auth-7',
+        username: 'cid'
+      })
+
+      const body = await server.users.getMyInfo({ token: res.access_token })
+      expect(body.pluginAuth).to.equal('peertube-plugin-test-external-auth-three')
+    }
+
+    {
+      const res = await loginExternal({
+        server,
+        npmName: 'test-external-auth-two',
+        authName: 'external-auth-3',
+        username: 'cid'
+      })
+
+      const body = await server.users.getMyInfo({ token: res.access_token })
+      expect(body.pluginAuth).to.equal('peertube-plugin-test-external-auth-two')
+    }
+
+    {
+      const res = await loginExternal({
+        server,
+        npmName: 'test-external-auth-three',
+        authName: 'external-auth-7',
+        username: 'cid'
+      })
+
+      const body = await server.users.getMyInfo({ token: res.access_token })
+      expect(body.pluginAuth).to.equal('peertube-plugin-test-external-auth-three')
+    }
+
+    await server.kill()
+    await server.run({
+      user: {
+        allow_cross_provider_auth: false
+      }
+    })
+
+    await loginExternal({
+      server,
+      npmName: 'test-external-auth-three',
+      authName: 'external-auth-7',
+      username: 'cid',
+      expectedStatusStep2: HttpStatusCode.OK_200
+    })
+
+    await loginExternal({
+      server,
+      npmName: 'test-external-auth-two',
+      authName: 'external-auth-3',
+      username: 'cid',
+      expectedStatusStep2: HttpStatusCode.BAD_REQUEST_400
+    })
+  })
+
+  after(async function () {
+    await cleanupTests([ server ])
   })
 })

@@ -1,8 +1,10 @@
 import { FollowState } from '../actors/index.js'
+import { ConstantLabel } from '../common/constant-label.model.js'
 import { AbuseStateType } from '../moderation/index.js'
 import { PluginType_Type } from '../plugins/index.js'
-import { VideoConstant } from '../videos/video-constant.model.js'
+import { ChangeOwnershipStateType, VideoChannelCollaboratorStateType } from '../videos/index.js'
 import { VideoStateType } from '../videos/video-state.enum.js'
+import { UserNotificationData } from './user-notification-data.model.js'
 
 export const UserNotificationType = {
   NEW_VIDEO_FROM_SUBSCRIPTION: 1,
@@ -40,7 +42,21 @@ export const UserNotificationType = {
 
   NEW_LIVE_FROM_SUBSCRIPTION: 21,
 
-  MY_VIDEO_TRANSCRIPTION_GENERATED: 22
+  MY_VIDEO_TRANSCRIPTION_GENERATED: 22,
+
+  INVITED_TO_COLLABORATE_TO_CHANNEL: 23,
+  ACCEPTED_TO_COLLABORATE_TO_CHANNEL: 24,
+  REFUSED_TO_COLLABORATE_TO_CHANNEL: 25,
+
+  VIDEO_OWNERSHIP_CHANGED_REQUEST: 26,
+  VIDEO_OWNERSHIP_CHANGED_ACCEPTED: 27,
+  VIDEO_OWNERSHIP_CHANGED_REJECTED: 28,
+
+  CHANNEL_OWNERSHIP_CHANGED_REQUEST: 29,
+  CHANNEL_OWNERSHIP_CHANGED_ACCEPTED: 30,
+  CHANNEL_OWNERSHIP_CHANGED_REJECTED: 31,
+
+  AUTOMATIC_BLOCKLIST_UPDATE: 32
 } as const
 
 export type UserNotificationType_Type = typeof UserNotificationType[keyof typeof UserNotificationType]
@@ -59,9 +75,6 @@ export interface VideoInfo {
 export interface AvatarInfo {
   width: number
 
-  // TODO: remove, deprecated in 7.1
-  path: string
-
   fileUrl: string
 }
 
@@ -79,6 +92,7 @@ export interface UserNotification {
   id: number
   type: UserNotificationType_Type
   read: boolean
+  data: UserNotificationData
 
   video?: VideoInfo & {
     channel: ActorInfo
@@ -152,8 +166,30 @@ export interface UserNotification {
 
   videoCaption?: {
     id: number
-    language: VideoConstant<string>
+    language: ConstantLabel<string>
     video: VideoInfo
+  }
+
+  videoChannelCollaborator?: {
+    id: number
+
+    state: ConstantLabel<VideoChannelCollaboratorStateType>
+
+    channel: ActorInfo
+    channelOwner: ActorInfo
+    account: ActorInfo
+  }
+
+  changeOwnership?: {
+    id: number
+
+    state: ConstantLabel<ChangeOwnershipStateType>
+
+    initiatorAccount: ActorInfo
+    nextOwnerAccount: ActorInfo
+
+    video: VideoInfo
+    channel: ActorInfo
   }
 
   createdAt: string

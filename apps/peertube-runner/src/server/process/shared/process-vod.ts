@@ -1,3 +1,4 @@
+import { canCopyForHLS } from '@peertube/peertube-ffmpeg'
 import {
   RunnerJobVODAudioMergeTranscodingPayload,
   RunnerJobVODHLSTranscodingPayload,
@@ -46,7 +47,9 @@ export async function processWebVideoTranscoding (options: ProcessOptions<Runner
     logger.info(`Downloaded input file ${payload.input.videoFileUrl} for job ${job.jobToken}. Running web video transcoding.`)
 
     const ffmpegVod = buildFFmpegVOD({
-      onJobProgress: progress => { ffmpegProgress = progress }
+      onJobProgress: progress => {
+        ffmpegProgress = progress
+      }
     })
 
     await ffmpegVod.transcode({
@@ -108,15 +111,23 @@ export async function processHLSTranscoding (options: ProcessOptions<RunnerJobVO
     videoInputPath = await downloadInputFile({ url: payload.input.videoFileUrl, runnerToken, job })
     separatedAudioInputPath = await downloadSeparatedAudioFileIfNeeded({ urls: payload.input.separatedAudioFileUrl, runnerToken, job })
 
+    const copyCodecs = await canCopyForHLS({
+      fps: payload.output.fps,
+      resolution: payload.output.resolution,
+      path: videoInputPath
+    })
+
     logger.info(`Downloaded input file ${payload.input.videoFileUrl} for job ${job.jobToken}. Running HLS transcoding.`)
 
     const ffmpegVod = buildFFmpegVOD({
-      onJobProgress: progress => { ffmpegProgress = progress }
+      onJobProgress: progress => {
+        ffmpegProgress = progress
+      }
     })
 
     await ffmpegVod.transcode({
       type: 'hls',
-      copyCodecs: false,
+      copyCodecs,
 
       videoInputPath,
       separatedAudioInputPath,
@@ -158,7 +169,7 @@ export async function processAudioMergeTranscoding (options: ProcessOptions<Runn
 
   let ffmpegProgress: number
   let audioPath: string
-  let previewPath: string
+  let thumbnailPath: string
 
   const outputPath = join(ConfigManager.Instance.getTranscodingDirectory(), `output-${buildUUID()}.mp4`)
 
@@ -172,26 +183,28 @@ export async function processAudioMergeTranscoding (options: ProcessOptions<Runn
   try {
     logger.info(
       `Downloading input files ${payload.input.audioFileUrl} and ${payload.input.previewFileUrl} ` +
-      `for audio merge transcoding job ${job.jobToken}`
+        `for audio merge transcoding job ${job.jobToken}`
     )
 
     audioPath = await downloadInputFile({ url: payload.input.audioFileUrl, runnerToken, job })
-    previewPath = await downloadInputFile({ url: payload.input.previewFileUrl, runnerToken, job })
+    thumbnailPath = await downloadInputFile({ url: payload.input.previewFileUrl, runnerToken, job })
 
     logger.info(
       `Downloaded input files ${payload.input.audioFileUrl} and ${payload.input.previewFileUrl} ` +
-      `for job ${job.jobToken}. Running audio merge transcoding.`
+        `for job ${job.jobToken}. Running audio merge transcoding.`
     )
 
     const ffmpegVod = buildFFmpegVOD({
-      onJobProgress: progress => { ffmpegProgress = progress }
+      onJobProgress: progress => {
+        ffmpegProgress = progress
+      }
     })
 
     await ffmpegVod.transcode({
       type: 'merge-audio',
 
       audioPath,
-      videoInputPath: previewPath,
+      videoInputPath: thumbnailPath,
 
       outputPath,
 
@@ -214,7 +227,7 @@ export async function processAudioMergeTranscoding (options: ProcessOptions<Runn
     })
   } finally {
     if (audioPath) await remove(audioPath)
-    if (previewPath) await remove(previewPath)
+    if (thumbnailPath) await remove(thumbnailPath)
     if (outputPath) await remove(outputPath)
     if (updateProgressInterval) clearInterval(updateProgressInterval)
   }

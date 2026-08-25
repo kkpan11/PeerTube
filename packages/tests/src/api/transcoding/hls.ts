@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { HttpStatusCode } from '@peertube/peertube-models'
 import { areMockObjectStorageTestsDisabled } from '@peertube/peertube-node-utils'
@@ -11,7 +11,7 @@ import {
   setAccessTokensToServers,
   waitJobs
 } from '@peertube/peertube-server-commands'
-import { DEFAULT_AUDIO_RESOLUTION } from '@peertube/peertube-server/core/initializers/constants.js'
+import { DEFAULT_AUDIO_MERGE_RESOLUTION } from '@peertube/peertube-server/core/initializers/constants.js'
 import { checkDirectoryIsEmpty, checkTmpIsEmpty } from '@tests/shared/directories.js'
 import { completeCheckHlsPlaylist } from '@tests/shared/streaming-playlists.js'
 import { join } from 'path'
@@ -72,7 +72,7 @@ describe('Test HLS videos', function () {
         servers,
         videoUUID: uuid,
         hlsOnly,
-        resolutions: [ DEFAULT_AUDIO_RESOLUTION, 360, 240 ],
+        resolutions: [ DEFAULT_AUDIO_MERGE_RESOLUTION, 360, 240 ],
         objectStorageBaseUrl
       })
     })
@@ -141,7 +141,6 @@ describe('Test HLS videos', function () {
 
   for (const concurrency of [ 1, 2 ]) {
     describe(`With concurrency ${concurrency}`, function () {
-
       describe('With Web Video & HLS enabled', function () {
         runTestSuite({ hlsOnly: false, concurrency })
       })

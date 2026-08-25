@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
-import { AbuseMessage, AbusePredefinedReasonsString, AbuseState, AdminAbuse, UserAbuse } from '@peertube/peertube-models'
+import { AbuseMessage, AbusePredefinedReasonsString, AbuseState, AdminAbuse, UserAbuse, VideoPrivacy } from '@peertube/peertube-models'
 import {
   AbusesCommand,
   cleanupTests,
@@ -37,17 +37,21 @@ describe('Test abuses', function () {
   })
 
   describe('Video abuses', function () {
+    let video1OwnerToken: string
 
     before(async function () {
       this.timeout(50000)
 
+      video1OwnerToken = await servers[0].users.generateUserAndToken('video1_owner')
+
       // Upload some videos on each servers
+      // Video 1 is not owned by root so root (used as the default reporter in this suite) can report it
       {
         const attributes = {
           name: 'my super name for server 1',
           description: 'my super description for server 1'
         }
-        await servers[0].videos.upload({ attributes })
+        await servers[0].videos.upload({ token: video1OwnerToken, attributes })
       }
 
       {
@@ -105,7 +109,7 @@ describe('Test abuses', function () {
 
         expect(abuse.comment).to.be.null
 
-        expect(abuse.flaggedAccount.name).to.equal('root')
+        expect(abuse.flaggedAccount.name).to.equal('video1_owner')
         expect(abuse.flaggedAccount.host).to.equal(servers[0].host)
 
         expect(abuse.video.countReports).to.equal(1)
@@ -150,7 +154,7 @@ describe('Test abuses', function () {
 
         expect(abuse1.comment).to.be.null
 
-        expect(abuse1.flaggedAccount.name).to.equal('root')
+        expect(abuse1.flaggedAccount.name).to.equal('video1_owner')
         expect(abuse1.flaggedAccount.host).to.equal(servers[0].host)
 
         expect(abuse1.state.id).to.equal(AbuseState.PENDING)
@@ -315,8 +319,8 @@ describe('Test abuses', function () {
         const abuse = body.data.find(a => a.id === createRes.abuse.id)
         expect(abuse.reason).to.equals(reason5)
         expect(abuse.predefinedReasons).to.deep.equals(predefinedReasons5, 'predefined reasons do not match the one reported')
-        expect(abuse.video.startAt).to.equal(1, "starting timestamp doesn't match the one reported")
-        expect(abuse.video.endAt).to.equal(5, "ending timestamp doesn't match the one reported")
+        expect(abuse.video.startAt).to.equal(1, 'starting timestamp doesn\'t match the one reported')
+        expect(abuse.video.endAt).to.equal(5, 'ending timestamp doesn\'t match the one reported')
       }
     })
 
@@ -353,13 +357,13 @@ describe('Test abuses', function () {
 
       expect(await list({ searchVideo: 'my second super name for server 1' })).to.have.lengthOf(1)
 
-      expect(await list({ searchVideoChannel: 'root' })).to.have.lengthOf(4)
+      expect(await list({ searchVideoChannel: 'video1_owner' })).to.have.lengthOf(4)
       expect(await list({ searchVideoChannel: 'aaaa' })).to.have.lengthOf(0)
 
       expect(await list({ searchReporter: 'user2' })).to.have.lengthOf(1)
       expect(await list({ searchReporter: 'root' })).to.have.lengthOf(5)
 
-      expect(await list({ searchReportee: 'root' })).to.have.lengthOf(5)
+      expect(await list({ searchReportee: 'video1_owner' })).to.have.lengthOf(4)
       expect(await list({ searchReportee: 'aaaa' })).to.have.lengthOf(0)
 
       expect(await list({ videoIs: 'deleted' })).to.have.lengthOf(1)
@@ -374,7 +378,6 @@ describe('Test abuses', function () {
   })
 
   describe('Comment abuses', function () {
-
     async function getComment (server: PeerTubeServer, videoIdArg: number | string) {
       const videoId = typeof videoIdArg === 'string'
         ? await server.videos.getId({ uuid: videoIdArg })
@@ -432,7 +435,8 @@ describe('Test abuses', function () {
         expect(abuse.comment.video.uuid).to.equal(servers[0].store.videoCreated.uuid)
 
         expect(abuse.countReportsForReporter).to.equal(5)
-        expect(abuse.countReportsForReportee).to.equal(5)
+        // root does not own video 1 anymore, so it is only reported here as the comment author
+        expect(abuse.countReportsForReportee).to.equal(1)
       }
 
       {
@@ -462,7 +466,7 @@ describe('Test abuses', function () {
         const abuse = body.data[0]
         expect(abuse.reason).to.equal('it is a bad comment')
         expect(abuse.countReportsForReporter).to.equal(6)
-        expect(abuse.countReportsForReportee).to.equal(5)
+        expect(abuse.countReportsForReportee).to.equal(1)
 
         const abuse2 = body.data[1]
 
@@ -570,7 +574,6 @@ describe('Test abuses', function () {
   })
 
   describe('Account abuses', function () {
-
     function getAccountFromServer (server: PeerTubeServer, targetName: string, targetServer: PeerTubeServer) {
       return server.accounts.get({ accountName: targetName + '@' + targetServer.host })
     }
@@ -711,7 +714,6 @@ describe('Test abuses', function () {
   })
 
   describe('Common actions on abuses', function () {
-
     it('Should update the state of an abuse', async function () {
       await commands[0].update({ abuseId: abuseServer1.id, body: { state: AbuseState.REJECTED } })
 
@@ -878,6 +880,30 @@ describe('Test abuses', function () {
         expect(abuseMessages[0].message).to.equal('message 2')
         expect(abuseMessages[1].message).to.equal('message 4')
       }
+    })
+  })
+
+  // We had a bug where hooks and DB cascade removal hooks threw an exception
+  describe('User with abuses removal', function () {
+    let userToken: string
+
+    before(async function () {
+      userToken = await servers[0].users.generateUserAndToken('user_42000')
+      const { id } = await servers[0].videos.quickUpload({ token: userToken, name: 'video to be reported', privacy: VideoPrivacy.PRIVATE })
+
+      await commands[0].report({ videoId: id, reason: 'video report' })
+    })
+
+    it('Should remove all users on the platform, except root', async function () {
+      const { data: users } = await servers[0].users.list()
+      for (const user of users) {
+        if (user.username !== 'root') {
+          await servers[0].users.remove({ userId: user.id })
+        }
+      }
+
+      const { data } = await servers[0].users.list()
+      expect(data).to.have.lengthOf(1)
     })
   })
 

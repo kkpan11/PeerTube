@@ -1,34 +1,32 @@
-import { mapValues, pickBy } from 'lodash-es'
-import { Component, OnInit, inject, input, viewChild } from '@angular/core'
+import { NgClass } from '@angular/common'
+import { Component, OnInit, inject, input, output, viewChild, ChangeDetectionStrategy } from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { Notifier } from '@app/core'
 import { ABUSE_REASON_VALIDATOR } from '@app/shared/form-validators/abuse-validators'
 import { FormReactive } from '@app/shared/shared-forms/form-reactive'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
-import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
-import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap/modal/modal-ref'
+import { Video } from '@app/shared/shared-main/video/video.model'
+import { NgbModal, NgbModalRef } from '@ng-bootstrap/ng-bootstrap'
 import { abusePredefinedReasonsMap } from '@peertube/peertube-core-utils'
 import { AbusePredefinedReasonsString } from '@peertube/peertube-models'
-import { AbuseService } from '../abuse.service'
-import { TimestampInputComponent } from '../../shared-forms/timestamp-input.component'
-import { EmbedComponent } from '../../shared-main/video/embed.component'
-import { PeerTubeTemplateDirective } from '../../shared-main/common/peertube-template.directive'
+import { mapValues, pickBy } from 'lodash-es'
 import { PeertubeCheckboxComponent } from '../../shared-forms/peertube-checkbox.component'
-import { NgFor, NgIf, NgClass } from '@angular/common'
-import { FormsModule, ReactiveFormsModule } from '@angular/forms'
+import { TimestampInputComponent } from '../../shared-forms/timestamp-input.component'
 import { GlobalIconComponent } from '../../shared-icons/global-icon.component'
-import { Video } from '@app/shared/shared-main/video/video.model'
+import { PeerTubeTemplateDirective } from '../../shared-main/common/peertube-template.directive'
+import { EmbedComponent } from '../../shared-main/video/embed.component'
+import { AbuseService } from '../abuse.service'
 
 @Component({
   selector: 'my-video-report',
   templateUrl: './video-report.component.html',
   styleUrls: [ './report.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     GlobalIconComponent,
     FormsModule,
     ReactiveFormsModule,
-    NgFor,
     PeertubeCheckboxComponent,
-    NgIf,
     PeerTubeTemplateDirective,
     EmbedComponent,
     TimestampInputComponent,
@@ -44,6 +42,8 @@ export class VideoReportComponent extends FormReactive implements OnInit {
   readonly video = input<Video>(null)
 
   readonly modal = viewChild<NgbModal>('modal')
+
+  readonly modalClosed = output()
 
   error: string = null
   predefinedReasons: { id: AbusePredefinedReasonsString, label: string, description?: string, help?: string }[] = []
@@ -78,11 +78,13 @@ export class VideoReportComponent extends FormReactive implements OnInit {
       }
     })
 
-    this.predefinedReasons = this.abuseService.getPrefefinedReasons('video')
+    this.predefinedReasons = this.abuseService.getPredefinedReasons('video')
   }
 
   show () {
     this.openedModal = this.modalService.open(this.modal(), { centered: true, keyboard: false, size: 'lg' })
+
+    this.openedModal.hidden.subscribe(() => this.modalClosed.emit())
   }
 
   hide () {
@@ -109,7 +111,7 @@ export class VideoReportComponent extends FormReactive implements OnInit {
         this.hide()
       },
 
-      error: err => this.notifier.error(err.message)
+      error: err => this.notifier.handleError(err)
     })
   }
 

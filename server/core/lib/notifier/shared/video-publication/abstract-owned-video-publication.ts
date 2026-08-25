@@ -1,12 +1,21 @@
-import { logger } from '@server/helpers/logger.js'
-import { WEBSERVER } from '@server/initializers/constants.js'
-import { UserModel } from '@server/models/user/user.js'
-import { UserNotificationModel } from '@server/models/user/user-notification.js'
-import { MUserDefault, MUserWithNotificationSetting, MVideoFullLight, UserNotificationModelForApi } from '@server/types/models/index.js'
 import { UserNotificationType } from '@peertube/peertube-models'
+import { t } from '@server/helpers/i18n.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { WEBSERVER } from '@server/initializers/constants.js'
+import { UserNotificationModel } from '@server/models/user/user-notification.js'
+import { UserModel } from '@server/models/user/user.js'
+import {
+  MUserDefault,
+  MUserWithNotificationSetting,
+  MVideoWithRights,
+  MVideoWithSchedule,
+  UserNotificationModelForApi
+} from '@server/types/models/index.js'
 import { AbstractNotification } from '../common/abstract-notification.js'
 
-export abstract class AbstractOwnedVideoPublication extends AbstractNotification <MVideoFullLight> {
+const logger = createLogger()
+
+export abstract class AbstractOwnedVideoPublication extends AbstractNotification<MVideoWithRights & MVideoWithSchedule> {
   protected user: MUserDefault
 
   async prepare () {
@@ -38,19 +47,20 @@ export abstract class AbstractOwnedVideoPublication extends AbstractNotification
     return notification
   }
 
-  createEmail (to: string) {
+  createEmail (user: MUserWithNotificationSetting) {
+    const to = { email: user.email, language: user.getLanguage() }
+    const language = user.getLanguage()
+
     const videoUrl = WEBSERVER.URL + this.payload.getWatchStaticPath()
 
     return {
       to,
-      subject: `Your video ${this.payload.name} has been published`,
-      text: `Your video "${this.payload.name}" has been published.`,
-      locals: {
-        title: 'Your video is live',
-        action: {
-          text: 'View video',
-          url: videoUrl
-        }
+      subject: t('Your video has been published', language),
+      title: t('Your video is live', language),
+      text: t('Your video {videoName} has been published.', language, { videoName: this.payload.name }),
+      action: {
+        text: t('View video', language),
+        url: videoUrl
       }
     }
   }

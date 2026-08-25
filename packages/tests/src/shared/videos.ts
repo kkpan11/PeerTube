@@ -1,15 +1,16 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/no-floating-promises */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/no-floating-promises */
 
-import { uuidRegex } from '@peertube/peertube-core-utils'
+import { uuidRegex, wait } from '@peertube/peertube-core-utils'
 import { ffprobePromise } from '@peertube/peertube-ffmpeg'
 import {
   FileStorage,
   HttpStatusCode,
   HttpStatusCodeType,
+  Video,
   VideoCaption,
-  VideoCommentPolicy,
   VideoCommentPolicyType,
   VideoDetails,
+  VideoPlaylist,
   VideoPrivacy,
   VideoResolution
 } from '@peertube/peertube-models'
@@ -28,8 +29,8 @@ import { readdir, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, join } from 'path'
 import { dateIsValid, expectStartWith, testImageGeneratedByFFmpeg } from './checks.js'
-import { completeCheckHlsPlaylist } from './streaming-playlists.js'
 import { checkWebTorrentWorks } from './p2p.js'
+import { completeCheckHlsPlaylist } from './streaming-playlists.js'
 
 export async function completeWebVideoFilesCheck (options: {
   server: PeerTubeServer
@@ -104,17 +105,22 @@ export async function completeWebVideoFilesCheck (options: {
 
       await Promise.all([
         makeRawRequest({ url: file.torrentUrl, token, expectedStatus: HttpStatusCode.OK_200 }),
-        makeRawRequest({ url: file.torrentDownloadUrl, token, expectedStatus: HttpStatusCode.OK_200 }),
         makeRawRequest({ url: file.metadataUrl, token, expectedStatus: HttpStatusCode.OK_200 }),
-        makeRawRequest({ url: file.fileUrl, token, expectedStatus: HttpStatusCode.OK_200 }),
-        makeRawRequest({
-          url: file.fileDownloadUrl,
-          token,
-          expectedStatus: objectStorageBaseUrl
-            ? HttpStatusCode.FOUND_302
-            : HttpStatusCode.OK_200
-        })
+        makeRawRequest({ url: file.fileUrl, token, expectedStatus: HttpStatusCode.OK_200 })
       ])
+
+      if (video.downloadEnabled) {
+        await Promise.all([
+          makeRawRequest({ url: file.torrentDownloadUrl, token, expectedStatus: HttpStatusCode.OK_200 }),
+          makeRawRequest({
+            url: file.fileDownloadUrl,
+            token,
+            expectedStatus: objectStorageBaseUrl
+              ? HttpStatusCode.FOUND_302
+              : HttpStatusCode.OK_200
+          })
+        ])
+      }
     }
 
     expect(file.resolution.id).to.equal(attributeFile.resolution)
@@ -193,9 +199,6 @@ export async function completeVideoCheck (options: {
     }
     fixture: string
 
-    thumbnailfile?: string
-    previewfile?: string
-
     files?: {
       resolution: number
       size: number
@@ -207,6 +210,8 @@ export async function completeVideoCheck (options: {
       hlsOnly: boolean
       resolutions: number[]
     }
+
+    thumbnails?: string[]
   }
 }) {
   const { attributes, originServer, server, videoUUID, objectStorageBaseUrl } = options
@@ -242,7 +247,6 @@ export async function completeVideoCheck (options: {
   expect(video.url).to.contain(originServer.host)
   expect(video.tags).to.deep.equal(attributes.tags)
 
-  expect(video.commentsEnabled).to.equal(attributes.commentsPolicy !== VideoCommentPolicy.DISABLED)
   expect(video.commentsPolicy.id).to.equal(attributes.commentsPolicy)
   expect(video.downloadEnabled).to.equal(attributes.downloadEnabled)
 
@@ -271,12 +275,10 @@ export async function completeVideoCheck (options: {
   expect(video.channel.createdAt).to.exist
   expect(dateIsValid(video.channel.updatedAt.toString())).to.be.true
 
-  expect(video.thumbnailPath).to.exist
-  await testImageGeneratedByFFmpeg(server.url, attributes.thumbnailfile || attributes.fixture, video.thumbnailPath)
-
-  if (attributes.previewfile) {
-    expect(video.previewPath).to.exist
-    await testImageGeneratedByFFmpeg(server.url, attributes.previewfile, video.previewPath)
+  if (attributes.thumbnails) {
+    await checkThumbnails({ video, thumbnails: attributes.thumbnails, server })
+  } else {
+    await checkThumbnails({ video, thumbnails: [ attributes.fixture + '.jpg' ], server })
   }
 
   if (attributes.files) {
@@ -313,17 +315,16 @@ export async function checkVideoFilesWereRemoved (options: {
   const webVideoFiles = video.files || []
   const hlsFiles = video.streamingPlaylists[0]?.files || []
 
-  const thumbnailName = basename(video.thumbnailPath)
-  const previewName = basename(video.previewPath)
+  const thumbnailNames = video.thumbnails.map(t => basename(t.fileUrl))
 
   const torrentNames = webVideoFiles.concat(hlsFiles).map(f => basename(f.torrentUrl))
 
-  const captionNames = captions.map(c => basename(c.captionPath))
+  const captionNames = captions.map(c => basename(c.fileUrl))
 
   const webVideoFilenames = webVideoFiles.map(f => basename(f.fileUrl))
   const hlsFilenames = hlsFiles.map(f => basename(f.fileUrl))
 
-  let directories: { [ directory: string ]: string[] } = {
+  let directories: { [directory: string]: string[] } = {
     videos: webVideoFilenames,
     redundancy: webVideoFilenames,
     [join('playlists', 'hls')]: hlsFilenames,
@@ -334,8 +335,7 @@ export async function checkVideoFilesWereRemoved (options: {
     directories = {
       ...directories,
 
-      thumbnails: [ thumbnailName ],
-      previews: [ previewName ],
+      thumbnails: thumbnailNames,
       torrents: torrentNames,
       captions: captionNames
     }
@@ -350,7 +350,14 @@ export async function checkVideoFilesWereRemoved (options: {
     const existingFiles = await readdir(directoryPath)
     for (const existingFile of existingFiles) {
       for (const shouldNotExist of directories[directory]) {
-        expect(existingFile, `File ${existingFile} should not exist in ${directoryPath}`).to.not.contain(shouldNotExist)
+        if (existingFile === shouldNotExist) {
+          // Allow 1000ms more for the file to be removed, because sometimes the file is still being removed when we check it
+          await wait(1000)
+
+          if (await pathExists(join(directoryPath, existingFile))) {
+            expect(existingFile, `File ${existingFile} should not exist in ${directoryPath}`).to.not.equal(shouldNotExist)
+          }
+        }
       }
     }
   }
@@ -365,7 +372,7 @@ export async function saveVideoInServers (servers: PeerTubeServer[], uuid: strin
 export function checkUploadVideoParam (options: {
   server: PeerTubeServer
   token: string
-  attributes: Partial<VideoEdit>
+  attributes: Partial<VideoEdit> & { filename?: string }
   expectedStatus?: HttpStatusCodeType
   completedExpectedStatus?: HttpStatusCodeType
   mode?: 'legacy' | 'resumable'
@@ -447,4 +454,78 @@ export async function probeResBody (body: Buffer) {
   await remove(videoPath)
 
   return probe
+}
+
+export async function checkThumbnails (options: {
+  server: PeerTubeServer
+  video?: Video
+  playlist?: VideoPlaylist
+  remotePlaylist?: boolean
+  thumbnails: string[]
+}) {
+  const { server, video, playlist } = options
+
+  const thumbnails = options.thumbnails.map(t => {
+    const matched = t.match(/-(\d+)x(\d+)/)
+
+    const width = matched
+      ? +matched[1]
+      : 280
+
+    const height = matched
+      ? +matched[2]
+      : 157
+
+    return { filename: t, width, height }
+  })
+
+  const entity = video || playlist
+
+  const toCheck = entity.thumbnails.map(t => ({
+    width: t.width,
+    height: t.height,
+    aspectRatio: t.aspectRatio
+  }))
+
+  if (options.remotePlaylist !== true) {
+    expect(toCheck).to.deep.include.members([
+      { width: 280, height: 157, aspectRatio: '16:9' },
+      { width: 850, height: 480, aspectRatio: '16:9' },
+      { width: 1280, height: 720, aspectRatio: '16:9' },
+      { width: 1920, height: 1080, aspectRatio: '16:9' },
+      { width: 1400, height: 1400, aspectRatio: '1:1' }
+    ])
+
+    expect(toCheck).to.have.lengthOf(5)
+  } else {
+    expect(toCheck).to.deep.equal([
+      { width: 280, height: 157, aspectRatio: '16:9' }
+    ])
+  }
+
+  for (const thumbnail of thumbnails) {
+    const entityThumbnail = entity.thumbnails.find(t => t.width === thumbnail.width && t.height === thumbnail.height)
+
+    expectStartWith(entityThumbnail.fileUrl, server.url)
+
+    await testImageGeneratedByFFmpeg({ name: thumbnail.filename, url: entityThumbnail.fileUrl })
+  }
+
+  // oxlint-disable-next-line @typescript-eslint/no-deprecated
+  await testImageGeneratedByFFmpeg({
+    name: thumbnails.find(t => t.width === 280 && t.height === 157).filename,
+    // oxlint-disable-next-line @typescript-eslint/no-deprecated
+    url: server.url + entity.thumbnailPath
+  })
+
+  const preview = thumbnails.find(t => t.width === 1920 && t.height === 1080)
+
+  if (video && preview) {
+    // oxlint-disable-next-line @typescript-eslint/no-deprecated
+    await testImageGeneratedByFFmpeg({
+      name: preview.filename,
+      // oxlint-disable-next-line @typescript-eslint/no-deprecated
+      url: server.url + video.previewPath
+    })
+  }
 }

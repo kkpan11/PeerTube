@@ -1,10 +1,12 @@
+import { FileStorage, VideoPrivacy, VideoPrivacyType } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
+import { DIRECTORIES } from '@server/initializers/constants.js'
+import { MVideo, MVideoFile, MVideoFull } from '@server/types/models/index.js'
 import { move } from 'fs-extra/esm'
 import { join } from 'path'
-import { VideoPrivacy, VideoPrivacyType, FileStorage } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
-import { DIRECTORIES } from '@server/initializers/constants.js'
-import { MVideo, MVideoFile, MVideoFullLight } from '@server/types/models/index.js'
 import { updateHLSFilesACL, updateWebVideoFileACL } from './object-storage/index.js'
+
+const logger = createLogger('video-privacy')
 
 const validPrivacySet = new Set<VideoPrivacyType>([
   VideoPrivacy.PRIVATE,
@@ -12,23 +14,15 @@ const validPrivacySet = new Set<VideoPrivacyType>([
   VideoPrivacy.PASSWORD_PROTECTED
 ])
 
-function setVideoPrivacy (video: MVideo, newPrivacy: VideoPrivacyType) {
-  if (video.privacy === VideoPrivacy.PRIVATE && newPrivacy !== VideoPrivacy.PRIVATE) {
-    video.publishedAt = new Date()
-  }
-
-  video.privacy = newPrivacy
-}
-
-function isVideoInPrivateDirectory (privacy: VideoPrivacyType) {
+export function isVideoInPrivateDirectory (privacy: VideoPrivacyType) {
   return validPrivacySet.has(privacy)
 }
 
-function isVideoInPublicDirectory (privacy: VideoPrivacyType) {
+export function isVideoInPublicDirectory (privacy: VideoPrivacyType) {
   return !isVideoInPrivateDirectory(privacy)
 }
 
-async function moveFilesIfPrivacyChanged (video: MVideoFullLight, oldPrivacy: VideoPrivacyType) {
+export async function moveFilesIfPrivacyChanged (video: MVideoFull, oldPrivacy: VideoPrivacyType) {
   // Now public, previously private
   if (isVideoInPublicDirectory(video.privacy) && isVideoInPrivateDirectory(oldPrivacy)) {
     await moveFiles({ type: 'private-to-public', video })
@@ -46,30 +40,48 @@ async function moveFilesIfPrivacyChanged (video: MVideoFullLight, oldPrivacy: Vi
   return false
 }
 
-export {
-  setVideoPrivacy,
+// Return true if the video was private/unlisted/password protected and now is public/internal
+export function isNewVideoForSubscription (options: {
+  currentPrivacy: VideoPrivacyType
+  newPrivacy: VideoPrivacyType
+  firstPublishedAt: Date
+}) {
+  const { currentPrivacy, newPrivacy, firstPublishedAt } = options
 
-  isVideoInPrivateDirectory,
-  isVideoInPublicDirectory,
+  if (currentPrivacy !== VideoPrivacy.PRIVATE) return false
+  if (firstPublishedAt) return false
 
-  moveFilesIfPrivacyChanged
+  if (newPrivacy !== VideoPrivacy.PUBLIC && newPrivacy !== VideoPrivacy.INTERNAL) return false
+
+  return true
 }
 
+// ---------------------------------------------------------------------------
+// Private
 // ---------------------------------------------------------------------------
 
 type MoveType = 'private-to-public' | 'public-to-private'
 
 async function moveFiles (options: {
   type: MoveType
-  video: MVideoFullLight
+  video: MVideoFull
 }) {
   const { type, video } = options
+
+  // Catch ACL error because it doesn't break the video
+  // Do not catch FS error, that should not happen, because it can break the video
+  const objectStorageErrorMsg = 'Cannot update ACL of video file after privacy change. ' +
+    'Ensure your provider supports ACL or set object_storage.upload_acl.public and object_storage.upload_acl.public to null'
 
   for (const file of video.VideoFiles) {
     if (file.storage === FileStorage.FILE_SYSTEM) {
       await moveWebVideoFileOnFS(type, video, file)
     } else {
-      await updateWebVideoFileACL(video, file)
+      try {
+        await updateWebVideoFileACL(video, file)
+      } catch (err) {
+        logger.error(objectStorageErrorMsg, { err })
+      }
     }
   }
 
@@ -79,7 +91,11 @@ async function moveFiles (options: {
     if (hls.storage === FileStorage.FILE_SYSTEM) {
       await moveHLSFilesOnFS(type, video)
     } else {
-      await updateHLSFilesACL(hls)
+      try {
+        await updateHLSFilesACL(video)
+      } catch (err) {
+        logger.error(objectStorageErrorMsg, { err })
+      }
     }
   }
 }

@@ -1,29 +1,36 @@
+/* oxlint-disable @typescript-eslint/prefer-namespace-keyword */
+
+import { PickWith, PickWithOpt } from '@peertube/peertube-typescript-utils'
 import { VideoAbuseModel } from '@server/models/abuse/video-abuse.js'
 import { VideoCommentAbuseModel } from '@server/models/abuse/video-comment-abuse.js'
 import { ApplicationModel } from '@server/models/application/application.js'
 import { PluginModel } from '@server/models/server/plugin.js'
 import { UserNotificationModel } from '@server/models/user/user-notification.js'
 import { UserRegistrationModel } from '@server/models/user/user-registration.js'
-import { PickWith, PickWithOpt } from '@peertube/peertube-typescript-utils'
+import { ChangeOwnershipModel } from '@server/models/video/change-ownership.js'
+import { VideoCaptionModel } from '@server/models/video/video-caption.js'
+import { VideoChannelCollaboratorModel } from '@server/models/video/video-channel-collaborator.js'
 import { AbuseModel } from '../../../models/abuse/abuse.js'
 import { AccountModel } from '../../../models/account/account.js'
-import { ActorModel } from '../../../models/actor/actor.js'
 import { ActorFollowModel } from '../../../models/actor/actor-follow.js'
 import { ActorImageModel } from '../../../models/actor/actor-image.js'
+import { ActorModel } from '../../../models/actor/actor.js'
 import { ServerModel } from '../../../models/server/server.js'
-import { VideoModel } from '../../../models/video/video.js'
 import { VideoBlacklistModel } from '../../../models/video/video-blacklist.js'
 import { VideoChannelModel } from '../../../models/video/video-channel.js'
 import { VideoCommentModel } from '../../../models/video/video-comment.js'
 import { VideoImportModel } from '../../../models/video/video-import.js'
-import { VideoCaptionModel } from '@server/models/video/video-caption.js'
+import { VideoModel } from '../../../models/video/video.js'
 
 type Use<K extends keyof UserNotificationModel, M> = PickWith<UserNotificationModel, K, M>
 
 // ############################################################################
 
-export module UserNotificationIncludes {
-  export type ActorImageInclude = Pick<ActorImageModel, 'createdAt' | 'filename' | 'type' | 'getStaticPath' | 'width' | 'updatedAt'>
+export namespace UserNotificationIncludes {
+  export type ActorImageInclude = Pick<
+    ActorImageModel,
+    'createdAt' | 'filename' | 'type' | 'getStaticPath' | 'getLocalFileUrl' | 'width' | 'updatedAt'
+  >
 
   export type VideoInclude = Pick<VideoModel, 'id' | 'uuid' | 'name' | 'state'>
   export type VideoIncludeChannel =
@@ -39,6 +46,10 @@ export module UserNotificationIncludes {
   export type VideoChannelIncludeActor =
     & VideoChannelInclude
     & PickWith<VideoChannelModel, 'Actor', ActorInclude>
+  export type VideoChannelIncludeActorOwnerActor =
+    & VideoChannelInclude
+    & PickWith<VideoChannelModel, 'Actor', ActorInclude>
+    & PickWith<VideoChannelModel, 'Account', AccountIncludeActor>
 
   export type AccountInclude = Pick<AccountModel, 'id' | 'name' | 'getDisplayName'>
   export type AccountIncludeActor =
@@ -103,6 +114,18 @@ export module UserNotificationIncludes {
   export type VideoCaptionInclude =
     & Pick<VideoCaptionModel, 'id' | 'language'>
     & PickWith<VideoCaptionModel, 'Video', VideoInclude>
+
+  export type VideoChannelCollaboratorInclude =
+    & Pick<VideoChannelCollaboratorModel, 'id' | 'state'>
+    & PickWith<VideoChannelCollaboratorModel, 'Account', AccountIncludeActor>
+    & PickWith<VideoChannelCollaboratorModel, 'Channel', VideoChannelIncludeActorOwnerActor>
+
+  export type ChangeOwnershipInclude =
+    & Pick<ChangeOwnershipModel, 'id' | 'state'>
+    & PickWith<ChangeOwnershipModel, 'Initiator', AccountIncludeActor>
+    & PickWith<ChangeOwnershipModel, 'NextOwner', AccountIncludeActor>
+    & PickWith<ChangeOwnershipModel, 'Video', VideoInclude>
+    & PickWith<ChangeOwnershipModel, 'VideoChannel', VideoChannelIncludeActor>
 }
 
 // ############################################################################
@@ -121,6 +144,8 @@ export type MUserNotification = Omit<
   | 'Application'
   | 'UserRegistration'
   | 'VideoCaption'
+  | 'VideoChannelCollaborator'
+  | 'ChangeOwnership'
 >
 
 // ############################################################################
@@ -138,3 +163,5 @@ export type UserNotificationModelForApi =
   & Use<'Account', UserNotificationIncludes.AccountIncludeActor>
   & Use<'UserRegistration', UserNotificationIncludes.UserRegistrationInclude>
   & Use<'VideoCaption', UserNotificationIncludes.VideoCaptionInclude>
+  & Use<'VideoChannelCollaborator', UserNotificationIncludes.VideoChannelCollaboratorInclude>
+  & Use<'ChangeOwnership', UserNotificationIncludes.ChangeOwnershipInclude>

@@ -1,19 +1,25 @@
 import { CdkStep, CdkStepperNext, CdkStepperPrevious } from '@angular/cdk/stepper'
-import { NgIf } from '@angular/common'
-import { Component, OnInit, inject, viewChild } from '@angular/core'
+import { Component, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { FormGroup } from '@angular/forms'
 import { ActivatedRoute, RouterLink } from '@angular/router'
 import { AuthService, ServerService } from '@app/core'
 import { HooksService } from '@app/core/plugins/hooks.service'
 import { InstanceAboutAccordionComponent } from '@app/shared/shared-instance/instance-about-accordion.component'
 import { AlertComponent } from '@app/shared/shared-main/common/alert.component'
-import { PeerTubeProblemDocument, ServerConfig, ServerStats, UserRegister } from '@peertube/peertube-models'
+import {
+  UserRegistrationState,
+  PeerTubeProblemDocument,
+  ServerConfig,
+  ServerStats,
+  UserRegister,
+  UserRegistration
+} from '@peertube/peertube-models'
 import { LoaderComponent } from '../../shared/shared-main/common/loader.component'
 import { SignupLabelComponent } from '../../shared/shared-main/users/signup-label.component'
 import { SignupStepTitleComponent } from '../shared/signup-step-title.component'
 import { SignupSuccessBeforeEmailComponent } from '../shared/signup-success-before-email.component'
 import { SignupService } from '../shared/signup.service'
-import { CustomStepperComponent } from './custom-stepper.component'
+import { RegisterStepperComponent } from './register-stepper.component'
 import { RegisterStepAboutComponent } from './steps/register-step-about.component'
 import { RegisterStepChannelComponent } from './steps/register-step-channel.component'
 import { RegisterStepTermsComponent } from './steps/register-step-terms.component'
@@ -23,10 +29,10 @@ import { RegisterStepUserComponent } from './steps/register-step-user.component'
   selector: 'my-register',
   templateUrl: './register.component.html',
   styleUrls: [ './register.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     SignupLabelComponent,
-    CustomStepperComponent,
+    RegisterStepperComponent,
     CdkStep,
     SignupStepTitleComponent,
     RegisterStepAboutComponent,
@@ -83,13 +89,18 @@ export class RegisterComponent implements OnInit {
   serverStats: ServerStats
 
   private serverConfig: ServerConfig
+  private _requiresApproval: boolean
 
   get requiresEmailVerification () {
     return this.serverConfig.signup.requiresEmailVerification
   }
 
   get requiresApproval () {
-    return this.serverConfig.signup.requiresApproval
+    return this._requiresApproval ?? this.serverConfig.signup.requiresApproval
+  }
+
+  set requiresApproval (value: boolean) {
+    this._requiresApproval = value
   }
 
   get minimumAge () {
@@ -196,10 +207,15 @@ export class RegisterComponent implements OnInit {
 
     const obs = this.requiresApproval
       ? this.signupService.requestSignup(body)
-      : this.signupService.directSignup(body)
+      : this.signupService.signup(body)
 
     obs.subscribe({
-      next: () => {
+      next: (registration) => {
+        if ('state' in registration) {
+          const { state } = registration as UserRegistration
+          this.requiresApproval = state.id === UserRegistrationState.PENDING
+        }
+
         if (this.requiresEmailVerification || this.requiresApproval) {
           this.signupSuccess = true
           return

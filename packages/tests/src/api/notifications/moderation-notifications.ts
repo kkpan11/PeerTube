@@ -1,26 +1,27 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
-import { AbuseState, UserNotification, UserRole, VideoPrivacy } from '@peertube/peertube-models'
+import { AbuseState, UserNotification, UserNotificationType, UserRole, VideoBlacklistType, VideoPrivacy } from '@peertube/peertube-models'
 import { buildUUID } from '@peertube/peertube-node-utils'
 import { cleanupTests, PeerTubeServer, waitJobs } from '@peertube/peertube-server-commands'
+import { MockCoreBlocklist } from '@tests/shared/mock-servers/mock-core-blocklist.js'
 import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 import { MockInstancesIndex } from '@tests/shared/mock-servers/mock-instances-index.js'
+import { checkAutoInstanceFollowing, checkNewInstanceFollower } from '@tests/shared/notifications/check-follow-notifications.js'
 import {
-  prepareNotificationsTest,
-  CheckerBaseParams,
-  checkNewVideoAbuseForModerators,
-  checkNewCommentAbuseForModerators,
-  checkNewAccountAbuseForModerators,
   checkAbuseStateChange,
+  checkAutomaticBlocklistForModerators,
   checkNewAbuseMessage,
+  checkNewAccountAbuseForModerators,
   checkNewBlacklistOnMyVideo,
-  checkNewInstanceFollower,
-  checkAutoInstanceFollowing,
-  checkVideoAutoBlacklistForModerators,
-  checkMyVideoIsPublished,
-  checkNewVideoFromSubscription
-} from '@tests/shared/notifications.js'
+  checkNewCommentAbuseForModerators,
+  checkNewVideoAbuseForModerators,
+  checkVideoAutoBlacklistForModerators
+} from '@tests/shared/notifications/check-moderation-notifications.js'
+import { checkMyVideoIsPublished, checkNewVideoFromSubscription } from '@tests/shared/notifications/check-video-notifications.js'
+import { prepareNotificationsTest, waitUntilNotification } from '@tests/shared/notifications/notifications-common.js'
+import { CheckerBaseParams } from '@tests/shared/notifications/shared/notification-checker.js'
+import { expect } from 'chai'
 
 describe('Test moderation notifications', function () {
   let servers: PeerTubeServer[] = []
@@ -74,7 +75,8 @@ describe('Test moderation notifications', function () {
       this.timeout(50000)
 
       const name = 'video for abuse ' + buildUUID()
-      const video = await servers[0].videos.upload({ token: userToken1, attributes: { name } })
+      // Uploaded by the admin so userToken1 (a regular user) can report it without owning it
+      const video = await servers[0].videos.upload({ attributes: { name } })
 
       await servers[0].abuses.report({ token: userToken1, videoId: video.id, reason: 'super reason' })
 
@@ -181,7 +183,8 @@ describe('Test moderation notifications', function () {
       }
 
       const name = 'abuse ' + buildUUID()
-      const video = await servers[0].videos.upload({ token: userToken1, attributes: { name } })
+      // Uploaded by the admin so userToken1 (the reporter) does not own the reported video
+      const video = await servers[0].videos.upload({ attributes: { name } })
 
       const body = await servers[0].abuses.report({ token: userToken1, videoId: video.id, reason: 'super reason' })
       abuseId = body.abuse.id
@@ -228,7 +231,8 @@ describe('Test moderation notifications', function () {
       }
 
       const name = 'abuse ' + buildUUID()
-      const video = await servers[0].videos.upload({ token: userToken1, attributes: { name } })
+      // Uploaded by the admin so userToken1 (the reporter) does not own the reported video
+      const video = await servers[0].videos.upload({ attributes: { name } })
 
       {
         const body = await servers[0].abuses.report({ token: userToken1, videoId: video.id, reason: 'super reason' })
@@ -427,7 +431,6 @@ describe('Test moderation notifications', function () {
     let videoName: string
 
     before(async function () {
-
       adminBaseParamsServer1 = {
         server: servers[0],
         emails,
@@ -582,8 +585,228 @@ describe('Test moderation notifications', function () {
     })
   })
 
+  describe('Video-related notifications when an auto tag block policy is set', function () {
+    let adminBaseParams: CheckerBaseParams
+    let userBaseParams: CheckerBaseParams
+
+    before(async function () {
+      this.timeout(120000)
+
+      adminBaseParams = {
+        server: servers[0],
+        emails,
+        socketNotifications: adminNotifications,
+        token: servers[0].accessToken
+      }
+
+      userBaseParams = {
+        server: servers[0],
+        emails,
+        socketNotifications: userNotifications,
+        token: userToken1
+      }
+
+      // Only the auto tag policy must block videos here
+      await servers[0].config.disableAutoBlacklist()
+
+      await servers[0].watchedWordsLists.createList({ listName: 'blocked-list', words: [ 'forbidden' ] })
+      await servers[0].autoTags.updateServerVideoPolicies({ autoBlock: [ 'blocked-list' ] })
+
+      await servers[0].subscriptions.add({ targetUri: 'user_1_channel@' + servers[0].host })
+    })
+
+    it('Should notify the moderators and not the subscribers when the automatic tags block the video', async function () {
+      this.timeout(120000)
+
+      const videoName = 'forbidden video ' + buildUUID()
+      const { shortUUID } = await servers[0].videos.upload({ token: userToken1, attributes: { name: videoName } })
+
+      await waitJobs(servers)
+
+      const { data } = await servers[0].blacklist.list({ type: VideoBlacklistType.AUTO_BY_AUTO_TAG_POLICY })
+      expect(data.find(b => b.video.shortUUID === shortUUID)).to.exist
+
+      await checkVideoAutoBlacklistForModerators({ ...adminBaseParams, shortUUID, videoName, checkType: 'presence' })
+      await checkNewVideoFromSubscription({ ...adminBaseParams, videoName, shortUUID, checkType: 'absence' })
+      await checkMyVideoIsPublished({ ...userBaseParams, videoName, shortUUID, checkType: 'absence' })
+    })
+
+    it('Should notify the subscribers and not the moderators when the automatic tags do not block the video', async function () {
+      this.timeout(120000)
+
+      const videoName = 'allowed video ' + buildUUID()
+      const { shortUUID } = await servers[0].videos.upload({ token: userToken1, attributes: { name: videoName } })
+
+      await waitJobs(servers)
+
+      const { data } = await servers[0].blacklist.list()
+      expect(data.find(b => b.video.shortUUID === shortUUID)).to.not.exist
+
+      // The video produces a subscription notification, so check the absence of the moderation one directly
+      const blockNotifications = adminNotifications.filter(n => {
+        return n.type === UserNotificationType.VIDEO_AUTO_BLACKLIST_FOR_MODERATORS &&
+          n.videoBlacklist?.video?.shortUUID === shortUUID
+      })
+      expect(blockNotifications).to.have.lengthOf(0)
+
+      await checkNewVideoFromSubscription({ ...adminBaseParams, videoName, shortUUID, checkType: 'presence' })
+    })
+
+    it('Should not re-announce an already published video when its automatic tags are rebuilt', async function () {
+      this.timeout(120000)
+
+      const videoName = 'allowed video to rename ' + buildUUID()
+      const { id, shortUUID } = await servers[0].videos.upload({ token: userToken1, attributes: { name: videoName } })
+
+      await waitJobs(servers)
+      await checkNewVideoFromSubscription({ ...adminBaseParams, videoName, shortUUID, checkType: 'presence' })
+
+      const notificationsBefore = countNewVideoNotifications(shortUUID)
+      const emailsBefore = countNewVideoEmails(shortUUID)
+      expect(notificationsBefore).to.equal(1)
+
+      // Renaming rebuilds the automatic tags: the video must not be blocked while they are built, and so must not be
+      // announced again to the subscribers when it is released
+      await servers[0].videos.update({ id, token: userToken1, attributes: { name: 'allowed video renamed ' + buildUUID() } })
+
+      await waitJobs(servers)
+      await wait(3000)
+
+      const { data } = await servers[0].blacklist.list()
+      expect(data.find(b => b.video.shortUUID === shortUUID)).to.not.exist
+
+      expect(countNewVideoNotifications(shortUUID)).to.equal(notificationsBefore)
+      expect(countNewVideoEmails(shortUUID)).to.equal(emailsBefore)
+    })
+
+    it('Should block an already published video when its rebuilt automatic tags match the policy', async function () {
+      this.timeout(120000)
+
+      const videoName = 'allowed video to forbid ' + buildUUID()
+      const { id, shortUUID } = await servers[0].videos.upload({ token: userToken1, attributes: { name: videoName } })
+
+      await waitJobs(servers)
+      await checkNewVideoFromSubscription({ ...adminBaseParams, videoName, shortUUID, checkType: 'presence' })
+
+      const notificationsBefore = countNewVideoNotifications(shortUUID)
+      expect(notificationsBefore).to.equal(1)
+
+      const updatedName = 'forbidden video renamed ' + buildUUID()
+      await servers[0].videos.update({ id, token: userToken1, attributes: { name: updatedName } })
+
+      await waitJobs(servers)
+      await wait(3000)
+
+      const { data } = await servers[0].blacklist.list({ type: VideoBlacklistType.AUTO_BY_AUTO_TAG_POLICY })
+      expect(data.find(b => b.video.shortUUID === shortUUID)).to.exist
+
+      await checkVideoAutoBlacklistForModerators({ ...adminBaseParams, shortUUID, videoName: updatedName, checkType: 'presence' })
+
+      expect(countNewVideoNotifications(shortUUID)).to.equal(notificationsBefore)
+    })
+
+    function countNewVideoNotifications (shortUUID: string) {
+      return adminNotifications.filter(n => {
+        return n.type === UserNotificationType.NEW_VIDEO_FROM_SUBSCRIPTION && n.video?.shortUUID === shortUUID
+      }).length
+    }
+
+    function countNewVideoEmails (shortUUID: string) {
+      return emails.filter(e => {
+        const text = e['text'] as string
+
+        return text.includes(shortUUID) && text.includes('Your subscription')
+      }).length
+    }
+
+    after(async function () {
+      await servers[0].autoTags.updateServerVideoPolicies({ autoBlock: [] })
+      await servers[0].subscriptions.remove({ uri: 'user_1_channel@' + servers[0].host })
+    })
+  })
+
+  describe('Subscription auto blocklist notifications', function () {
+    let mockServer: MockCoreBlocklist
+    let mockPort: number
+
+    before(async function () {
+      mockServer = new MockCoreBlocklist()
+      mockPort = await mockServer.initialize()
+    })
+
+    it('Should notify moderators when subscriptions auto block/unblock targets', async function () {
+      this.timeout(120000)
+
+      const targetHandle = `user2@${servers[1].host}`
+      const targetHost = servers[1].host
+      const targetHost2 = 'example.com'
+
+      await servers[0].accounts.get({ accountName: targetHandle })
+
+      const { id: subscriptionId } = await servers[0].blocklist.addServerBlocklistSubscription({
+        subscriptionUrl: `http://127.0.0.1:${mockPort}/list.json`
+      })
+
+      const baseParams: CheckerBaseParams = {
+        server: servers[0],
+        emails,
+        socketNotifications: adminNotifications,
+        token: servers[0].accessToken
+      }
+
+      const now = Date.now()
+
+      mockServer.setActions([
+        { type: 'block', target: targetHandle, createdAt: new Date(now - 1000).toISOString() },
+        { type: 'block', target: targetHost2, createdAt: new Date(now - 1000).toISOString() }
+      ])
+
+      await waitUntilNotification({
+        server: servers[0],
+        token: servers[0].accessToken,
+        notificationType: UserNotificationType.AUTOMATIC_BLOCKLIST_UPDATE,
+        fromDate: new Date(now)
+      })
+
+      await checkAutomaticBlocklistForModerators({
+        ...baseParams,
+
+        expectedBlockedAccountsCount: 1,
+        expectedBlockedHostsCount: 1,
+        expectedUnblockedAccountsCount: 0,
+        expectedUnblockedHostsCount: 0,
+        checkType: 'presence'
+      })
+
+      mockServer.setActions([
+        { type: 'block', target: targetHandle, createdAt: new Date(now - 1000).toISOString() },
+        { type: 'block', target: targetHost, createdAt: new Date(now + 1000).toISOString() },
+        { type: 'unblock', target: targetHost, createdAt: new Date(now + 2000).toISOString() },
+        { type: 'unblock', target: targetHost2, createdAt: new Date(now + 2000).toISOString() }
+      ])
+
+      await wait(8000)
+
+      await checkAutomaticBlocklistForModerators({
+        ...baseParams,
+
+        expectedBlockedAccountsCount: 0,
+        expectedBlockedHostsCount: 0,
+        expectedUnblockedAccountsCount: 0,
+        expectedUnblockedHostsCount: 1,
+        checkType: 'presence'
+      })
+
+      await servers[0].blocklist.removeServerBlocklistSubscription({ id: subscriptionId })
+    })
+
+    after(async function () {
+      await mockServer.terminate()
+    })
+  })
+
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests(servers)
   })

@@ -1,16 +1,14 @@
 import { HttpStatusCode, UserRight } from '@peertube/peertube-models'
-import { getVideoWithAttributes } from '@server/helpers/video.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { buildUploadXFile, safeUploadXCleanup } from '@server/lib/uploadx.js'
 import { VideoSourceModel } from '@server/models/video/video-source.js'
-import { MVideoFullLight } from '@server/types/models/index.js'
 import { Metadata as UploadXMetadata } from '@uploadx/core'
 import express from 'express'
 import { param } from 'express-validator'
 import {
   areValidationErrors,
   checkCanAccessVideoSourceFile,
-  checkUserCanManageVideo,
+  checkCanManageVideo,
   doesVideoExist,
   isValidVideoIdParam
 } from '../shared/index.js'
@@ -21,19 +19,21 @@ export const videoSourceGetLatestValidator = [
 
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (areValidationErrors(req, res)) return
-    if (!await doesVideoExist(req.params.id, res, 'all')) return
+    if (!await doesVideoExist(req.params.id, res, 'with-rights')) return
 
-    const video = getVideoWithAttributes(res) as MVideoFullLight
+    const video = res.locals.videoWithRights
 
     const user = res.locals.oauth.token.User
-    if (!checkUserCanManageVideo(user, video, UserRight.UPDATE_ANY_VIDEO, res)) return
+    if (!await checkCanManageVideo({ user, video, right: UserRight.UPDATE_ANY_VIDEO, req, res, checkIsLocal: true, checkIsOwner: false })) {
+      return
+    }
 
     res.locals.videoSource = await VideoSourceModel.loadLatest(video.id)
 
     if (!res.locals.videoSource) {
       return res.fail({
         status: HttpStatusCode.NOT_FOUND_404,
-        message: 'Video source not found'
+        message: req.t('Video source not found')
       })
     }
 
@@ -54,7 +54,15 @@ export const replaceVideoSourceResumableValidator = [
       return cleanup()
     }
 
-    if (!await isVideoFileAccepted({ req, res, videoFile: file, hook: 'filter:api.video.update-file.accept.result' })) {
+    if (
+      !await isVideoFileAccepted({
+        req,
+        res,
+        videoFile: file,
+        videoBody: file.metadata,
+        hook: 'filter:api.video.update-file.accept.result'
+      })
+    ) {
       return cleanup()
     }
 
@@ -66,13 +74,13 @@ export const replaceVideoSourceResumableValidator = [
 
 export const replaceVideoSourceResumableInitValidator = [
   async (req: express.Request, res: express.Response, next: express.NextFunction) => {
-    const user = res.locals.oauth.token.User
-
     if (!await checkCanUpdateVideoFile({ req, res })) return
 
     const fileMetadata = res.locals.uploadVideoFileResumableMetadata
     const files = { videofile: [ fileMetadata ] }
-    if (await commonVideoFileChecks({ res, user, videoFileSize: fileMetadata.size, files }) === false) return
+    const channelUser = { id: res.locals.videoFull.VideoChannel.Account.userId }
+
+    if (await commonVideoFileChecks({ req, res, channelUser, videoFileSize: fileMetadata.size, files }) === false) return
 
     return next()
   }
@@ -88,7 +96,7 @@ export const originalVideoFileDownloadValidator = [
     if (!videoSource) {
       return res.fail({
         status: HttpStatusCode.NOT_FOUND_404,
-        message: 'Original video file not found'
+        message: req.t('Original video file not found')
       })
     }
 
@@ -113,7 +121,7 @@ async function checkCanUpdateVideoFile (options: {
   if (!CONFIG.VIDEO_FILE.UPDATE.ENABLED) {
     res.fail({
       status: HttpStatusCode.FORBIDDEN_403,
-      message: 'Updating the file of an existing video is not allowed on this instance'
+      message: req.t('Updating the file of an existing video is not allowed on this instance')
     })
     return false
   }
@@ -121,11 +129,13 @@ async function checkCanUpdateVideoFile (options: {
   if (!await doesVideoExist(req.params.id, res)) return false
 
   const user = res.locals.oauth.token.User
-  const video = res.locals.videoAll
+  const video = res.locals.videoFull
 
-  if (!checkUserCanManageVideo(user, video, UserRight.UPDATE_ANY_VIDEO, res)) return false
+  if (!await checkCanManageVideo({ user, video, right: UserRight.UPDATE_ANY_VIDEO, req, res, checkIsLocal: true, checkIsOwner: false })) {
+    return false
+  }
 
-  if (!checkVideoFileCanBeEdited(video, res)) return false
+  if (!checkVideoFileCanBeEdited(video, req, res)) return false
 
   return true
 }

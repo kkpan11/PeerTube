@@ -1,5 +1,5 @@
-import { NgClass, NgIf } from '@angular/common'
-import { Component, OnInit, inject } from '@angular/core'
+import { NgClass } from '@angular/common'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { ActivatedRoute } from '@angular/router'
 import { ServerService } from '@app/core'
@@ -23,7 +23,8 @@ type Prefill = {
 @Component({
   templateUrl: './about-contact.component.html',
   styleUrls: [ './about-contact.component.scss' ],
-  imports: [ NgIf, FormsModule, ReactiveFormsModule, NgClass, AlertComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, ReactiveFormsModule, NgClass, AlertComponent ]
 })
 export class AboutContactComponent extends FormReactive implements OnInit {
   protected formReactiveService = inject(FormReactiveService)

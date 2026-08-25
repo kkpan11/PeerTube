@@ -1,7 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
-import { MockSmtpServer } from '@tests/shared/mock-servers/index.js'
+import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 import { HttpStatusCode } from '@peertube/peertube-models'
 import {
   cleanupTests,
@@ -75,8 +75,8 @@ describe('Test users email verification', function () {
   })
 
   it('Should not allow login for user with unverified email', async function () {
-    const { detail } = await server.login.login({ user: user1, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
-    expect(detail).to.contain('User email is not verified.')
+    const { code } = await server.login.login({ user: user1, expectedStatus: HttpStatusCode.BAD_REQUEST_400 })
+    expect(code).to.equal('email_not_verified')
   })
 
   it('Should verify the user via email and allow login', async function () {
@@ -87,6 +87,10 @@ describe('Test users email verification', function () {
 
     const user = await server.users.get({ userId })
     expect(user.emailVerified).to.be.true
+  })
+
+  it('Should not verify the email again with the same verification string', async function () {
+    await server.users.verifyEmail({ userId, verificationString, expectedStatus: HttpStatusCode.FORBIDDEN_403 })
   })
 
   it('Should be able to change the user email', async function () {
@@ -124,6 +128,48 @@ describe('Test users email verification', function () {
     }
   })
 
+  it('Should not verify a pending email using a verification string minted for the main email', async function () {
+    this.timeout(30000)
+
+    let mainEmailVerificationString: string
+
+    {
+      await server.users.updateMe({
+        token: userAccessToken,
+        email: 'attacker-target@example.com',
+        currentPassword: user1.password
+      })
+
+      await waitJobs(server)
+      expectedEmailsLength++
+      expect(emails).to.have.lengthOf(expectedEmailsLength)
+    }
+
+    {
+      await server.users.askSendVerifyEmail({ email: 'updated@example.com' })
+
+      await waitJobs(server)
+      expectedEmailsLength++
+      expect(emails).to.have.lengthOf(expectedEmailsLength)
+
+      const email = emails[expectedEmailsLength - 1]
+
+      const verificationStringMatches = /verificationString=([a-z0-9]+)/.exec(email['text'])
+      mainEmailVerificationString = verificationStringMatches[1]
+    }
+
+    await server.users.verifyEmail({
+      userId,
+      verificationString: mainEmailVerificationString,
+      isPendingEmail: true,
+      expectedStatus: HttpStatusCode.FORBIDDEN_403
+    })
+
+    const me = await server.users.getMyInfo({ token: userAccessToken })
+    expect(me.email).to.equal('updated@example.com')
+    expect(me.pendingEmail).to.equal('attacker-target@example.com')
+  })
+
   it('Should register user not requiring email verification if setting not enabled', async function () {
     this.timeout(5000)
     await server.config.updateExistingConfig({
@@ -158,7 +204,7 @@ describe('Test users email verification', function () {
   })
 
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests([ server ])
   })

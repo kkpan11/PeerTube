@@ -1,4 +1,5 @@
 import {
+  GenerateStoryboardSuccess,
   LiveRTMPHLSTranscodingSuccess,
   RunnerJobSuccessPayload,
   RunnerJobType,
@@ -16,7 +17,15 @@ import { exists, isArray, isFileValid, isSafeFilename } from '../misc.js'
 
 const RUNNER_JOBS_CONSTRAINTS_FIELDS = CONSTRAINTS_FIELDS.RUNNER_JOBS
 
-const runnerJobTypes = new Set([ 'vod-hls-transcoding', 'vod-web-video-transcoding', 'vod-audio-merge-transcoding' ])
+const runnerJobTypes = new Set([
+  'vod-hls-transcoding',
+  'vod-web-video-transcoding',
+  'vod-audio-merge-transcoding',
+  'live-rtmp-hls-transcoding',
+  'video-studio-transcoding',
+  'video-transcription',
+  'generate-video-storyboard'
+])
 export function isRunnerJobTypeValid (value: RunnerJobType) {
   return runnerJobTypes.has(value)
 }
@@ -25,9 +34,10 @@ export function isRunnerJobSuccessPayloadValid (value: RunnerJobSuccessPayload, 
   return isRunnerJobVODWebVideoResultPayloadValid(value as VODWebVideoTranscodingSuccess, type, files) ||
     isRunnerJobVODHLSResultPayloadValid(value as VODHLSTranscodingSuccess, type, files) ||
     isRunnerJobVODAudioMergeResultPayloadValid(value as VODHLSTranscodingSuccess, type, files) ||
-    isRunnerJobLiveRTMPHLSResultPayloadValid(value as LiveRTMPHLSTranscodingSuccess, type) ||
+    isRunnerJobLiveRTMPHLSResultPayloadValid(value, type) ||
     isRunnerJobVideoStudioResultPayloadValid(value as VideoStudioTranscodingSuccess, type, files) ||
-    isRunnerJobTranscriptionResultPayloadValid(value as TranscriptionSuccess, type, files)
+    isRunnerJobTranscriptionResultPayloadValid(value as TranscriptionSuccess, type, files) ||
+    isRunnerJobGenerateStoryboardResultPayloadValid(value as GenerateStoryboardSuccess, type, files)
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +52,8 @@ export function isRunnerJobUpdatePayloadValid (value: RunnerJobUpdatePayload, ty
     isRunnerJobVideoStudioUpdatePayloadValid(value, type, files) ||
     isRunnerJobVODAudioMergeUpdatePayloadValid(value, type, files) ||
     isRunnerJobLiveRTMPHLSUpdatePayloadValid(value, type, files) ||
-    isRunnerJobTranscriptionUpdatePayloadValid(value, type, files)
+    isRunnerJobTranscriptionUpdatePayloadValid(value, type, files) ||
+    isRunnerJobGenerateStoryboardUpdatePayloadValid(value, type, files)
 }
 
 // ---------------------------------------------------------------------------
@@ -65,6 +76,10 @@ export function isRunnerJobStateValid (value: any) {
 
 export function isRunnerJobArrayOfStateValid (value: any) {
   return isArray(value) && value.every(v => isRunnerJobStateValid(v))
+}
+
+export function isRunnerJobArrayOfTypeValid (value: any) {
+  return isArray(value) && value.every(v => isRunnerJobTypeValid(v))
 }
 
 // ---------------------------------------------------------------------------
@@ -103,7 +118,7 @@ function isRunnerJobLiveRTMPHLSResultPayloadValid (
   value: LiveRTMPHLSTranscodingSuccess,
   type: RunnerJobType
 ) {
-  return type === 'live-rtmp-hls-transcoding' && (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'live-rtmp-hls-transcoding' && isEmptyUpdatePayload(value)
 }
 
 function isRunnerJobVideoStudioResultPayloadValid (
@@ -124,6 +139,15 @@ function isRunnerJobTranscriptionResultPayloadValid (
     isFileValid({ files, field: 'payload[vttFile]', mimeTypeRegex: null, maxSize: null })
 }
 
+function isRunnerJobGenerateStoryboardResultPayloadValid (
+  value: GenerateStoryboardSuccess,
+  type: RunnerJobType,
+  files: UploadFilesForCheck
+) {
+  return type === 'generate-video-storyboard' &&
+    isFileValid({ files, field: 'payload[storyboardFile]', mimeTypeRegex: null, maxSize: null })
+}
+
 // ---------------------------------------------------------------------------
 
 function isRunnerJobVODWebVideoUpdatePayloadValid (
@@ -131,8 +155,7 @@ function isRunnerJobVODWebVideoUpdatePayloadValid (
   type: RunnerJobType,
   _files: UploadFilesForCheck
 ) {
-  return type === 'vod-web-video-transcoding' &&
-    (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'vod-web-video-transcoding' && isEmptyUpdatePayload(value)
 }
 
 function isRunnerJobVODHLSUpdatePayloadValid (
@@ -140,8 +163,7 @@ function isRunnerJobVODHLSUpdatePayloadValid (
   type: RunnerJobType,
   _files: UploadFilesForCheck
 ) {
-  return type === 'vod-hls-transcoding' &&
-    (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'vod-hls-transcoding' && isEmptyUpdatePayload(value)
 }
 
 function isRunnerJobVODAudioMergeUpdatePayloadValid (
@@ -149,8 +171,7 @@ function isRunnerJobVODAudioMergeUpdatePayloadValid (
   type: RunnerJobType,
   _files: UploadFilesForCheck
 ) {
-  return type === 'vod-audio-merge-transcoding' &&
-    (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'vod-audio-merge-transcoding' && isEmptyUpdatePayload(value)
 }
 
 function isRunnerJobTranscriptionUpdatePayloadValid (
@@ -158,8 +179,7 @@ function isRunnerJobTranscriptionUpdatePayloadValid (
   type: RunnerJobType,
   _files: UploadFilesForCheck
 ) {
-  return type === 'video-transcription' &&
-    (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'video-transcription' && isEmptyUpdatePayload(value)
 }
 
 function isRunnerJobLiveRTMPHLSUpdatePayloadValid (
@@ -201,6 +221,17 @@ function isRunnerJobVideoStudioUpdatePayloadValid (
   type: RunnerJobType,
   _files: UploadFilesForCheck
 ) {
-  return type === 'video-studio-transcoding' &&
-    (!value || (typeof value === 'object' && Object.keys(value).length === 0))
+  return type === 'video-studio-transcoding' && isEmptyUpdatePayload(value)
+}
+
+function isRunnerJobGenerateStoryboardUpdatePayloadValid (
+  value: RunnerJobUpdatePayload,
+  type: RunnerJobType,
+  _files: UploadFilesForCheck
+) {
+  return type === 'generate-video-storyboard' && isEmptyUpdatePayload(value)
+}
+
+function isEmptyUpdatePayload (value: any): boolean {
+  return !value || (typeof value === 'object' && Object.keys(value).length === 0)
 }

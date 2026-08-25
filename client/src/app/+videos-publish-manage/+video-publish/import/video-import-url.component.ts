@@ -1,0 +1,172 @@
+import { AfterViewInit, ChangeDetectionStrategy, Component, OnInit, inject, input, output } from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
+import { ActivatedRoute, RouterLink } from '@angular/router'
+import { VideoEdit } from '@app/+videos-publish-manage/shared-manage/common/video-edit.model'
+import { VideoManageController } from '@app/+videos-publish-manage/shared-manage/video-manage-controller.service'
+import { AuthService, CanComponentDeactivate, HooksService, Notifier, ServerService } from '@app/core'
+import { AlertComponent } from '@app/shared/shared-main/common/alert.component'
+import { VideoCaptionService } from '@app/shared/shared-main/video-caption/video-caption.service'
+import { VideoChapterService } from '@app/shared/shared-main/video/video-chapter.service'
+import { VideoImportService } from '@app/shared/shared-main/video/video-import.service'
+import { VideoService } from '@app/shared/shared-main/video/video.service'
+import { PlayerSettingsService } from '@app/shared/shared-video/player-settings.service'
+import { VideoEmbedPrivacyService } from '@app/shared/shared-video/video-embed-privacy.service'
+import { LoadingBarService } from '@ngx-loading-bar/core'
+import { UserVideoQuota, VideoPrivacyType } from '@peertube/peertube-models'
+import { SelectChannelItem } from '@pt-types'
+import debug from 'debug'
+import { forkJoin } from 'rxjs'
+import { map, switchMap } from 'rxjs/operators'
+import { SelectChannelUserComponent } from '../../../shared/shared-forms/select/channel/select-channel-user.component'
+import { GlobalIconComponent } from '../../../shared/shared-icons/global-icon.component'
+import { HelpComponent } from '../../../shared/shared-main/buttons/help.component'
+import { VideoManageContainerComponent } from '../../shared-manage/video-manage-container.component'
+
+const debugLogger = debug('peertube:video-publish')
+
+@Component({
+  selector: 'my-video-import-url',
+  templateUrl: './video-import-url.component.html',
+  styleUrls: [ '../shared/common-publish.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [
+    GlobalIconComponent,
+    HelpComponent,
+    FormsModule,
+    RouterLink,
+    SelectChannelUserComponent,
+    ReactiveFormsModule,
+    AlertComponent,
+    VideoManageContainerComponent
+  ]
+})
+export class VideoImportUrlComponent implements OnInit, AfterViewInit, CanComponentDeactivate {
+  private authService = inject(AuthService)
+  private loadingBar = inject(LoadingBarService)
+  private notifier = inject(Notifier)
+  private videoService = inject(VideoService)
+  private videoImportService = inject(VideoImportService)
+  private hooks = inject(HooksService)
+  private serverService = inject(ServerService)
+  private manageController = inject(VideoManageController)
+  private route = inject(ActivatedRoute)
+  private chapterService = inject(VideoChapterService)
+  private captionService = inject(VideoCaptionService)
+  private playerSettingsService = inject(PlayerSettingsService)
+  private videoEmbedPrivacyService = inject(VideoEmbedPrivacyService)
+
+  readonly userChannels = input.required<SelectChannelItem[]>()
+  readonly userQuota = input.required<UserVideoQuota>()
+  readonly highestPrivacy = input.required<VideoPrivacyType>()
+
+  readonly firstStepDone = output<string>()
+  readonly firstStepError = output()
+
+  targetUrl = ''
+
+  firstStep = true
+  firstStepChannelId: number
+
+  isImportingVideo = false
+
+  ngOnInit () {
+    this.firstStepChannelId = this.userChannels()[0].id
+  }
+
+  ngAfterViewInit () {
+    this.hooks.runAction('action:video-url-import.init', 'video-edit')
+  }
+
+  canDeactivate () {
+    if (this.firstStep) return { canDeactivate: true }
+
+    let text = ''
+
+    if (this.manageController.hasPendingChanges()) {
+      text = $localize`Your video is being imported. But there are unsaved changes: are you sure you want to leave this page?`
+    }
+
+    return { canDeactivate: !text, text }
+  }
+
+  onVideoUpdated () {
+    this.notifier.success($localize`Changes saved.`)
+  }
+
+  reset () {
+    this.firstStep = true
+    this.isImportingVideo = false
+  }
+
+  isTargetUrlValid () {
+    return this.targetUrl?.match(/https?:\/\//)
+  }
+
+  isChannelSyncEnabled () {
+    return this.serverService.getHTMLConfig().import.videoChannelSynchronization.enabled
+  }
+
+  importVideo () {
+    if (this.isImportingVideo) return
+    this.isImportingVideo = true
+
+    const serverConfig = this.serverService.getHTMLConfig()
+
+    const channel = this.userChannels().find(c => c.id === this.firstStepChannelId)
+    const videoEdit = VideoEdit.createFromImport(serverConfig, {
+      targetUrl: this.targetUrl,
+      channelId: this.firstStepChannelId,
+      channelName: channel.name,
+      channelDisplayName: channel.displayName,
+      support: channel.support ?? '',
+      user: this.authService.getUser()
+    })
+    this.manageController.setConfig({ manageType: 'import-url', serverConfig: this.serverService.getHTMLConfig() })
+    this.manageController.setVideoEdit(videoEdit)
+
+    this.loadingBar.useRef('import-video').start()
+
+    this.videoImportService.importVideo(videoEdit.toVideoImportCreate(this.highestPrivacy()))
+      .pipe(
+        switchMap(({ video }) => {
+          return forkJoin([
+            this.captionService.listCaptions(video.uuid),
+            this.chapterService.getChapters({ videoId: video.uuid }),
+            this.playerSettingsService.getVideoSettings({ videoId: video.uuid, raw: true }),
+            this.videoService.getVideo({ videoId: video.uuid }),
+            this.videoEmbedPrivacyService.getPrivacy({ videoId: video.uuid })
+          ]).pipe(
+            map(([ { data: captions }, { chapters }, playerSettings, video, embedPrivacy ]) => ({
+              captions,
+              chapters,
+              playerSettings,
+              video,
+              embedPrivacy
+            }))
+          )
+        })
+      )
+      .subscribe({
+        next: async ({ video, playerSettings, captions, chapters, embedPrivacy }) => {
+          await videoEdit.loadFromAPI({ video, captions, playerSettings, chapters, embedPrivacy, loadPrivacy: false })
+
+          this.loadingBar.useRef('import-video').complete()
+
+          debugLogger(`URL import created`)
+
+          this.manageController.silentRedirectOnManage(videoEdit.getVideoAttributes().shortUUID, this.route)
+
+          this.firstStep = false
+          this.isImportingVideo = false
+          this.firstStepDone.emit(videoEdit.getVideoAttributes().name)
+        },
+
+        error: err => {
+          this.loadingBar.useRef('import-video').complete()
+          this.isImportingVideo = false
+          this.firstStepError.emit()
+          this.notifier.handleError(err)
+        }
+      })
+  }
+}

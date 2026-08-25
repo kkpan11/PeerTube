@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import {
@@ -154,7 +154,8 @@ describe('Test runner common actions', function () {
 
       await server.runners.register({
         name: 'runner 2',
-        registrationToken
+        registrationToken,
+        version: '1.0.0'
       })
 
       const { total, data } = await server.runners.list({ sort: 'createdAt' })
@@ -173,9 +174,11 @@ describe('Test runner common actions', function () {
 
       expect(data[0].name).to.equal('runner 1')
       expect(data[0].description).to.equal('my super runner 1')
+      expect(data[0].version).to.not.exist
 
       expect(data[1].name).to.equal('runner 2')
       expect(data[1].description).to.be.null
+      expect(data[1].version).to.equal('1.0.0')
 
       toDelete = data[1]
     })
@@ -244,7 +247,6 @@ describe('Test runner common actions', function () {
     }
 
     describe('List jobs', function () {
-
       it('Should not have jobs', async function () {
         const { total, data } = await server.runnerJobs.list()
 
@@ -365,11 +367,21 @@ describe('Test runner common actions', function () {
           expect(data).to.have.lengthOf(0)
           expect(total).to.equal(0)
         }
+
+        {
+          const { total, data } = await server.runnerJobs.list({ typeOneOf: [ 'vod-hls-transcoding' ] })
+
+          expect(data).to.not.have.lengthOf(0)
+          expect(total).to.not.equal(0)
+
+          for (const job of data) {
+            expect(job.type).to.equal('vod-hls-transcoding')
+          }
+        }
       })
     })
 
     describe('Accept/update/abort/process a job', function () {
-
       it('Should request available jobs', async function () {
         lastRunnerContact = new Date()
 
@@ -393,6 +405,13 @@ describe('Test runner common actions', function () {
         expect(webVideoJobs).to.have.lengthOf(2)
 
         jobUUID = webVideoJobs[0].uuid
+      })
+
+      it('Should update runner version', async function () {
+        await server.runnerJobs.request({ runnerToken, version: '2.0.0' })
+
+        const { data } = await server.runners.list({ sort: 'createdAt' })
+        expect(data[0].version).to.equal('2.0.0')
       })
 
       it('Should filter requested jobs', async function () {
@@ -526,7 +545,6 @@ describe('Test runner common actions', function () {
     })
 
     describe('Error job', function () {
-
       it('Should accept another job and post an error', async function () {
         await server.runnerJobs.cancelAllJobs()
         await server.videos.quickUpload({ name: 'video' })
@@ -588,7 +606,6 @@ describe('Test runner common actions', function () {
     })
 
     describe('Cancel', function () {
-
       it('Should cancel a pending job', async function () {
         await server.videos.quickUpload({ name: 'video' })
         await waitJobs([ server ])
@@ -636,7 +653,6 @@ describe('Test runner common actions', function () {
     })
 
     describe('Remove', function () {
-
       it('Should remove a pending job', async function () {
         await server.videos.quickUpload({ name: 'video' })
         await waitJobs([ server ])
@@ -663,7 +679,6 @@ describe('Test runner common actions', function () {
     })
 
     describe('Stalled jobs', function () {
-
       it('Should abort stalled jobs', async function () {
         this.timeout(60000)
 
@@ -689,7 +704,6 @@ describe('Test runner common actions', function () {
     })
 
     describe('Rate limit', function () {
-
       before(async function () {
         this.timeout(60000)
 

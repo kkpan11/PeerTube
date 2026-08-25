@@ -1,12 +1,7 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { HttpStatusCode } from '@peertube/peertube-models'
-import {
-  cleanupTests,
-  createSingleServer, PeerTubeServer,
-  setAccessTokensToServers,
-  waitJobs
-} from '@peertube/peertube-server-commands'
+import { cleanupTests, createSingleServer, PeerTubeServer, setAccessTokensToServers, waitJobs } from '@peertube/peertube-server-commands'
 import { expect } from 'chai'
 
 describe('Test user import API validators', function () {
@@ -37,7 +32,6 @@ describe('Test user import API validators', function () {
   })
 
   describe('Request import', function () {
-
     it('Should fail if import is disabled', async function () {
       await server.config.disableUserImport()
 
@@ -121,7 +115,9 @@ describe('Test user import API validators', function () {
         'export-bad-video.zip',
         'export-without-videos.zip',
         'export-bad-structure.zip',
-        'export-bad-structure.zip'
+        'export-bad-structure.zip',
+        'export-crash.zip',
+        'zip-bomb.zip'
       ]
 
       const tokens: string[] = []
@@ -141,7 +137,6 @@ describe('Test user import API validators', function () {
   })
 
   describe('Get latest import status', function () {
-
     it('Should fail without token', async function () {
       await server.userImports.getLatestImport({ userId, token: null, expectedStatus: HttpStatusCode.UNAUTHORIZED_401 })
     })

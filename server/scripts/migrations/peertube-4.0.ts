@@ -1,31 +1,33 @@
-import Bluebird from 'bluebird'
-import { move } from 'fs-extra/esm'
-import { readFile, writeFile } from 'fs/promises'
-import { join } from 'path'
 import { initDatabaseModels } from '@server/initializers/database.js'
 import { federateVideoIfNeeded } from '@server/lib/activitypub/videos/index.js'
 import { JobQueue } from '@server/lib/job-queue/index.js'
 import {
   generateHLSMasterPlaylistFilename,
   generateHlsSha256SegmentsFilename,
-  getHlsResolutionPlaylistFilename
+  getHLSResolutionPlaylistFilename
 } from '@server/lib/paths.js'
 import { VideoPathManager } from '@server/lib/video-path-manager.js'
+import { ApplicationModel } from '@server/models/application/application.js'
 import { VideoStreamingPlaylistModel } from '@server/models/video/video-streaming-playlist.js'
 import { VideoModel } from '@server/models/video/video.js'
+import Bluebird from 'bluebird'
+import { move } from 'fs-extra/esm'
+import { readFile, writeFile } from 'fs/promises'
+import { join } from 'path'
+
+const MIGRATION_NAME = 'peertube-4.0'
 
 run()
   .then(() => process.exit(0))
   .catch(err => {
     console.error(err)
     process.exit(-1)
-
   })
 
 async function run () {
-  console.log('Migrate old HLS paths to new format.')
-
   await initDatabaseModels(true)
+
+  console.log('Migrate old HLS paths to new format.')
 
   JobQueue.Instance.init()
 
@@ -39,6 +41,8 @@ async function run () {
     }
   }, { concurrency: 5 })
 
+  await ApplicationModel.setManualMigrationScriptRun(MIGRATION_NAME)
+
   console.log('Migration finished!')
 }
 
@@ -46,13 +50,13 @@ async function processVideo (videoId: number) {
   const video = await VideoModel.loadWithFiles(videoId)
 
   const hls = video.getHLSPlaylist()
-  if (video.isLive || !hls || hls.playlistFilename !== 'master.m3u8' || hls.VideoFiles.length === 0) {
+  if (video.isLive || hls?.playlistFilename !== 'master.m3u8' || hls.VideoFiles.length === 0) {
     return
   }
 
   console.log(`Renaming HLS playlist files of video ${video.name}.`)
 
-  const playlist = await VideoStreamingPlaylistModel.loadHLSPlaylistByVideo(video.id)
+  const playlist = await VideoStreamingPlaylistModel.loadHLSByVideo(video.id)
   const hlsDirPath = VideoPathManager.Instance.getFSHLSOutputPath(video)
 
   const masterPlaylistPath = join(hlsDirPath, playlist.playlistFilename)
@@ -60,7 +64,7 @@ async function processVideo (videoId: number) {
 
   for (const videoFile of hls.VideoFiles) {
     const srcName = `${videoFile.resolution}.m3u8`
-    const dstName = getHlsResolutionPlaylistFilename(videoFile.filename)
+    const dstName = getHLSResolutionPlaylistFilename(videoFile.filename)
 
     const src = join(hlsDirPath, srcName)
     const dst = join(hlsDirPath, dstName)
@@ -103,8 +107,8 @@ async function processVideo (videoId: number) {
   // Everything worked, we can save the playlist now
   await playlist.save()
 
-  const allVideo = await VideoModel.loadFull(video.id)
-  await federateVideoIfNeeded(allVideo, false)
+  const videoAP = await VideoModel.loadAP(video.id)
+  await federateVideoIfNeeded({ video: videoAP })
 
   console.log(`Successfully moved HLS files of ${video.name}.`)
 }

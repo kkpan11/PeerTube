@@ -1,32 +1,30 @@
-import { mapValues, pickBy } from 'lodash-es'
-import { Component, OnInit, inject, input, viewChild } from '@angular/core'
+import { NgClass } from '@angular/common'
+import { Component, OnInit, inject, input, viewChild, ChangeDetectionStrategy } from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { Notifier } from '@app/core'
 import { ABUSE_REASON_VALIDATOR } from '@app/shared/form-validators/abuse-validators'
 import { FormReactive } from '@app/shared/shared-forms/form-reactive'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
-import { NgbModal } from '@ng-bootstrap/ng-bootstrap'
-import { NgbModalRef } from '@ng-bootstrap/ng-bootstrap/modal/modal-ref'
+import { VideoComment } from '@app/shared/shared-video-comment/video-comment.model'
+import { NgbModal, NgbModalRef } from '@ng-bootstrap/ng-bootstrap'
 import { abusePredefinedReasonsMap } from '@peertube/peertube-core-utils'
 import { AbusePredefinedReasonsString } from '@peertube/peertube-models'
-import { AbuseService } from '../abuse.service'
-import { PeerTubeTemplateDirective } from '../../shared-main/common/peertube-template.directive'
+import { mapValues, pickBy } from 'lodash-es'
 import { PeertubeCheckboxComponent } from '../../shared-forms/peertube-checkbox.component'
-import { NgFor, NgIf, NgClass } from '@angular/common'
-import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { GlobalIconComponent } from '../../shared-icons/global-icon.component'
-import { VideoComment } from '@app/shared/shared-video-comment/video-comment.model'
+import { PeerTubeTemplateDirective } from '../../shared-main/common/peertube-template.directive'
+import { AbuseService } from '../abuse.service'
 
 @Component({
   selector: 'my-comment-report',
   templateUrl: './report.component.html',
   styleUrls: [ './report.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     GlobalIconComponent,
     FormsModule,
     ReactiveFormsModule,
-    NgFor,
     PeertubeCheckboxComponent,
-    NgIf,
     PeerTubeTemplateDirective,
     NgClass
   ]
@@ -67,7 +65,7 @@ export class CommentReportComponent extends FormReactive implements OnInit {
       predefinedReasons: mapValues(abusePredefinedReasonsMap, _ => null as any)
     })
 
-    this.predefinedReasons = this.abuseService.getPrefefinedReasons('comment')
+    this.predefinedReasons = this.abuseService.getPredefinedReasons('comment')
   }
 
   show () {
@@ -95,7 +93,7 @@ export class CommentReportComponent extends FormReactive implements OnInit {
         this.hide()
       },
 
-      error: err => this.notifier.error(err.message)
+      error: err => this.notifier.handleError(err)
     })
   }
 

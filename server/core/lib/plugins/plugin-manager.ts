@@ -1,9 +1,3 @@
-import express from 'express'
-import { createReadStream, createWriteStream } from 'fs'
-import { ensureDir, outputFile, readJSON } from 'fs-extra/esm'
-import { Server } from 'http'
-import { createRequire } from 'module'
-import { basename, join } from 'path'
 import { getCompleteLocale, getHookType, internalRunHook } from '@peertube/peertube-core-utils'
 import {
   ClientScriptJSON,
@@ -19,8 +13,14 @@ import {
 import { decachePlugin } from '@server/helpers/decache.js'
 import { ApplicationModel } from '@server/models/application/application.js'
 import { MOAuthTokenUser, MUser } from '@server/types/models/index.js'
+import express from 'express'
+import { ensureDir, outputFile, readJSON } from 'fs-extra/esm'
+import { appendFile, readFile } from 'fs/promises'
+import { Server } from 'http'
+import { createRequire } from 'module'
+import { basename, join } from 'path'
 import { isLibraryCodeValid, isPackageJSONValid } from '../../helpers/custom-validators/plugins.js'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { CONFIG } from '../../initializers/config.js'
 import { PLUGIN_GLOBAL_CSS_PATH } from '../../initializers/constants.js'
 import { PluginModel } from '../../models/server/plugin.js'
@@ -31,8 +31,10 @@ import {
   RegisterServerOptions
 } from '../../types/plugins/index.js'
 import { ClientHtml } from '../html/client-html.js'
+import { installNpmPlugin, installNpmPluginFromDisk, rebuildNativePlugins, removeNpmPlugin } from './package-manager.js'
 import { RegisterHelpers } from './register-helpers.js'
-import { installNpmPlugin, installNpmPluginFromDisk, rebuildNativePlugins, removeNpmPlugin } from './yarn.js'
+
+const logger = createLogger()
 
 const require = createRequire(import.meta.url)
 
@@ -54,13 +56,13 @@ export interface RegisteredPlugin {
 
   // Only if this is a plugin
   registerHelpers?: RegisterHelpers
-  unregister?: Function
+  unregister?: () => any
 }
 
 export interface HookInformationValue {
   npmName: string
   pluginName: string
-  handler: Function
+  handler: () => any
   priority: number
 }
 
@@ -68,14 +70,21 @@ type PluginLocalesTranslations = {
   [locale: string]: PluginTranslation
 }
 
-export class PluginManager implements ServerHook {
+const UNSECURE_PLUGINS_TO_REMOVE = [
+  'peertube-plugin-google-analytics-js'
+]
 
+export class PluginManager implements ServerHook {
   private static instance: PluginManager
 
   private registeredPlugins: { [name: string]: RegisteredPlugin } = {}
 
   private hooks: { [name: string]: HookInformationValue[] } = {}
   private translations: PluginLocalesTranslations = {}
+
+  // Plugins are registered after the HTTP server started accepting requests
+  // And are never registered at all when PeerTube runs with `--no-plugins`
+  private registrationDone = false
 
   private server: Server
 
@@ -105,7 +114,7 @@ export class PluginManager implements ServerHook {
 
       const routes = result.registerHelpers.getWebSocketRoutes()
 
-      const wss = routes.find(r => r.route.startsWith(subRoute))
+      const wss = routes.find(r => subRoute === r.route || subRoute.startsWith(r.route + '/'))
       if (!wss) return
 
       try {
@@ -130,7 +139,7 @@ export class PluginManager implements ServerHook {
     const npmName = PluginModel.buildNpmName(name, PluginType.PLUGIN)
     const registered = this.getRegisteredPluginOrTheme(npmName)
 
-    if (!registered || registered.type !== PluginType.PLUGIN) return undefined
+    if (registered?.type !== PluginType.PLUGIN) return undefined
 
     return registered
   }
@@ -139,7 +148,7 @@ export class PluginManager implements ServerHook {
     const npmName = PluginModel.buildNpmName(name, PluginType.THEME)
     const registered = this.getRegisteredPluginOrTheme(npmName)
 
-    if (!registered || registered.type !== PluginType.THEME) return undefined
+    if (registered?.type !== PluginType.THEME) return undefined
 
     return registered
   }
@@ -151,6 +160,8 @@ export class PluginManager implements ServerHook {
   getRegisteredThemes () {
     return this.getRegisteredPluginsOrThemes(PluginType.THEME)
   }
+
+  // ---------------------------------------------------------------------------
 
   getIdAndPassAuths () {
     return this.getRegisteredPlugins()
@@ -174,16 +185,42 @@ export class PluginManager implements ServerHook {
       .filter(v => v.externalAuths.length !== 0)
   }
 
+  // ---------------------------------------------------------------------------
+
+  getVideoAutoTaggers () {
+    return this.getRegisteredPlugins()
+      .map(p => ({
+        npmName: p.npmName,
+        name: p.name,
+        version: p.version,
+        autoTaggers: p.registerHelpers.getVideoAutoTaggers()
+      }))
+      .filter(p => p.autoTaggers.length !== 0)
+  }
+
+  getCommentAutoTaggers () {
+    return this.getRegisteredPlugins()
+      .map(p => ({
+        npmName: p.npmName,
+        name: p.name,
+        version: p.version,
+        autoTaggers: p.registerHelpers.getCommentAutoTaggers()
+      }))
+      .filter(p => p.autoTaggers.length !== 0)
+  }
+
+  // ---------------------------------------------------------------------------
+
   getRegisteredSettings (npmName: string) {
     const result = this.getRegisteredPluginOrTheme(npmName)
-    if (!result || result.type !== PluginType.PLUGIN) return []
+    if (result?.type !== PluginType.PLUGIN) return []
 
     return result.registerHelpers.getSettings()
   }
 
   getRouter (npmName: string) {
     const result = this.getRegisteredPluginOrTheme(npmName)
-    if (!result || result.type !== PluginType.PLUGIN) return null
+    if (result?.type !== PluginType.PLUGIN) return null
 
     return result.registerHelpers.getRouter()
   }
@@ -193,12 +230,14 @@ export class PluginManager implements ServerHook {
   }
 
   async isTokenValid (token: MOAuthTokenUser, type: 'access' | 'refresh') {
+    if (!this.registrationDone) return true
+
     const auth = this.getAuth(token.User.pluginAuth, token.authName)
-    if (!auth) return true
+    if (!auth) return false // Token is invalid since the auth doesn't exist anymore
 
     if (auth.hookTokenValidity) {
       try {
-        const { valid } = await auth.hookTokenValidity({ token, type })
+        const { valid } = await auth.hookTokenValidity({ token, user: token.User, type })
 
         if (valid === false) {
           logger.info('Rejecting %s token validity from auth %s of plugin %s', type, token.authName, token.User.pluginAuth)
@@ -241,6 +280,7 @@ export class PluginManager implements ServerHook {
     const registered = this.getRegisteredPluginByShortName(name)
     if (!registered) {
       logger.error('Cannot find plugin %s to call on settings changed.', name)
+      return
     }
 
     for (const cb of registered.registerHelpers.getOnSettingsChangedCallbacks()) {
@@ -267,7 +307,9 @@ export class PluginManager implements ServerHook {
         hookType,
         result,
         params,
-        onError: err => { logger.error('Cannot run hook %s of plugin %s.', hookName, hook.pluginName, { err }) }
+        onError: err => {
+          logger.error('Cannot run hook %s of plugin %s.', hookName, hook.pluginName, { err })
+        }
       })
     }
 
@@ -297,6 +339,17 @@ export class PluginManager implements ServerHook {
     }
 
     this.sortHooksByPriority()
+
+    this.registrationDone = true
+  }
+
+  async removeUnsecurePluginsIfNeededBeforeRegistration () {
+    for (const npmName of UNSECURE_PLUGINS_TO_REMOVE) {
+      const plugin = await PluginModel.loadByNpmName(npmName)
+      if (!plugin || plugin.uninstalled === true) continue
+
+      await this.uninstall({ npmName, unregister: false })
+    }
   }
 
   // Don't need the plugin type since themes cannot register server code
@@ -358,9 +411,8 @@ export class PluginManager implements ServerHook {
 
       const packageJSON = await this.getPackageJSON(pluginName, pluginType)
 
-      this.sanitizeAndCheckPackageJSONOrThrow(packageJSON, pluginType);
-
-      [ plugin ] = await PluginModel.upsert({
+      this.sanitizeAndCheckPackageJSONOrThrow(packageJSON, pluginType)
+      ;[ plugin ] = await PluginModel.upsert({
         name: pluginName,
         description: packageJSON.description,
         homepage: packageJSON.homepage,
@@ -451,6 +503,8 @@ export class PluginManager implements ServerHook {
 
   async rebuildNativePluginsIfNeeded () {
     if (!await ApplicationModel.nodeABIChanged()) return
+
+    logger.info('Node ABI has changed, rebuilding native plugins')
 
     return rebuildNativePlugins()
   }
@@ -561,16 +615,10 @@ export class PluginManager implements ServerHook {
     }
   }
 
-  private concatFiles (input: string, output: string) {
-    return new Promise<void>((res, rej) => {
-      const inputStream = createReadStream(input)
-      const outputStream = createWriteStream(output, { flags: 'a' })
+  private async concatFiles (input: string, output: string) {
+    const css = await readFile(input, 'utf-8')
 
-      inputStream.pipe(outputStream)
-
-      inputStream.on('end', () => res())
-      inputStream.on('error', err => rej(err))
-    })
+    return appendFile(output, stripSourceMappingURLComments(css))
   }
 
   private async regeneratePluginGlobalCSS () {
@@ -605,7 +653,7 @@ export class PluginManager implements ServerHook {
 
   private getAuth (npmName: string, authName: string) {
     const plugin = this.getRegisteredPluginOrTheme(npmName)
-    if (!plugin || plugin.type !== PluginType.PLUGIN) return null
+    if (plugin?.type !== PluginType.PLUGIN) return null
 
     let auths: (RegisterServerAuthPassOptions | RegisterServerAuthExternalOptions)[] = plugin.registerHelpers.getIdAndPassAuths()
     auths = auths.concat(plugin.registerHelpers.getExternalAuths())
@@ -662,7 +710,7 @@ export class PluginManager implements ServerHook {
     const { result: packageJSONValid, badFields } = isPackageJSONValid(packageJSON, pluginType)
     if (!packageJSONValid) {
       const formattedFields = badFields.map(f => `"${f}"`)
-                                       .join(', ')
+        .join(', ')
 
       throw new Error(`PackageJSON is invalid (invalid fields: ${formattedFields}).`)
     }
@@ -671,4 +719,10 @@ export class PluginManager implements ServerHook {
   static get Instance () {
     return this.instance || (this.instance = new this())
   }
+}
+
+function stripSourceMappingURLComments (css: string) {
+  return css
+    .replace(/\/\*#\s*sourceMappingURL=[^*]*\*\//gs, '')
+    .replace(/\/\/#\s*sourceMappingURL=.*/g, '')
 }

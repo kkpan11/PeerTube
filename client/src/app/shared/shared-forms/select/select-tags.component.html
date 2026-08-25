@@ -1,9 +1,11 @@
-<p-chips
+<p-autoComplete
+  class="w-100"
   [(ngModel)]="selectedItems"
   (ngModelChange)="onModelChange()"
   [placeholder]="placeholder()"
   [inputId]="inputId()"
-  [allowDuplicate]="false"
-  [caseSensitiveDuplication]="false"
   [separator]="separator"
-></p-chips>
+  [class.small]="small()"
+  multiple="true"
+  [typeahead]="false"
+></p-autoComplete>

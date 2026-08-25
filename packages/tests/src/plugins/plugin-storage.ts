@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { pathExists } from 'fs-extra/esm'
@@ -34,6 +34,10 @@ describe('Test plugin storage', function () {
     it('Should correctly retrieve an array as array from the storage.', async function () {
       await server.servers.waitUntilLog('storedArrayKey isArray is true')
       await server.servers.waitUntilLog('storedArrayKey stored value is toto, toto2')
+    })
+
+    it('Should correctly delete a key', async function () {
+      await server.servers.waitUntilLog('superkey has been deleted')
     })
   })
 

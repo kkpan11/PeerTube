@@ -1,20 +1,20 @@
-import { CommonModule } from '@angular/common'
-import { Component, OnInit, inject, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, OnInit, inject, viewChild } from '@angular/core'
 import { RouterOutlet } from '@angular/router'
 import { ServerService } from '@app/core'
 import { GlobalIconComponent } from '@app/shared/shared-icons/global-icon.component'
-import { Actor } from '@app/shared/shared-main/account/actor.model'
 import { ButtonComponent } from '@app/shared/shared-main/buttons/button.component'
 import { HorizontalMenuComponent, HorizontalMenuEntry } from '@app/shared/shared-main/menu/horizontal-menu.component'
 import { SupportModalComponent } from '@app/shared/shared-support-modal/support-modal.component'
 import { maxBy } from '@peertube/peertube-core-utils'
 import { HTMLServerConfig } from '@peertube/peertube-models'
+import { findAppropriateImageFileUrl } from '@root-helpers/images'
 
 @Component({
   selector: 'my-about',
   templateUrl: './about.component.html',
   styleUrls: [ './about.component.scss' ],
-  imports: [ CommonModule, RouterOutlet, HorizontalMenuComponent, GlobalIconComponent, ButtonComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ RouterOutlet, HorizontalMenuComponent, GlobalIconComponent, ButtonComponent ]
 })
 export class AboutComponent implements OnInit {
   private server = inject(ServerService)
@@ -32,15 +32,15 @@ export class AboutComponent implements OnInit {
     this.config = this.server.getHTMLConfig()
 
     this.bannerUrl = this.config.instance.banners.length !== 0
-      ? maxBy(this.config.instance.banners, 'width').path
+      ? maxBy(this.config.instance.banners, 'width').fileUrl
       : undefined
 
-    this.avatarUrl = Actor.GET_ACTOR_AVATAR_URL(this.config.instance, 110)
+    this.avatarUrl = findAppropriateImageFileUrl(this.config.instance.avatars, 110)
 
     this.menuEntries = [
       {
         label: $localize`Platform`,
-        routerLink: '/about/instance/home',
+        routerLink: '/about/instance',
         pluginSelectorId: 'about-menu-instance'
       },
       {

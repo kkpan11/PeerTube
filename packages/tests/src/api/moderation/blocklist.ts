@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { UserNotificationType } from '@peertube/peertube-models'
@@ -50,7 +50,7 @@ async function checkCommentNotification (
   await waitJobs([ mainServer, comment.server ])
 
   const { data } = await mainServer.notifications.list({ start: 0, count: 30 })
-  const commentNotifications = data.filter(n => n.comment && n.comment.video.uuid === comment.videoUUID && n.createdAt >= createdAt)
+  const commentNotifications = data.filter(n => n.comment?.video.uuid === comment.videoUUID && n.createdAt >= createdAt)
 
   if (check === 'presence') expect(commentNotifications).to.have.lengthOf(1)
   else expect(commentNotifications).to.have.lengthOf(0)
@@ -143,7 +143,6 @@ describe('Test blocklist', function () {
   })
 
   describe('User blocklist', function () {
-
     describe('When managing account blocklist', function () {
       it('Should list all videos', function () {
         return checkAllVideos(servers[0], servers[0].accessToken)
@@ -409,7 +408,6 @@ describe('Test blocklist', function () {
     })
 
     describe('When managing server blocklist', function () {
-
       it('Should list all videos', function () {
         return checkAllVideos(servers[0], servers[0].accessToken)
       })
@@ -547,7 +545,6 @@ describe('Test blocklist', function () {
   })
 
   describe('Server blocklist', function () {
-
     describe('When managing account blocklist', function () {
       it('Should list all videos', async function () {
         for (const token of [ userModeratorToken, servers[0].accessToken ]) {
@@ -589,6 +586,15 @@ describe('Test blocklist', function () {
           const v = data.find(v => v.name === 'video user 1')
           expect(v).to.be.undefined
         }
+      })
+
+      it('Should display owned videos of blocked account to this account', async function () {
+        const { data } = await servers[0].videos.listMyVideos({ token: userToken1 })
+
+        expect(data).to.have.lengthOf(1)
+
+        const v = data.find(v => v.name === 'video user 1')
+        expect(v).not.to.be.undefined
       })
 
       it('Should hide its comments', async function () {
@@ -727,7 +733,6 @@ describe('Test blocklist', function () {
     })
 
     describe('When managing server blocklist', function () {
-
       it('Should list all videos', async function () {
         for (const token of [ userModeratorToken, servers[0].accessToken ]) {
           await checkAllVideos(servers[0], token)

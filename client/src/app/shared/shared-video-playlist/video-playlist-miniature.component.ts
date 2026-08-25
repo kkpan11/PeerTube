@@ -1,7 +1,7 @@
-import { NgClass, NgIf } from '@angular/common'
-import { Component, OnInit, inject, input } from '@angular/core'
+import { NgClass } from '@angular/common'
+import { Component, OnInit, booleanAttribute, inject, input, ChangeDetectionStrategy } from '@angular/core'
 import { MarkdownService } from '@app/core'
-import { LinkType } from 'src/types/link.type'
+import { LinkType } from '@pt-types'
 import { LinkComponent } from '../shared-main/common/link.component'
 import { FromNowPipe } from '../shared-main/date/from-now.pipe'
 import { VideoPlaylist } from './video-playlist.model'
@@ -10,21 +10,28 @@ import { VideoPlaylist } from './video-playlist.model'
   selector: 'my-video-playlist-miniature',
   styleUrls: [ './video-playlist-miniature.component.scss' ],
   templateUrl: './video-playlist-miniature.component.html',
-  imports: [ NgClass, LinkComponent, NgIf, FromNowPipe ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ NgClass, LinkComponent, FromNowPipe ]
 })
 export class VideoPlaylistMiniatureComponent implements OnInit {
   private markdownService = inject(MarkdownService)
 
   readonly playlist = input<VideoPlaylist>(undefined)
 
-  readonly toManage = input(false)
+  readonly toManage = input.required({ transform: booleanAttribute })
 
-  readonly displayChannel = input(false)
-  readonly displayDescription = input(false)
-  readonly displayPrivacy = input(false)
-  readonly displayAsRow = input(false)
+  readonly thumbnailOnly = input(false, { transform: booleanAttribute })
+
+  readonly displayChannel = input(false, { transform: booleanAttribute })
+  readonly displayDescription = input(false, { transform: booleanAttribute })
+  readonly displayPrivacy = input(false, { transform: booleanAttribute })
+  readonly displayAsRow = input(false, { transform: booleanAttribute })
 
   readonly linkType = input<LinkType>('internal')
+
+  // Level of the playlist title in the page heading hierarchy (renders role="heading" + aria-level instead of a real h1-h6 tag,
+  // since the miniature can be reused at different nesting depths depending on the page)
+  readonly headingLevel = input<number>(undefined)
 
   ownerRouterLink: any
   ownerHref: string
@@ -95,5 +102,10 @@ export class VideoPlaylistMiniatureComponent implements OnInit {
     // Lazy load
     this.ownerRouterLink = [ '/search/lazy-load-channel', { url: playlist.videoChannel.url } ]
     return
+  }
+
+  getPlaylistThumbnailUrl () {
+    // Keep it sync with image size requested by the SASS file
+    return this.playlist().getThumbnailUrl(280)
   }
 }

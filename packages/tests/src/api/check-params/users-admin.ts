@@ -1,7 +1,5 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '@tests/shared/checks.js'
-import { MockSmtpServer } from '@tests/shared/mock-servers/index.js'
 import { omit } from '@peertube/peertube-core-utils'
 import { HttpStatusCode, UserAdminFlag, UserRole } from '@peertube/peertube-models'
 import {
@@ -15,6 +13,8 @@ import {
   PeerTubeServer,
   setAccessTokensToServers
 } from '@peertube/peertube-server-commands'
+import { checkBadCountPagination, checkBadSort, checkBadStartPagination } from '@tests/shared/checks.js'
+import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
 
 describe('Test users admin API validators', function () {
   const path = '/api/v1/users/'
@@ -67,7 +67,7 @@ describe('Test users admin API validators', function () {
     })
 
     it('Should fail with an incorrect sort', async function () {
-      await checkBadSortPagination(server.url, path, server.accessToken)
+      await checkBadSort(server.url, path, server.accessToken)
     })
 
     it('Should fail with a non authenticated user', async function () {
@@ -84,6 +84,25 @@ describe('Test users admin API validators', function () {
         path,
         token: userToken,
         expectedStatus: HttpStatusCode.FORBIDDEN_403
+      })
+    })
+
+    it('Should fail with an invalid role filter', async function () {
+      await makeGetRequest({
+        url: server.url,
+        path,
+        query: { role: 4 },
+        token: server.accessToken
+      })
+    })
+
+    it('Should succeed with the correct params', async function () {
+      await makeGetRequest({
+        url: server.url,
+        path,
+        token: server.accessToken,
+        query: { role: UserRole.MODERATOR },
+        expectedStatus: HttpStatusCode.OK_200
       })
     })
   })
@@ -311,7 +330,6 @@ describe('Test users admin API validators', function () {
   })
 
   describe('When getting a user', function () {
-
     it('Should fail with an non authenticated user', async function () {
       await makeGetRequest({
         url: server.url,
@@ -331,7 +349,6 @@ describe('Test users admin API validators', function () {
   })
 
   describe('When updating a user', function () {
-
     it('Should fail with an invalid email attribute', async function () {
       const fields = {
         email: 'blabla'
@@ -349,6 +366,18 @@ describe('Test users admin API validators', function () {
         token: server.accessToken,
         fields,
         expectedStatus: HttpStatusCode.CONFLICT_409
+      })
+    })
+
+    it('Should succeed with the same email', async function () {
+      const fields = { email: 'user1@example.com' }
+
+      await makePutBodyRequest({
+        url: server.url,
+        path: path + userId,
+        token: server.accessToken,
+        fields,
+        expectedStatus: HttpStatusCode.NO_CONTENT_204
       })
     })
 
@@ -436,6 +465,20 @@ describe('Test users admin API validators', function () {
       })
     })
 
+    it('Should fail to update user role for a moderator', async function () {
+      for (const token of [ userToken, moderatorToken ]) {
+        for (const role of [ UserRole.MODERATOR, UserRole.ADMINISTRATOR ]) {
+          await makePutBodyRequest({
+            url: server.url,
+            path: path + userId,
+            token,
+            fields: { role },
+            expectedStatus: HttpStatusCode.FORBIDDEN_403
+          })
+        }
+      }
+    })
+
     it('Should succeed to update a user with a moderator', async function () {
       const fields = {
         videoQuota: 42
@@ -450,12 +493,12 @@ describe('Test users admin API validators', function () {
       })
     })
 
-    it('Should succeed with the correct params', async function () {
+    it('Should succeed with the correct params for an admin', async function () {
       const fields = {
         email: 'email@example.com',
         emailVerified: true,
         videoQuota: 42,
-        role: UserRole.USER
+        role: UserRole.MODERATOR
       }
 
       await makePutBodyRequest({
@@ -469,7 +512,7 @@ describe('Test users admin API validators', function () {
   })
 
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests([ server ])
   })

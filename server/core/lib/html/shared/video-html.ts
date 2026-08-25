@@ -1,24 +1,21 @@
-import { addQueryParams, escapeHTML, getVideoWatchRSSFeeds } from '@peertube/peertube-core-utils'
-import { HttpStatusCode, VideoPrivacy } from '@peertube/peertube-models'
-import { toCompleteUUID } from '@server/helpers/custom-validators/misc.js'
+import { addQueryParams, escapeHTML } from '@peertube/peertube-core-utils'
+import { HttpStatusCode, VideoPrivacy, VideoResolution } from '@peertube/peertube-models'
 import { Memoize } from '@server/helpers/memoize.js'
+import { getVideoRSSFeeds } from '@server/lib/rss.js'
+import { VideoCaptionModel } from '@server/models/video/video-caption.js'
 import express from 'express'
 import validator from 'validator'
 import { CONFIG } from '../../../initializers/config.js'
 import { MEMOIZE_TTL, WEBSERVER } from '../../../initializers/constants.js'
 import { VideoModel } from '../../../models/video/video.js'
-import { MVideo, MVideoThumbnail, MVideoThumbnailBlacklist } from '../../../types/models/index.js'
-import { getActivityStreamDuration } from '../../activitypub/activity.js'
+import { MVideo, MVideoSeo } from '../../../types/models/index.js'
 import { isVideoInPrivateDirectory } from '../../video-privacy.js'
 import { buildEmptyEmbedHTML } from './common.js'
 import { PageHtml } from './page-html.js'
 import { TagsHtml } from './tags-html.js'
 
 export class VideoHtml {
-
-  static async getWatchVideoHTML (videoIdArg: string, req: express.Request, res: express.Response) {
-    const videoId = toCompleteUUID(videoIdArg)
-
+  static async getWatchVideoHTML (videoId: string, req: express.Request, res: express.Response) {
     // Let Angular application handle errors
     if (!validator.default.isInt(videoId) && !validator.default.isUUID(videoId, 4)) {
       res.status(HttpStatusCode.NOT_FOUND_404)
@@ -27,8 +24,12 @@ export class VideoHtml {
 
     const [ html, video ] = await Promise.all([
       PageHtml.getIndexHTML(req, res),
-      VideoModel.loadWithBlacklist(videoId)
+      VideoModel.loadForSEO(videoId)
     ])
+
+    if (video?.privacy === VideoPrivacy.PASSWORD_PROTECTED) {
+      return html
+    }
 
     // Let Angular application handle errors
     if (!video || isVideoInPrivateDirectory(video.privacy) || video.VideoBlacklist) {
@@ -37,21 +38,21 @@ export class VideoHtml {
     }
 
     return this.buildVideoHTML({
+      req,
+
       html,
       video,
       currentQuery: req.query,
-      addEmbedInfo: true,
       addOG: true,
-      addTwitterCard: true
+      addTwitterCard: true,
+      isEmbed: false
     })
   }
 
   @Memoize({ maxAge: MEMOIZE_TTL.EMBED_HTML })
-  static async getEmbedVideoHTML (videoIdArg: string) {
-    const videoId = toCompleteUUID(videoIdArg)
-
-    const videoPromise: Promise<MVideoThumbnailBlacklist> = validator.default.isInt(videoId) || validator.default.isUUID(videoId, 4)
-      ? VideoModel.loadWithBlacklist(videoId)
+  static async getEmbedVideoHTML (videoId: string) {
+    const videoPromise: Promise<MVideoSeo> = validator.default.isInt(videoId) || validator.default.isUUID(videoId, 4)
+      ? VideoModel.loadForSEO(videoId)
       : Promise.resolve(undefined)
 
     const [ html, video ] = await Promise.all([ PageHtml.getEmbedHTML(), videoPromise ])
@@ -61,11 +62,13 @@ export class VideoHtml {
     }
 
     return this.buildVideoHTML({
+      req: null,
+
       html,
       video,
-      addEmbedInfo: true,
       addOG: false,
       addTwitterCard: false,
+      isEmbed: true,
 
       // TODO: Implement it so we can send query params to oembed service
       currentQuery: {}
@@ -77,41 +80,25 @@ export class VideoHtml {
   // ---------------------------------------------------------------------------
 
   private static buildVideoHTML (options: {
+    req: express.Request
+
     html: string
-    video: MVideoThumbnail
+    video: MVideoSeo
 
     addOG: boolean
     addTwitterCard: boolean
-    addEmbedInfo: boolean
+
+    isEmbed: boolean
 
     currentQuery: Record<string, string>
   }) {
-    const { html, video, addEmbedInfo, addOG, addTwitterCard, currentQuery = {} } = options
+    const { req, html, video, addOG, addTwitterCard, isEmbed, currentQuery = {} } = options
     const escapedTruncatedDescription = TagsHtml.buildEscapedTruncatedDescription(video.description)
 
     let customHTML = TagsHtml.addTitleTag(html, video.name)
     customHTML = TagsHtml.addDescriptionTag(customHTML, escapedTruncatedDescription)
 
-    const embed = addEmbedInfo
-      ? {
-        url: WEBSERVER.URL + video.getEmbedStaticPath(),
-        createdAt: video.createdAt.toISOString(),
-        duration: video.duration ? getActivityStreamDuration(video.duration) : undefined,
-        views: video.views
-      }
-      : undefined
-
-    const ogType = addOG
-      ? 'video' as 'video'
-      : undefined
-
-    const twitterCard = addTwitterCard
-      ? 'player'
-      : undefined
-
-    const schemaType = 'VideoObject'
-
-    const preview = video.getPreview()
+    const thumbnail = video.getBestThumbnail('16:9')
 
     return TagsHtml.addTags(customHTML, {
       url: WEBSERVER.URL + video.getWatchStaticPath(),
@@ -120,21 +107,85 @@ export class VideoHtml {
       escapedTitle: escapeHTML(video.name),
       escapedTruncatedDescription,
 
-      forbidIndexation: video.remote || video.privacy !== VideoPrivacy.PUBLIC,
+      forbidIndexation: isEmbed
+        ? video.privacy !== VideoPrivacy.PUBLIC && video.privacy !== VideoPrivacy.UNLISTED
+        : video.remote || video.privacy !== VideoPrivacy.PUBLIC,
 
-      image: preview
-        ? { url: WEBSERVER.URL + video.getPreviewStaticPath(), width: preview.width, height: preview.height }
+      embedIndexation: isEmbed,
+
+      image: thumbnail
+        ? { url: WEBSERVER.URL + thumbnail.getFileStaticPath(), width: thumbnail.width, height: thumbnail.height }
         : undefined,
 
-      embed,
-      oembedUrl: this.getOEmbedUrl(video, currentQuery),
+      videoOrPlaylist: {
+        embedUrl: video.getEmbedStaticUrl(),
+        oembedUrl: this.getOEmbedUrl(video, currentQuery),
 
-      ogType,
-      twitterCard,
-      schemaType,
+        channel: {
+          displayName: video.VideoChannel.name,
+          url: video.VideoChannel.getClientUrl(false)
+        },
 
-      rssFeeds: getVideoWatchRSSFeeds(WEBSERVER.URL, CONFIG.INSTANCE.NAME, video)
+        createdAt: video.createdAt.toISOString(),
+        updatedAt: video.updatedAt.toISOString()
+      },
+
+      video: {
+        publishedAt: video.publishedAt.toISOString(),
+        duration: video.duration,
+
+        contentUrl: this.getContentUrl(video),
+        views: video.views,
+        language: video.language,
+        dislikes: video.dislikes,
+        likes: video.likes,
+        nsfw: video.nsfw,
+        tags: video.Tags.map(t => t.name),
+        captions: video.VideoCaptions.map(c => ({
+          label: VideoCaptionModel.getLanguageLabel(c.language),
+          mediaType: 'text/vtt',
+          language: c.language,
+          url: c.getLocalFileUrl()
+        }))
+      },
+
+      ogType: addOG
+        ? 'video'
+        : undefined,
+
+      twitterCard: addTwitterCard
+        ? 'player'
+        : undefined,
+
+      schemaType: 'VideoObject',
+
+      rssFeeds: req
+        ? getVideoRSSFeeds(video, req)
+        : []
     }, { video })
+  }
+
+  // Crawlers prefer a URL they can fetch and probe themselves over the embed page
+  private static getContentUrl (video: MVideoSeo) {
+    const webVideoFile = this.getSEOWebVideoFile(video)
+    if (webVideoFile) return webVideoFile.getFileUrl(video)
+
+    // HLS only video: fallback on the master playlist
+    return video.getHLSPlaylist()?.getMasterPlaylistUrl(video)
+  }
+
+  // Prefer 720p: crawlers get enough to probe the video without us serving them our biggest file
+  private static getSEOWebVideoFile (video: MVideoSeo) {
+    const files = (video.VideoFiles || []).filter(f => f.resolution !== VideoResolution.H_NOVIDEO)
+    if (files.length === 0) return undefined
+
+    return files.sort((a, b) => {
+      const distance = Math.abs(a.resolution - 720) - Math.abs(b.resolution - 720)
+      if (distance !== 0) return distance
+
+      // prefer smaller file
+      return a.resolution - b.resolution
+    })[0]
   }
 
   private static getOEmbedUrl (video: MVideo, currentQuery: Record<string, string>) {

@@ -1,5 +1,4 @@
-import { NgIf } from '@angular/common'
-import { Component, inject, input } from '@angular/core'
+import { Component, inject, input, ChangeDetectionStrategy } from '@angular/core'
 import { ServerService } from '@app/core'
 import { AlertComponent } from '@app/shared/shared-main/common/alert.component'
 import { ServerStats } from '@peertube/peertube-models'
@@ -10,7 +9,8 @@ import { DaysDurationFormatterPipe } from '../../../shared/shared-main/date/days
   selector: 'my-register-step-about',
   templateUrl: './register-step-about.component.html',
   styleUrls: [ './register-step-about.component.scss' ],
-  imports: [ InstanceBannerComponent, NgIf, DaysDurationFormatterPipe, AlertComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ InstanceBannerComponent, DaysDurationFormatterPipe, AlertComponent ]
 })
 export class RegisterStepAboutComponent {
   private serverService = inject(ServerService)

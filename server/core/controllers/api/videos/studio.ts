@@ -7,6 +7,7 @@ import { MIMETYPES, VIDEO_FILTERS } from '@server/initializers/constants.js'
 import { buildTaskFileFieldname, createVideoStudioJob, getStudioTaskFilePath, getTaskFileFromReq } from '@server/lib/video-studio.js'
 import {
   HttpStatusCode,
+  VideoChannelActivityAction,
   VideoState,
   VideoStudioCreateEdition,
   VideoStudioTask,
@@ -14,9 +15,11 @@ import {
   VideoStudioTaskIntro,
   VideoStudioTaskOutro,
   VideoStudioTaskPayload,
+  VideoStudioTaskRemoveSegments,
   VideoStudioTaskWatermark
 } from '@peertube/peertube-models'
 import { asyncMiddleware, authenticate, videoStudioAddEditionValidator } from '../../../middlewares/index.js'
+import { VideoChannelActivityModel } from '@server/models/video/video-channel-activity.js'
 
 const studioRouter = express.Router()
 
@@ -45,7 +48,8 @@ const tasksFiles = createAnyReqFiles(
   }
 )
 
-studioRouter.post('/:videoId/studio/edit',
+studioRouter.post(
+  '/:videoId/studio/edit',
   authenticate,
   tasksFiles,
   asyncMiddleware(videoStudioAddEditionValidator),
@@ -63,7 +67,7 @@ export {
 async function createEditionTasks (req: express.Request, res: express.Response) {
   const files = req.files as Express.Multer.File[]
   const body = req.body as VideoStudioCreateEdition
-  const video = res.locals.videoAll
+  const video = res.locals.videoFull
 
   video.state = VideoState.TO_EDIT
   await video.save()
@@ -73,10 +77,20 @@ async function createEditionTasks (req: express.Request, res: express.Response) 
     tasks: await Bluebird.mapSeries(body.tasks, (t, i) => buildTaskPayload(t, i, files))
   }
 
+  const user = res.locals.oauth.token.User
+
   await createVideoStudioJob({
-    user: res.locals.oauth.token.User,
+    user,
     payload,
     video
+  })
+
+  await VideoChannelActivityModel.addVideoActivity({
+    action: VideoChannelActivityAction.CREATE_STUDIO_TASKS,
+    user,
+    channel: video.VideoChannel,
+    video,
+    transaction: null
   })
 
   return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
@@ -92,7 +106,8 @@ const taskPayloadBuilders: {
   'add-intro': buildIntroOutroTask,
   'add-outro': buildIntroOutroTask,
   'cut': buildCutTask,
-  'add-watermark': buildWatermarkTask
+  'add-watermark': buildWatermarkTask,
+  'remove-segments': buildRemoveSegmentsTask
 }
 
 function buildTaskPayload (task: VideoStudioTask, indice: number, files: Express.Multer.File[]): Promise<VideoStudioTaskPayload> {
@@ -128,10 +143,19 @@ async function buildWatermarkTask (task: VideoStudioTaskWatermark, indice: numbe
     options: {
       file: destination,
       watermarkSizeRatio: VIDEO_FILTERS.WATERMARK.SIZE_RATIO,
-      horitonzalMarginRatio: VIDEO_FILTERS.WATERMARK.HORIZONTAL_MARGIN_RATIO,
+      horizontalMarginRatio: VIDEO_FILTERS.WATERMARK.HORIZONTAL_MARGIN_RATIO,
       verticalMarginRatio: VIDEO_FILTERS.WATERMARK.VERTICAL_MARGIN_RATIO
     }
   }
+}
+
+function buildRemoveSegmentsTask (task: VideoStudioTaskRemoveSegments) {
+  return Promise.resolve({
+    name: task.name,
+    options: {
+      segments: task.options.segments
+    }
+  })
 }
 
 async function moveStudioFileToPersistentTMP (file: string) {

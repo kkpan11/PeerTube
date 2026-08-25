@@ -1,49 +1,39 @@
-type From = string | { name?: string, address: string }
+export type MailTo = { email: string, language: string }
+export type MailFrom = string | { name?: string, address: string }
 
-interface Base extends Partial<SendEmailDefaultMessageOptions> {
-  to: string[] | string
+export interface MailAction {
+  url: string
+  text: string
 }
 
-interface MailTemplate extends Base {
+interface MailBase {
+  to: MailTo[] | MailTo
+
+  from?: MailFrom
+  subject?: string
+  replyTo?: string
+}
+
+export interface MailBaseLocals {
+  title?: string
+  action?: MailAction
+}
+
+interface SendMailTemplateOptions extends MailBase, Partial<MailBaseLocals> {
   template: string
-  locals?: { [key: string]: any }
+  locals?: Record<string, any>
+
+  // text is forbidden if template is used
   text?: undefined
 }
 
-interface MailText extends Base {
+interface SendMailTextOptions extends MailBase, Partial<MailBaseLocals> {
   text: string
 
-  locals?: Partial<SendEmailDefaultLocalsOptions> & {
-    title?: string
-    action?: {
-      url: string
-      text: string
-    }
-  }
+  // locals is forbidden if template is used
+  locals?: undefined
+  // template is forbidden if template is used
+  template?: undefined
 }
 
-interface SendEmailDefaultLocalsOptions {
-  instanceName: string
-  text: string
-  subject: string
-}
-
-interface SendEmailDefaultMessageOptions {
-  to: string[] | string
-  from: From
-  subject: string
-  replyTo: string
-}
-
-export type SendEmailDefaultOptions = {
-  template: 'common'
-
-  message: SendEmailDefaultMessageOptions
-
-  locals: SendEmailDefaultLocalsOptions & {
-    WEBSERVER: any
-    EMAIL: any
-  }
-}
-
-export type SendEmailOptions = MailTemplate | MailText
+export type SendEmailOptions = SendMailTemplateOptions | SendMailTextOptions

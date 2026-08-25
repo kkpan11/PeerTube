@@ -1,3 +1,5 @@
+import { shuffle } from '@peertube/peertube-core-utils'
+
 export function toTitleCase (str: string) {
   return str.charAt(0).toUpperCase() + str.slice(1)
 }
@@ -17,10 +19,6 @@ export function bytes (value: number) {
 
 export function getRtcConfig (stunServers: string[]) {
   return {
-    iceServers: stunServers.map(s => ({ urls: s }))
+    iceServers: shuffle(stunServers.map(s => ({ urls: s }))).slice(0, 2)
   }
-}
-
-export function isSameOrigin (current: string, target: string) {
-  return new URL(current).origin === new URL(target).origin
 }

@@ -3,11 +3,12 @@ import { VideoFile } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
 import debug from 'debug'
 import videojs from 'video.js'
-import { PeerTubeResolution, PlayerNetworkInfo, WebVideoPluginOptions } from '../../types'
+import { getStoredPreferredResolution } from '../../peertube-player-local-storage'
+import { PeerTubeResolution, PlayerNetworkInfo, VideojsPlayer, VideojsPlugin, WebVideoPluginOptions } from '../../types'
 
 const debugLogger = debug('peertube:player:web-video-plugin')
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
 
 class WebVideoPlugin extends Plugin {
   declare private readonly videoFiles: VideoFile[]
@@ -21,13 +22,16 @@ class WebVideoPlugin extends Plugin {
   declare private onPlayHandler: () => void
   declare private onLoadedMetadata: () => void
 
-  constructor (player: videojs.Player, options?: WebVideoPluginOptions) {
-    super(player, options)
+  constructor (player: VideojsPlayer, options?: WebVideoPluginOptions) {
+    super(player)
 
     this.videoFiles = options.videoFiles
     this.videoFileToken = options.videoFileToken
 
-    const videoFile = this.pickAverageVideoFile()
+    const videoEl = this.player.tech(true)?.el()
+    if (videoEl) videoEl.setAttribute('crossorigin', 'anonymous')
+
+    const videoFile = this.pickInitialVideoFile()
     if (videoFile) this.updateVideoFile({ videoFile, isUserResolutionChange: false })
 
     this.onLoadedMetadata = () => {
@@ -71,7 +75,6 @@ class WebVideoPlugin extends Plugin {
     debugLogger('Updating web video file to ' + this.currentVideoFile.fileUrl)
 
     const paused = this.player.paused()
-    const playbackRate = this.player.playbackRate()
     const currentTime = this.player.currentTime()
 
     if (!this.onErrorHandler) {
@@ -91,10 +94,11 @@ class WebVideoPlugin extends Plugin {
       this.player.addClass('vjs-updating-resolution')
     }
 
-    this.player.src(httpUrl)
+    if (this.onPlayHandler) {
+      this.player.off('canplay', this.onPlayHandler)
+    }
 
     this.onPlayHandler = () => {
-      this.player.playbackRate(playbackRate)
       this.player.currentTime(currentTime)
 
       this.player.trigger('resolution-change', {
@@ -109,12 +113,19 @@ class WebVideoPlugin extends Plugin {
           .then(() => {
             if (paused) this.player.pause()
 
-            this.player.autoplay(oldAutoplayValue)
+            // FIXME: typings
+            this.player.autoplay(oldAutoplayValue as any)
           })
       }
     }
 
     this.player.one('canplay', this.onPlayHandler)
+
+    this.player.src(httpUrl)
+
+    if (options.isUserResolutionChange) {
+      this.player.preload('auto')
+    }
   }
 
   getCurrentVideoFile () {
@@ -152,6 +163,24 @@ class WebVideoPlugin extends Plugin {
     return files[Math.floor(files.length / 2)]
   }
 
+  private pickInitialVideoFile () {
+    const preferredResolution = getStoredPreferredResolution()
+    if (preferredResolution === undefined) return this.pickAverageVideoFile()
+
+    const sortedVideoFiles = [ ...this.videoFiles ].sort((a, b) => a.resolution.id - b.resolution.id)
+
+    const exactMatch = sortedVideoFiles.find(videoFile => videoFile.resolution.id === preferredResolution)
+    if (exactMatch) return exactMatch
+
+    const nearestAbove = sortedVideoFiles.find(videoFile => videoFile.resolution.id >= preferredResolution)
+    if (nearestAbove) return nearestAbove
+
+    const nearestBelow = [ ...sortedVideoFiles ].reverse().find(videoFile => videoFile.resolution.id < preferredResolution)
+    if (nearestBelow) return nearestBelow
+
+    return this.pickAverageVideoFile()
+  }
+
   private buildQualities () {
     const resolutions: PeerTubeResolution[] = this.videoFiles.map(videoFile => ({
       id: videoFile.resolution.id,
@@ -166,12 +195,19 @@ class WebVideoPlugin extends Plugin {
 
   private setupNetworkInfoInterval () {
     this.networkInfoInterval = setInterval(() => {
-      return this.player.trigger('network-info', {
-        source: 'web-video',
-        http: {
-          downloaded: this.player.bufferedPercent() * this.currentVideoFile?.size
-        }
-      } as PlayerNetworkInfo)
+      const player = this.player
+
+      if (!player) return
+
+      return player.trigger(
+        'network-info',
+        {
+          source: 'web-video',
+          http: {
+            downloaded: player.bufferedPercent() * this.currentVideoFile?.size
+          }
+        } satisfies PlayerNetworkInfo
+      )
     }, 1000)
   }
 }

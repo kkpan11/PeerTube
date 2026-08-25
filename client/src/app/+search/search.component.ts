@@ -1,5 +1,5 @@
-import { NgFor, NgIf, NgTemplateOutlet } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { NgTemplateOutlet } from '@angular/common'
+import { ChangeDetectionStrategy, Component, inject, OnDestroy, OnInit } from '@angular/core'
 import { ActivatedRoute, Router, RouterLink } from '@angular/router'
 import { AuthService, HooksService, MetaService, Notifier, ServerService, User, UserService } from '@app/core'
 import { immutableAssign, SimpleMemoize } from '@app/helpers'
@@ -13,8 +13,8 @@ import { SearchService } from '@app/shared/shared-search/search.service'
 import { VideoPlaylist } from '@app/shared/shared-video-playlist/video-playlist.model'
 import { NgbCollapse } from '@ng-bootstrap/ng-bootstrap'
 import { HTMLServerConfig, SearchTargetType } from '@peertube/peertube-models'
+import { LinkType } from '@pt-types'
 import { forkJoin, Subject, Subscription } from 'rxjs'
-import { LinkType } from 'src/types/link.type'
 import { ActorAvatarComponent } from '../shared/shared-actor-image/actor-avatar.component'
 import { InfiniteScrollerDirective } from '../shared/shared-main/common/infinite-scroller.directive'
 import { NumberFormatterPipe } from '../shared/shared-main/common/number-formatter.pipe'
@@ -27,12 +27,11 @@ import { SearchFiltersComponent } from './search-filters.component'
   selector: 'my-search',
   styleUrls: [ './search.component.scss' ],
   templateUrl: './search.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     InfiniteScrollerDirective,
-    NgIf,
     NgbCollapse,
     SearchFiltersComponent,
-    NgFor,
     ActorAvatarComponent,
     RouterLink,
     NgTemplateOutlet,
@@ -74,10 +73,7 @@ export class SearchComponent implements OnInit, OnDestroy {
     views: true,
     by: true,
     avatar: true,
-    privacyLabel: false,
-    privacyText: false,
-    state: false,
-    blacklistInfo: false
+    privacyLabel: false
   }
 
   errorMessage: string
@@ -128,7 +124,7 @@ export class SearchComponent implements OnInit, OnDestroy {
           this.search()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
 
     this.userService.getAnonymousOrLoggedUser()
@@ -173,7 +169,7 @@ export class SearchComponent implements OnInit, OnDestroy {
           this.results = this.results.concat(result.data)
         }
 
-        this.pagination.totalItems = results.reduce((p, r) => p += r.total, 0)
+        this.pagination.totalItems = results.reduce((p, r) => p + r.total, 0)
         this.lastSearchTarget = this.advancedSearch.searchTarget
 
         this.hasMoreResults = this.results.length < this.pagination.totalItems

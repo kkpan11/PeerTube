@@ -1,30 +1,60 @@
 import { createWriteStream } from 'fs'
 import { ensureDir } from 'fs-extra/esm'
-import { dirname, join } from 'path'
+import { dirname, isAbsolute, join, relative } from 'path'
 import { pipeline } from 'stream'
 import * as yauzl from 'yauzl'
-import { logger, loggerTagsFactory } from './logger.js'
+import { createLogger } from './logger.js'
 
-const lTags = loggerTagsFactory('unzip')
+const logger = createLogger('unzip')
 
-export async function unzip (source: string, destination: string) {
+export async function unzip (options: {
+  source: string
+  destination: string
+  maxSize: number // in bytes
+  maxFiles: number
+}) {
+  const { source, destination } = options
+
   await ensureDir(destination)
 
-  logger.info(`Unzip ${source} to ${destination}`, lTags())
+  logger.info(`Unzip ${source} to ${destination}`)
 
   return new Promise<void>((res, rej) => {
     yauzl.open(source, { lazyEntries: true }, (err, zipFile) => {
       if (err) return rej(err)
 
+      zipFile.on('error', err => rej(err))
+
+      let decompressedSize = 0
+      let entries = 0
+
       zipFile.readEntry()
 
       zipFile.on('entry', async entry => {
+        decompressedSize += entry.uncompressedSize
+        entries++
+
+        if (decompressedSize > options.maxSize) {
+          zipFile.close()
+          return rej(new Error(`Unzipped size exceeds ${options.maxSize} bytes`))
+        }
+
+        if (entries > options.maxFiles) {
+          zipFile.close()
+          return rej(new Error(`Unzipped files count exceeds ${options.maxFiles}`))
+        }
+
         const entryPath = join(destination, entry.fileName)
+        const rel = relative(destination, entryPath)
+        if (rel.startsWith('..') || isAbsolute(rel)) {
+          zipFile.close()
+          return rej(new Error('Unsafe zip entry'))
+        }
 
         try {
-          if (/\/$/.test(entry.fileName)) {
+          if (entry.fileName.endsWith('/')) {
             await ensureDir(entryPath)
-            logger.debug(`Creating directory from zip ${entryPath}`, lTags())
+            logger.debug(`Creating directory from zip ${entryPath}`)
 
             zipFile.readEntry()
             return
@@ -38,7 +68,7 @@ export async function unzip (source: string, destination: string) {
         zipFile.openReadStream(entry, (readErr, readStream) => {
           if (readErr) return rej(readErr)
 
-          logger.debug(`Creating file from zip ${entryPath}`, lTags())
+          logger.debug(`Creating file from zip ${entryPath}`)
 
           const writeStream = createWriteStream(entryPath)
           writeStream.on('close', () => zipFile.readEntry())

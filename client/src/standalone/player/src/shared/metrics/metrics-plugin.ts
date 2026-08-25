@@ -1,12 +1,12 @@
-import debug from 'debug'
-import videojs from 'video.js'
 import { PlaybackMetricCreate, VideoResolutionType } from '@peertube/peertube-models'
 import { logger } from '@root-helpers/logger'
-import { MetricsPluginOptions, PlayerNetworkInfo } from '../../types'
+import debug from 'debug'
+import videojs from 'video.js'
+import { MetricsPluginOptions, PlayerNetworkInfo, VideojsPlayer, VideojsPlugin } from '../../types'
 
 const debugLogger = debug('peertube:player:metrics')
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
 
 class MetricsPlugin extends Plugin {
   declare options_: MetricsPluginOptions
@@ -27,7 +27,7 @@ class MetricsPlugin extends Plugin {
 
   declare private metricsInterval: any
 
-  constructor (player: videojs.Player, options: MetricsPluginOptions) {
+  constructor (player: VideojsPlayer, options: MetricsPluginOptions) {
     super(player)
 
     this.options_ = options
@@ -48,7 +48,7 @@ class MetricsPlugin extends Plugin {
     this.trackErrors()
     this.trackBufferStalled()
 
-    this.one('play', () => {
+    this.player.one('play', () => {
       this.player.on('video-change', () => {
         this.runMetricsIntervalOnPlay()
       })
@@ -63,7 +63,7 @@ class MetricsPlugin extends Plugin {
     super.dispose()
   }
 
-  private runMetricsIntervalOnPlay () {
+  private resetMetrics () {
     this.downloadedBytesP2P = 0
     this.downloadedBytesHTTP = 0
     this.uploadedBytesP2P = 0
@@ -73,6 +73,10 @@ class MetricsPlugin extends Plugin {
     this.bufferStalled = 0
 
     this.lastPlayerNetworkInfo = undefined
+  }
+
+  private runMetricsIntervalOnPlay () {
+    this.resetMetrics()
 
     debugLogger('Will track metrics on next play')
 
@@ -88,11 +92,15 @@ class MetricsPlugin extends Plugin {
     if (!this.options_.metricsUrl()) return
 
     this.metricsInterval = setInterval(() => {
+      const player = this.player
+
+      if (!player) return
+
       let resolution: number
       let fps: number
 
-      if (this.player.usingPlugin('p2pMediaLoader')) {
-        const level = this.player.p2pMediaLoader().getCurrentLevel()
+      if (player.usingPlugin('p2pMediaLoader')) {
+        const level = player.p2pMediaLoader().getCurrentLevel()
         if (!level) return
 
         resolution = Math.min(level.height || 0, level.width || 0)
@@ -101,8 +109,8 @@ class MetricsPlugin extends Plugin {
         fps = framerate
           ? parseInt(framerate, 10)
           : undefined
-      } else if (this.player.usingPlugin('webVideo')) {
-        const videoFile = this.player.webVideo().getCurrentVideoFile()
+      } else if (player.usingPlugin('webVideo')) {
+        const videoFile = player.webVideo().getCurrentVideoFile()
         if (!videoFile) return
 
         resolution = videoFile.resolution.id
@@ -154,7 +162,7 @@ class MetricsPlugin extends Plugin {
   }
 
   private trackBytes () {
-    this.player.on('network-info', (_event, data: PlayerNetworkInfo) => {
+    this.player.on('network-info', (_event: any, data: PlayerNetworkInfo) => {
       this.downloadedBytesHTTP += Math.max(Math.round(data.http.downloaded - (this.lastPlayerNetworkInfo?.http.downloaded || 0)), 0)
       this.downloadedBytesP2P += Math.max(Math.round((data.p2p?.downloaded || 0) - (this.lastPlayerNetworkInfo?.p2p?.downloaded || 0)), 0)
 

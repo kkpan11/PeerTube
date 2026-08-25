@@ -1,12 +1,29 @@
-import { SortMeta } from 'primeng/api'
-import { from, Observable } from 'rxjs'
-import { catchError, concatMap, map, switchMap, toArray } from 'rxjs/operators'
 import { HttpClient, HttpParams } from '@angular/common/http'
-import { Injectable, inject } from '@angular/core'
+import { inject, Injectable } from '@angular/core'
 import { RestExtractor, RestPagination, RestService, ServerService, UserService } from '@app/core'
-import { getBytes } from '@root-helpers/bytes'
 import { arrayify, peertubeTranslate } from '@peertube/peertube-core-utils'
-import { ResultList, User as UserServerModel, UserCreate, UserUpdate } from '@peertube/peertube-models'
+import { ResultList, UserCreate, UserRoleType, User as UserServerModel, UserUpdate } from '@peertube/peertube-models'
+import { getBytes } from '@root-helpers/bytes'
+import { SortMeta } from 'primeng/api'
+import { from } from 'rxjs'
+import { catchError, concatMap, map, switchMap, toArray } from 'rxjs/operators'
+
+export type UserAdmin = UserServerModel & {
+  role: {
+    id: UserRoleType
+    label: string
+  }
+
+  videoQuota: string
+  videoQuotaUsed: string
+  rawVideoQuota: number
+  rawVideoQuotaUsed: number
+
+  videoQuotaDaily: string
+  videoQuotaUsedDaily: string
+  rawVideoQuotaDaily: number
+  rawVideoQuotaUsedDaily: number
+}
 
 @Injectable()
 export class UserAdminService {
@@ -34,26 +51,21 @@ export class UserAdminService {
       )
   }
 
-  getUsers (parameters: {
+  listUsers (parameters: {
     pagination: RestPagination
     sort: SortMeta
     search?: string
-  }): Observable<ResultList<UserServerModel>> {
-    const { pagination, sort, search } = parameters
+    blocked?: boolean
+    role?: UserRoleType
+  }) {
+    const { pagination, sort, search, blocked, role } = parameters
 
     let params = new HttpParams()
     params = this.restService.addRestGetParams(params, pagination, sort)
 
-    if (search) {
-      const filters = this.restService.parseQueryStringFilter(search, {
-        blocked: {
-          prefix: 'banned:',
-          isBoolean: true
-        }
-      })
-
-      params = this.restService.addObjectParams(params, filters)
-    }
+    if (search) params = params.append('search', search)
+    if (blocked !== undefined) params = params.append('blocked', blocked.toString())
+    if (role !== undefined) params = params.append('role', role.toString())
 
     return this.authHttp.get<ResultList<UserServerModel>>(UserService.BASE_USERS_URL, { params })
       .pipe(
@@ -62,7 +74,7 @@ export class UserAdminService {
             .pipe(map(translations => ({ data, translations })))
         }),
         map(({ data, translations }) => {
-          return this.restExtractor.applyToResultListData(data, this.formatUser.bind(this), [ translations ])
+          return this.restExtractor.applyToResultListData(data, u => this.formatUser(u, translations))
         }),
         catchError(err => this.restExtractor.handleError(err))
       )
@@ -102,7 +114,7 @@ export class UserAdminService {
       )
   }
 
-  private formatUser (user: UserServerModel, translations: { [id: string]: string } = {}) {
+  private formatUser (user: UserServerModel, translations: { [id: string]: string } = {}): UserAdmin {
     let videoQuota
     if (user.videoQuota === -1) {
       videoQuota = '∞'

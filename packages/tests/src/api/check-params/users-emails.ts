@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 import { HttpStatusCode, UserRole } from '@peertube/peertube-models'
 import {
   cleanupTests,
@@ -50,7 +50,7 @@ describe('Test users API validators', function () {
       await makePostBodyRequest({ url: server.url, path, fields })
     })
 
-    it('Should success with the correct params', async function () {
+    it('Should succeed with the correct params', async function () {
       const fields = { email: 'admin@example.com' }
 
       await makePostBodyRequest({

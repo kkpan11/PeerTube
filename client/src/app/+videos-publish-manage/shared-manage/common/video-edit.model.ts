@@ -1,0 +1,1277 @@
+import { AuthUser } from '@app/core'
+import { exists, maxBy, omit, pick, secondsToTime } from '@peertube/peertube-core-utils'
+import {
+  HTMLServerConfig,
+  LiveVideo,
+  LiveVideoCreate,
+  LiveVideoUpdate,
+  NSFWFlag,
+  PlayerVideoSettings,
+  PlayerVideoSettingsUpdate,
+  VideoCaption,
+  VideoChapter,
+  VideoCreate,
+  VideoDetails,
+  VideoEmbedPrivacy,
+  VideoEmbedPrivacyPolicy,
+  VideoEmbedPrivacyPolicyType,
+  VideoEmbedPrivacyUpdate,
+  VideoImportCreate,
+  VideoPrivacy,
+  VideoPrivacyType,
+  VideoScheduleUpdate,
+  VideoSource,
+  VideoState,
+  VideoStateType,
+  VideoStudioTask,
+  VideoStudioTaskCut,
+  VideoStudioTaskRemoveSegments,
+  VideoUpdate
+} from '@peertube/peertube-models'
+import { logger } from '@root-helpers/logger'
+import { splitAndGetNotEmpty } from '@root-helpers/string'
+import debug from 'debug'
+import { Jsonify, SharedUnionFieldsDeep } from 'type-fest'
+import { VideoCaptionWithPathEdit } from './video-caption-edit.model'
+import { VideoChaptersEdit } from './video-chapters-edit.model'
+
+const debugLogger = debug('peertube:video-manage:video-edit')
+
+export type VideoEditPrivacyType = VideoPrivacyType | typeof VideoEdit.SPECIAL_SCHEDULED_PRIVACY
+
+type CommonUpdateForm =
+  & Omit<
+    VideoUpdate,
+    'privacy' | 'videoPasswords' | 'previewfile' | 'scheduleUpdate' | 'originallyPublishedAt' | 'nsfwFlags'
+  >
+  & {
+    schedulePublicationAt?: Date
+    originallyPublishedAt?: Date
+    privacy?: VideoEditPrivacyType
+    videoPassword?: string
+
+    nsfwFlagViolent?: boolean
+    nsfwFlagSex?: boolean
+  }
+
+type LiveUpdateForm = Omit<LiveVideoUpdate, 'replaySettings' | 'schedules' | 'dvrWindow'> & {
+  replayPrivacy?: VideoPrivacyType
+
+  dvrEnabled?: boolean
+  dvrWindowMinutes?: number
+
+  liveStreamKey?: string
+
+  schedules?: {
+    startAt?: Date
+  }[]
+}
+
+type ReplaceFileForm = {
+  replaceFile?: File
+}
+
+type StudioForm = {
+  'cut'?: { start?: number, end?: number }
+  'add-intro'?: { file?: File }
+  'add-outro'?: { file?: File }
+  'add-watermark'?: { file?: File }
+  'remove-segments'?: { start?: number, end?: number }[]
+}
+
+type PlayerSettingsForm = PlayerVideoSettingsUpdate
+
+type EmbedPrivacyForm = {
+  videoPrivacyEmbedPolicy?: VideoEmbedPrivacyPolicyType
+  videoPrivacyEmbedAllowlistDomains?: string
+}
+
+// ---------------------------------------------------------------------------
+
+type LoadFromPublishOptions = Required<Pick<VideoCreate, 'channelId' | 'support'>> & Partial<Pick<VideoCreate, 'name'>> & {
+  channelName: string
+  channelDisplayName: string
+  user: AuthUser
+}
+
+type CreateFromUploadOptions = LoadFromPublishOptions & Required<Pick<VideoCreate, 'name'>>
+
+type CreateFromImportOptions = LoadFromPublishOptions & Pick<VideoImportCreate, 'magnetUri' | 'torrentfile' | 'targetUrl'>
+
+type CreateFromLiveOptions =
+  & CreateFromUploadOptions
+  & Required<
+    Pick<
+      LiveVideoCreate,
+      'permanentLive' | 'latencyMode' | 'dvrWindow' | 'saveReplay' | 'replaySettings' | 'schedules'
+    >
+  >
+
+type UpdateFromAPIOptions = {
+  video?: Pick<
+    VideoDetails,
+    | 'id'
+    | 'uuid'
+    | 'shortUUID'
+    | 'name'
+    | 'channel'
+    | 'privacy'
+    | 'category'
+    | 'licence'
+    | 'language'
+    | 'description'
+    | 'tags'
+    | 'nsfw'
+    | 'nsfwFlags'
+    | 'nsfwSummary'
+    | 'waitTranscoding'
+    | 'support'
+    | 'commentsPolicy'
+    | 'downloadEnabled'
+    | 'pluginData'
+    | 'scheduledUpdate'
+    | 'publishedAt'
+    | 'originallyPublishedAt'
+    | 'duration'
+    | 'likes'
+    | 'aspectRatio'
+    | 'views'
+    | 'downloads'
+    | 'blacklisted'
+    | 'blacklistedReason'
+    | 'thumbnails'
+    | 'state'
+    | 'isLive'
+  >
+  live?: LiveVideo
+  chapters?: VideoChapter[]
+  captions?: VideoCaption[]
+  videoPasswords?: string[]
+  videoSource?: VideoSource
+  playerSettings: PlayerVideoSettings
+  embedPrivacy: VideoEmbedPrivacy
+}
+
+// ---------------------------------------------------------------------------
+
+type CommonUpdate = Omit<VideoUpdate, 'previewfile' | 'originallyPublishedAt' | 'scheduleUpdate'> & {
+  originallyPublishedAt?: string
+  scheduleUpdate?: {
+    updateAt: string
+    privacy?: VideoScheduleUpdate['privacy']
+  }
+}
+
+type LiveUpdate = Omit<LiveVideoUpdate, 'schedules'> & {
+  schedules?: {
+    startAt: string
+  }[]
+}
+
+export class VideoEdit {
+  static readonly SPECIAL_SCHEDULED_PRIVACY = -1
+
+  private isNewVideo = false
+  private common: CommonUpdate = {}
+  private captions: VideoCaptionWithPathEdit[] = []
+  private chapters: VideoChaptersEdit = new VideoChaptersEdit()
+  private live: LiveUpdate
+  private replaceFile: File
+  private studioTasks: VideoStudioTask[] = []
+  private playerSettings: PlayerVideoSettingsUpdate
+  private embedPrivacy: VideoEmbedPrivacyUpdate
+
+  private videoImport: Pick<VideoImportCreate, 'magnetUri' | 'torrentfile' | 'targetUrl'>
+
+  private initialMetadata: {
+    accountName: string
+    channelId: number
+  }
+
+  private metadata: Partial<{
+    id: number
+    uuid: string
+    shortUUID: string
+    state: VideoStateType
+    isLive: boolean
+    views: number
+    downloads: number
+    aspectRatio: number
+    duration: number
+    likes: number
+    blacklisted: boolean
+    blacklistedReason: string
+    publishedAt: Date
+
+    live: Pick<LiveVideo, 'rtmpUrl' | 'rtmpsUrl' | 'streamKey'>
+    videoSource: VideoSource
+
+    accountName: string
+    channelName: string
+    channelDisplayName: string
+  }> = {}
+
+  private videoAttributes: {
+    id: number
+    shortUUID: string
+    uuid: string
+    name: string
+    state: VideoStateType
+    privacy: VideoEditPrivacyType
+    isLive: boolean
+    publishedAt: Date
+    aspectRatio: number
+    duration: number
+    views: number
+    downloads: number
+    likes: number
+
+    blacklisted: boolean
+    blacklistedReason: string
+
+    accountName: string
+    channelName: string
+    channelDisplayName: string
+
+    live?: Pick<LiveVideo, 'rtmpUrl' | 'rtmpsUrl' | 'streamKey'>
+  }
+
+  private saveStore: {
+    common?: Omit<CommonUpdate, 'pluginData' | 'thumbnailfile'>
+    thumbnailfile?: { size: number }
+
+    live?: LiveUpdate
+    playerSettings?: PlayerVideoSettingsUpdate
+
+    embedPrivacy?: VideoEmbedPrivacyUpdate
+
+    pluginData?: any
+    pluginDefaults?: Record<string, string | boolean>
+  } = {}
+  private checkPluginChanges = false
+
+  private serverConfig: HTMLServerConfig
+
+  private constructor (serverConfig: HTMLServerConfig, isNewVideo = false) {
+    this.serverConfig = serverConfig
+    this.isNewVideo = isNewVideo
+  }
+
+  // ---------------------------------------------------------------------------
+
+  static createFromUpload (serverConfig: HTMLServerConfig, options: CreateFromUploadOptions) {
+    const videoEdit = new VideoEdit(serverConfig, true)
+    videoEdit.loadFromPublish(options, false)
+
+    return videoEdit
+  }
+
+  // ---------------------------------------------------------------------------
+
+  static createFromImport (serverConfig: HTMLServerConfig, options: CreateFromImportOptions) {
+    const videoEdit = new VideoEdit(serverConfig, true)
+    videoEdit.loadFromImport(options)
+
+    return videoEdit
+  }
+
+  // False positive
+  // eslint-disable-next-line @typescript-eslint/no-unused-private-class-members
+  private loadFromImport (options: CreateFromImportOptions) {
+    this.loadFromPublish(options, false)
+
+    this.videoImport = {
+      targetUrl: options.targetUrl,
+      magnetUri: options.magnetUri,
+      torrentfile: options.torrentfile
+    }
+
+    this.updateAfterChange()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  static createFromLive (serverConfig: HTMLServerConfig, options: CreateFromLiveOptions) {
+    const videoEdit = new VideoEdit(serverConfig, true)
+    videoEdit.loadFromLive(options)
+
+    return videoEdit
+  }
+
+  // False positive
+  // eslint-disable-next-line @typescript-eslint/no-unused-private-class-members
+  private loadFromLive (options: CreateFromLiveOptions) {
+    this.loadFromPublish(options, true)
+
+    this.live = {
+      latencyMode: options.latencyMode,
+      permanentLive: options.permanentLive,
+
+      dvrWindow: options.dvrWindow,
+
+      saveReplay: options.saveReplay,
+
+      replaySettings: options.replaySettings
+        ? { privacy: options.replaySettings.privacy }
+        : undefined,
+
+      schedules: options.schedules
+        ? options.schedules.map(s => ({ startAt: new Date(s.startAt).toISOString() }))
+        : undefined
+    }
+
+    this.updateAfterChange()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private loadFromPublish (options: LoadFromPublishOptions, isLive: boolean) {
+    const serverDefaults = this.serverConfig.defaults
+
+    this.common.name = options.name
+    this.common.channelId = options.channelId
+    this.common.support = options.support
+    this.metadata.isLive = isLive
+
+    this.common.privacy = serverDefaults.publish.privacy
+    this.common.downloadEnabled = serverDefaults.publish.downloadEnabled
+    this.common.licence = serverDefaults.publish.licence
+    this.common.commentsPolicy = serverDefaults.publish.commentsPolicy
+    this.common.nsfw = this.serverConfig.instance.isNSFW
+
+    this.common.waitTranscoding = true
+    this.common.tags = []
+    this.common.pluginData = {}
+
+    this.metadata.views = 0
+    this.metadata.downloads = 0
+    this.metadata.likes = 0
+
+    this.metadata.accountName = options.user.account.name
+    this.metadata.channelName = options.channelName
+    this.metadata.channelDisplayName = options.channelDisplayName
+
+    this.initialMetadata = {
+      accountName: this.metadata.accountName,
+      channelId: this.common.channelId
+    }
+
+    this.updateAfterChange()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  // Build a new VideoEdit model based on data coming from the API
+  static async createFromAPI (serverConfig: HTMLServerConfig, options: UpdateFromAPIOptions) {
+    const videoEdit = new VideoEdit(serverConfig)
+    await videoEdit.loadFromAPI(options)
+
+    return videoEdit
+  }
+
+  async loadFromAPI (options: UpdateFromAPIOptions & { loadPrivacy?: boolean }) {
+    const { video, videoPasswords, live, chapters, captions, videoSource, playerSettings, embedPrivacy, loadPrivacy = true } = options
+
+    debugLogger('Load from API', options)
+
+    this.loadVideo({ video, videoPasswords, saveInStore: true, loadPrivacy })
+    this.loadLive(live)
+    this.loadPlayerSettings(playerSettings)
+    this.loadEmbedPrivacy(embedPrivacy)
+
+    if (captions !== undefined) {
+      this.captions = captions
+    }
+
+    if (chapters !== undefined) {
+      this.chapters = new VideoChaptersEdit()
+      if (chapters) this.chapters.loadFromAPI(chapters)
+    }
+
+    if (videoSource !== undefined) {
+      this.metadata.videoSource = videoSource
+    }
+
+    await this.loadThumbnail(video)
+
+    this.updateAfterChange()
+  }
+
+  private loadVideo (options: {
+    video: UpdateFromAPIOptions['video']
+    videoPasswords?: string[]
+    loadPrivacy?: boolean // default true
+    saveInStore: boolean
+  }) {
+    const { video, saveInStore, loadPrivacy = true, videoPasswords = [] } = options
+
+    if (video === undefined) return
+
+    const buildObj: (options: { loadPrivacy: boolean }) => CommonUpdate = () => {
+      const { loadPrivacy } = options
+
+      const base = {
+        ...this.common,
+
+        name: video.name || '',
+
+        channelId: video.channel?.id ?? null,
+        category: video.category?.id ?? null,
+        licence: video.licence?.id ?? null,
+        language: video.language?.id ?? null,
+        description: video.description ?? '',
+        tags: video.tags ?? [],
+        nsfw: video.nsfw ?? null,
+        nsfwSummary: video.nsfwSummary ?? null,
+        nsfwFlags: video.nsfwFlags ?? NSFWFlag.NONE,
+        waitTranscoding: video.waitTranscoding ?? null,
+        support: video.support ?? '',
+        commentsPolicy: video.commentsPolicy?.id ?? null,
+
+        downloadEnabled: video.downloadEnabled ?? null,
+
+        pluginData: video.pluginData ?? {},
+
+        scheduleUpdate: video.scheduledUpdate
+          ? { updateAt: new Date(video.scheduledUpdate.updateAt).toISOString(), privacy: video.scheduledUpdate.privacy }
+          : null,
+
+        originallyPublishedAt: video.originallyPublishedAt
+          ? new Date(video.originallyPublishedAt).toISOString()
+          : null,
+
+        videoPasswords: videoPasswords ?? []
+      }
+
+      if (loadPrivacy) {
+        return { ...base, privacy: video.privacy?.id ?? null }
+      }
+
+      return base
+    }
+
+    this.common = buildObj({ loadPrivacy })
+
+    if (saveInStore) {
+      const obj = buildObj({ loadPrivacy: true })
+      this.saveStore.common = omit(obj, [ 'pluginData', 'thumbnailfile' ])
+
+      // Apply plugin defaults so we correctly detect changes
+      const pluginDefaults = this.saveStore.pluginDefaults || {}
+      this.saveStore.pluginData = { ...pluginDefaults, ...obj.pluginData }
+    }
+
+    // ---------------------------------------------------------------------------
+
+    this.metadata.id = video.id
+    this.metadata.publishedAt = new Date(video.publishedAt.toString())
+    this.metadata.uuid = video.uuid
+    this.metadata.shortUUID = video.shortUUID
+
+    this.metadata.state = video.state.id
+    this.metadata.duration = video.duration
+    this.metadata.views = video.views
+    this.metadata.downloads = video.downloads
+    this.metadata.likes = video.likes
+    this.metadata.aspectRatio = video.aspectRatio
+    this.metadata.blacklisted = video.blacklisted
+    this.metadata.blacklistedReason = video.blacklistedReason
+
+    this.metadata.isLive = video.isLive
+
+    this.metadata.accountName = video.channel.ownerAccount.name
+    this.metadata.channelName = video.channel.name
+    this.metadata.channelDisplayName = video.channel.displayName
+
+    this.initialMetadata = {
+      accountName: this.metadata.accountName,
+      channelId: this.common.channelId
+    }
+  }
+
+  loadPluginDataDefaults (pluginDefaults: Record<string, string | boolean>) {
+    this.saveStore.pluginDefaults = pluginDefaults
+
+    if (this.saveStore?.pluginData) {
+      this.saveStore.pluginData = { ...this.saveStore.pluginDefaults, ...this.saveStore.pluginData }
+    }
+  }
+
+  private async loadThumbnail (video: UpdateFromAPIOptions['video']) {
+    if (!video?.thumbnails || video.thumbnails.length === 0) return
+
+    const bestThumbnail = maxBy(video.thumbnails, 'width')
+
+    try {
+      const response = await fetch(bestThumbnail.fileUrl)
+
+      this.common.thumbnailfile = await response.blob()
+      this.saveStore.thumbnailfile = { size: this.common.thumbnailfile.size }
+    } catch (err) {
+      logger.error('Failed to fetch video thumbnail', err)
+    }
+  }
+
+  private loadLive (live: UpdateFromAPIOptions['live']) {
+    if (live === undefined) {
+      this.metadata.isLive = false
+      return
+    }
+
+    const buildObj = () => {
+      return {
+        permanentLive: live.permanentLive,
+        latencyMode: live.latencyMode,
+        dvrWindow: live.dvrWindow,
+        saveReplay: live.saveReplay,
+
+        replaySettings: live.replaySettings
+          ? { privacy: live.replaySettings.privacy }
+          : undefined,
+
+        schedules: live.schedules
+          ? live.schedules.map(s => ({ startAt: new Date(s.startAt).toISOString() }))
+          : undefined
+      }
+    }
+
+    this.metadata.isLive = true
+    this.live = buildObj()
+    this.saveStore.live = buildObj()
+
+    this.metadata.live = pick(live, [ 'rtmpUrl', 'rtmpsUrl', 'streamKey' ])
+  }
+
+  private loadPlayerSettings (playerSettings: UpdateFromAPIOptions['playerSettings']) {
+    const buildObj = () => {
+      return {
+        theme: playerSettings.theme
+      }
+    }
+
+    this.playerSettings = buildObj()
+    this.saveStore.playerSettings = buildObj()
+  }
+
+  private loadEmbedPrivacy (embedPrivacy: UpdateFromAPIOptions['embedPrivacy']) {
+    const buildObj = () => {
+      return {
+        policy: embedPrivacy.policy.id,
+        domains: embedPrivacy.domains ?? []
+      }
+    }
+
+    this.embedPrivacy = buildObj()
+    this.saveStore.embedPrivacy = buildObj()
+  }
+
+  loadAfterPublish (options: {
+    video: Pick<VideoDetails, 'id' | 'uuid' | 'shortUUID'>
+  }) {
+    this.metadata.id = options.video.id
+    this.metadata.uuid = options.video.uuid
+    this.metadata.shortUUID = options.video.shortUUID
+
+    this.updateAfterChange()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromCommonForm (values: CommonUpdateForm) {
+    if (values.name !== undefined) this.common.name = values.name
+    if (values.channelId !== undefined) this.common.channelId = values.channelId
+    if (values.category !== undefined) this.common.category = values.category
+    if (values.licence !== undefined) this.common.licence = values.licence
+    if (values.language !== undefined) this.common.language = values.language
+    if (values.description !== undefined) this.common.description = values.description
+    if (values.tags !== undefined) this.common.tags = values.tags
+    if (values.waitTranscoding !== undefined) this.common.waitTranscoding = values.waitTranscoding
+    if (values.support !== undefined) this.common.support = values.support
+    if (values.commentsPolicy !== undefined) this.common.commentsPolicy = values.commentsPolicy
+    if (values.downloadEnabled !== undefined) this.common.downloadEnabled = values.downloadEnabled
+    if (values.thumbnailfile !== undefined) this.common.thumbnailfile = values.thumbnailfile
+    if (values.pluginData !== undefined) this.common.pluginData = values.pluginData
+
+    // ---------------------------------------------------------------------------
+    // NSFW
+    // ---------------------------------------------------------------------------
+
+    if (values.nsfw !== undefined) this.common.nsfw = values.nsfw
+
+    if (this.common.nsfw) {
+      if (values.nsfwFlagSex !== undefined) {
+        this.common.nsfwFlags = values.nsfwFlagSex
+          ? this.common.nsfwFlags | NSFWFlag.EXPLICIT_SEX
+          : this.common.nsfwFlags & ~NSFWFlag.EXPLICIT_SEX
+      }
+
+      if (values.nsfwFlagViolent !== undefined) {
+        this.common.nsfwFlags = values.nsfwFlagViolent
+          ? this.common.nsfwFlags | NSFWFlag.VIOLENT
+          : this.common.nsfwFlags & ~NSFWFlag.VIOLENT
+      }
+
+      if (values.nsfwSummary !== undefined) {
+        this.common.nsfwSummary = values.nsfwSummary
+      }
+    } else {
+      this.common.nsfwSummary = null
+      this.common.nsfwFlags = NSFWFlag.NONE
+    }
+
+    // ---------------------------------------------------------------------------
+
+    if (values.videoPassword !== undefined) {
+      this.common.videoPasswords = values.privacy === VideoPrivacy.PASSWORD_PROTECTED && values.videoPassword
+        ? [ values.videoPassword ]
+        : []
+    }
+
+    if (values.privacy !== undefined) {
+      // If schedule publication, the video is private and will be changed to public privacy
+      if (values.privacy === VideoEdit.SPECIAL_SCHEDULED_PRIVACY) {
+        const updateAt = new Date(values.schedulePublicationAt)
+        updateAt.setSeconds(0)
+
+        this.common.privacy = VideoPrivacy.PRIVATE
+
+        this.common.scheduleUpdate = {
+          updateAt: values.schedulePublicationAt
+            ? updateAt.toISOString()
+            : undefined,
+          privacy: VideoPrivacy.PUBLIC
+        }
+      } else {
+        this.common.privacy = values.privacy
+        this.common.scheduleUpdate = null
+      }
+    }
+
+    // Convert originallyPublishedAt to string so that function objectToFormData() works correctly
+    if (values.originallyPublishedAt !== undefined) {
+      this.common.originallyPublishedAt = values.originallyPublishedAt
+        ? new Date(values.originallyPublishedAt).toISOString()
+        : null
+    }
+
+    this.updateAfterChange()
+  }
+
+  loadChannelChange (options: {
+    name: string
+    displayName: string
+    ownerAccountName: string
+  }) {
+    this.metadata.channelName = options.name
+    this.metadata.channelDisplayName = options.displayName
+    this.metadata.accountName = options.ownerAccountName
+
+    this.updateAfterChange()
+  }
+
+  toCommonFormPatch () {
+    const json: Required<CommonUpdateForm> = {
+      category: this.common.category,
+      licence: this.common.licence,
+      language: this.common.language,
+      description: this.common.description,
+      support: this.common.support,
+      name: this.common.name,
+      tags: this.common.tags,
+
+      nsfw: this.common.nsfw,
+      nsfwFlagSex: (this.common.nsfwFlags & NSFWFlag.EXPLICIT_SEX) === NSFWFlag.EXPLICIT_SEX,
+      nsfwFlagViolent: (this.common.nsfwFlags & NSFWFlag.VIOLENT) === NSFWFlag.VIOLENT,
+      nsfwSummary: this.common.nsfwSummary,
+
+      commentsPolicy: this.common.commentsPolicy,
+      waitTranscoding: this.common.waitTranscoding,
+      channelId: this.common.channelId,
+      privacy: this.common.privacy,
+
+      pluginData: this.common.pluginData,
+
+      thumbnailfile: this.common.thumbnailfile,
+
+      videoPassword: this.common.videoPasswords && this.common.videoPasswords.length !== 0
+        ? this.common.videoPasswords[0]
+        : null,
+
+      downloadEnabled: this.common.downloadEnabled,
+
+      originallyPublishedAt: this.common.originallyPublishedAt
+        ? new Date(this.common.originallyPublishedAt)
+        : null,
+
+      schedulePublicationAt: undefined
+    }
+
+    // Special case if we scheduled an update
+    if (this.common.scheduleUpdate) {
+      Object.assign(json, {
+        privacy: VideoEdit.SPECIAL_SCHEDULED_PRIVACY,
+        schedulePublicationAt: new Date(this.common.scheduleUpdate.updateAt.toString())
+      })
+    }
+
+    return json
+  }
+
+  toVideoUpdate (): Required<Omit<VideoUpdate, 'previewfile'>> {
+    return {
+      ...this.toVideoCreateOrUpdate(),
+
+      pluginData: this.common.pluginData
+    }
+  }
+
+  toVideoCreate (overriddenPrivacy: VideoPrivacyType): Required<Omit<VideoCreate, 'generateTranscription' | 'previewfile'>> {
+    return {
+      ...this.toVideoCreateOrUpdate(),
+
+      privacy: overriddenPrivacy
+    }
+  }
+
+  private toVideoCreateOrUpdate (): Required<SharedUnionFieldsDeep<Omit<VideoCreate | VideoUpdate, 'previewfile'>>> {
+    return {
+      name: this.common.name,
+      category: this.common.category || null,
+      licence: this.common.licence || null,
+      language: this.common.language || null,
+      support: this.common.support || null,
+      description: this.common.description || null,
+      channelId: this.common.channelId,
+      privacy: this.common.privacy,
+
+      videoPasswords: this.common.privacy === VideoPrivacy.PASSWORD_PROTECTED
+        ? this.common.videoPasswords
+        : undefined,
+
+      tags: this.common.tags,
+      nsfw: this.common.nsfw,
+      nsfwFlags: this.common.nsfwFlags,
+      nsfwSummary: this.common.nsfwSummary || null,
+      waitTranscoding: this.common.waitTranscoding,
+      commentsPolicy: this.common.commentsPolicy,
+      downloadEnabled: this.common.downloadEnabled,
+      thumbnailfile: this.common.thumbnailfile,
+      scheduleUpdate: this.common.scheduleUpdate || null,
+      originallyPublishedAt: this.common.originallyPublishedAt || null
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromLiveForm (values: LiveUpdateForm) {
+    if (values.permanentLive !== undefined) this.live.permanentLive = values.permanentLive
+    if (values.latencyMode !== undefined) this.live.latencyMode = values.latencyMode
+    if (values.saveReplay !== undefined) this.live.saveReplay = values.saveReplay
+
+    if (values.dvrWindowMinutes !== undefined) {
+      this.live.dvrWindow = this.dvrWindowMinutesToSeconds(values.dvrWindowMinutes)
+    }
+
+    if (values.dvrEnabled !== undefined && values.dvrEnabled === false) {
+      this.live.dvrWindow = 0
+    }
+
+    if (values.replayPrivacy !== undefined) {
+      this.live.replaySettings = values.replayPrivacy
+        ? { privacy: values.replayPrivacy }
+        : undefined
+    }
+
+    if (values.schedules !== undefined) {
+      if (values.schedules === null || values.schedules.length === 0 || !values.schedules[0].startAt) {
+        this.live.schedules = []
+      } else {
+        this.live.schedules = values.schedules.map(s => ({
+          startAt: new Date(s.startAt).toISOString()
+        }))
+      }
+    }
+
+    this.updateAfterChange()
+  }
+
+  toLiveFormPatch (): Required<LiveUpdateForm> {
+    return {
+      liveStreamKey: this.metadata.live.streamKey,
+      permanentLive: this.live.permanentLive,
+      latencyMode: this.live.latencyMode,
+
+      dvrEnabled: this.live.dvrWindow > 0,
+      dvrWindowMinutes: this.dvrWindowToMinutes(this.live.dvrWindow),
+
+      saveReplay: this.live.saveReplay,
+
+      replayPrivacy: this.live.replaySettings
+        ? this.live.replaySettings.privacy
+        : VideoPrivacy.PRIVATE,
+
+      schedules: this.live.schedules?.map(s => ({
+        startAt: new Date(s.startAt)
+      }))
+    }
+  }
+
+  toLiveUpdate (): LiveVideoUpdate {
+    return {
+      permanentLive: this.live.permanentLive,
+      saveReplay: this.live.saveReplay,
+      replaySettings: this.live.saveReplay
+        ? this.live.replaySettings
+        : undefined,
+      latencyMode: this.live.latencyMode,
+      dvrWindow: this.live.dvrWindow,
+      schedules: this.live.schedules
+    }
+  }
+
+  toLiveCreate (overriddenPrivacy: VideoPrivacyType): LiveVideoCreate {
+    return {
+      ...this.toVideoCreate(overriddenPrivacy),
+
+      permanentLive: this.live.permanentLive,
+      latencyMode: this.live.latencyMode,
+      dvrWindow: this.live.dvrWindow,
+      saveReplay: this.live.saveReplay,
+      replaySettings: this.live.replaySettings,
+      schedules: this.live.schedules
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  toVideoImportCreate (overriddenPrivacy: VideoPrivacyType): VideoImportCreate {
+    const base: VideoImportCreate = this.toVideoCreate(overriddenPrivacy)
+
+    if (this.videoImport.targetUrl) base.targetUrl = this.videoImport.targetUrl
+    if (this.videoImport.magnetUri) base.magnetUri = this.videoImport.magnetUri
+    if (this.videoImport.torrentfile) base.torrentfile = this.videoImport.torrentfile
+
+    return base
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromReplaceFileForm (values: ReplaceFileForm) {
+    this.replaceFile = values.replaceFile
+
+    this.updateAfterChange()
+  }
+
+  toReplaceFileFormPatch (): Required<ReplaceFileForm> {
+    return { replaceFile: this.replaceFile }
+  }
+
+  resetReplaceFile () {
+    this.replaceFile = undefined
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromStudioForm (values: StudioForm) {
+    const duration = this.getVideoAttributes().duration
+    this.studioTasks = []
+
+    const cut = values.cut
+    if ((exists(cut.start) && cut.start !== 0) || (exists(cut.end) && cut.end !== duration)) {
+      const options: VideoStudioTaskCut['options'] = {}
+
+      if (exists(cut.start) && cut.start !== 0) options.start = cut.start
+      if (exists(cut.end) && cut.end !== duration) options.end = cut.end
+
+      this.studioTasks.push({ name: 'cut', options })
+    }
+
+    if (values['add-intro']?.['file']) {
+      this.studioTasks.push({
+        name: 'add-intro',
+        options: {
+          file: values['add-intro']['file']
+        }
+      })
+    }
+
+    if (values['add-outro']?.['file']) {
+      this.studioTasks.push({
+        name: 'add-outro',
+        options: {
+          file: values['add-outro']['file']
+        }
+      })
+    }
+
+    if (values['add-watermark']?.['file']) {
+      this.studioTasks.push({
+        name: 'add-watermark',
+        options: {
+          file: values['add-watermark']['file']
+        }
+      })
+    }
+
+    const removeSegments = (values['remove-segments'] ?? []).filter(s =>
+      exists(s.start) && exists(s.end)
+    ) as VideoStudioTaskRemoveSegments['options']['segments']
+
+    if (removeSegments.length > 0) {
+      this.studioTasks.push({ name: 'remove-segments', options: { segments: removeSegments } })
+    }
+  }
+
+  toStudioFormPatch (): Required<StudioForm> {
+    const cut = this.studioTasks.find(t => t.name === 'cut')
+    const addIntro = this.studioTasks.find(t => t.name === 'add-intro')
+    const addOutro = this.studioTasks.find(t => t.name === 'add-outro')
+    const addWatermark = this.studioTasks.find(t => t.name === 'add-watermark')
+    const removeSegments = this.studioTasks.find(t => t.name === 'remove-segments')
+
+    return {
+      'cut': {
+        start: cut?.options?.start ?? 0,
+        end: cut?.options?.end ?? this.metadata.duration
+      },
+      'add-intro': { file: addIntro?.options?.file as File ?? null },
+      'add-outro': { file: addOutro?.options?.file as File },
+      'add-watermark': { file: addWatermark?.options?.file as File },
+      'remove-segments': removeSegments?.options?.segments ?? []
+    }
+  }
+
+  resetStudio () {
+    this.studioTasks = []
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromPlayerSettingsForm (values: PlayerSettingsForm) {
+    this.playerSettings = values
+  }
+
+  toPlayerSettingsFormPatch (): Required<PlayerSettingsForm> {
+    return {
+      theme: this.playerSettings?.theme ?? 'channel-default'
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  loadFromEmbedPrivacyForm (value: EmbedPrivacyForm) {
+    this.embedPrivacy = {
+      policy: value.videoPrivacyEmbedPolicy ?? VideoEmbedPrivacyPolicy.ALL_ALLOWED,
+
+      domains: value.videoPrivacyEmbedPolicy === VideoEmbedPrivacyPolicy.ALLOWLIST
+        ? splitAndGetNotEmpty(value.videoPrivacyEmbedAllowlistDomains)
+        : []
+    }
+  }
+
+  toEmbedPrivacyFormPatch (): Required<EmbedPrivacyForm> {
+    if (!this.embedPrivacy) {
+      return {
+        videoPrivacyEmbedPolicy: VideoEmbedPrivacyPolicy.ALL_ALLOWED,
+        videoPrivacyEmbedAllowlistDomains: ''
+      }
+    }
+
+    return {
+      videoPrivacyEmbedPolicy: this.embedPrivacy.policy,
+      videoPrivacyEmbedAllowlistDomains: this.embedPrivacy.domains.join('\n')
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
+
+  getVideoSource () {
+    return this.metadata.videoSource
+  }
+
+  getLive () {
+    return this.metadata.live
+  }
+
+  getVideoAttributes () {
+    return this.videoAttributes
+  }
+
+  getInitialAttributes () {
+    return this.initialMetadata
+  }
+
+  getChaptersEdit () {
+    return this.chapters
+  }
+
+  getReplaceFile (): File {
+    return this.replaceFile
+  }
+
+  getCaptionsEdit () {
+    return this.captions
+  }
+
+  getStudioTasks () {
+    return this.studioTasks
+  }
+
+  getPlayerSettings () {
+    return this.playerSettings
+  }
+
+  getEmbedPrivacy () {
+    return this.embedPrivacy
+  }
+
+  getStudioTasksSummary () {
+    const summary: string[] = []
+
+    for (const t of this.getStudioTasks()) {
+      if (t.name === 'add-intro') {
+        summary.push($localize`"${(t.options.file as File).name}" will be added at the beginning of the video`)
+      } else if (t.name === 'add-outro') {
+        summary.push($localize`"${(t.options.file as File).name}" will be added at the end of the video`)
+      } else if (t.name === 'add-watermark') {
+        summary.push($localize`"${(t.options.file as File).name}" image watermark will be added to the video`)
+      } else if (t.name === 'cut') {
+        const { start, end } = t.options
+
+        if (start !== undefined && end !== undefined) {
+          summary.push($localize`Video will begin at ${secondsToTime(start)} and stop at ${secondsToTime(end)}`)
+        } else if (start !== undefined) {
+          summary.push($localize`Video will begin at ${secondsToTime(start)}`)
+        } else if (end !== undefined) {
+          summary.push($localize`Video will stop at ${secondsToTime(end)}`)
+        }
+      } else if (t.name === 'remove-segments') {
+        for (let i = 1; i <= t.options.segments.length; i++) {
+          const parts = t.options.segments[i - 1]
+
+          summary.push($localize`Remove segment ${i} – ${secondsToTime(parts.start)} to ${secondsToTime(parts.end)}`)
+        }
+      }
+    }
+
+    return summary
+  }
+
+  // ---------------------------------------------------------------------------
+
+  hasCommonChanges () {
+    if (this.isNewVideo) return true
+    if (!this.saveStore.common) return true
+
+    let changes = !this.areSameObjects(omit(this.common, [ 'thumbnailfile', 'pluginData' ]), this.saveStore.common)
+
+    // Compare thumbnails
+    if (changes !== true && (this.common.thumbnailfile || this.saveStore.thumbnailfile)) {
+      changes = this.common.thumbnailfile?.size !== this.saveStore.thumbnailfile?.size
+    }
+
+    debugLogger('Check if has common changes', {
+      changes,
+      common: this.common,
+      saveCommon: this.saveStore.common,
+      saveThumbnail: this.saveStore.thumbnailfile
+    })
+
+    return changes
+  }
+
+  hasPluginDataChanges () {
+    if (!this.checkPluginChanges) return false
+    if (!this.saveStore.pluginData) return true
+
+    const current = this.common.pluginData
+    const changes = !this.areSameObjects(current, this.saveStore.pluginData)
+
+    debugLogger('Check if has plugin data changes', {
+      changes,
+      pluginData: current,
+      savePluginData: this.saveStore.pluginData
+    })
+
+    return changes
+  }
+
+  hasCaptionChanges () {
+    const changes = this.captions.some(caption => !!caption.action)
+
+    debugLogger('Check if caption has changes', { captions: this.captions, changes })
+
+    return changes
+  }
+
+  hasChaptersChanges () {
+    const changes = this.chapters.hasChanges()
+
+    debugLogger('Check if chapters has changes', { chapters: this.chapters, changes })
+
+    return changes
+  }
+
+  hasLiveChanges () {
+    if (!this.live) return false
+    if (!this.saveStore.live) return true
+
+    const changes = !this.areSameObjects(this.live, this.saveStore.live)
+
+    debugLogger('Check if live has changes', { live: this.live, saveLive: this.saveStore.live, changes })
+
+    return changes
+  }
+
+  hasReplaceFile () {
+    const changes = !!this.replaceFile
+
+    debugLogger('Check if replace file has changes', { replaceFile: this.replaceFile, changes })
+
+    return changes
+  }
+
+  hasStudioTasks () {
+    const changes = this.studioTasks.length !== 0
+
+    debugLogger('Check if studio has changes', { studioTasks: this.studioTasks, changes })
+
+    return changes
+  }
+
+  hasPlayerSettingsChanges () {
+    if (!this.playerSettings) return false
+    if (!this.saveStore.playerSettings) return true
+
+    const changes = !this.areSameObjects(this.playerSettings, this.saveStore.playerSettings)
+
+    debugLogger('Check if player settings has changes', {
+      playerSettings: this.playerSettings,
+      savePlayerSettings: this.saveStore.playerSettings,
+      changes
+    })
+
+    return changes
+  }
+
+  hasEmbedPrivacyChanges () {
+    if (!this.embedPrivacy) return false
+    if (!this.saveStore.embedPrivacy) return true
+
+    const changes = !this.areSameObjects(this.embedPrivacy, this.saveStore.embedPrivacy)
+
+    debugLogger('Check if embed privacy has changes', {
+      embedPrivacy: this.embedPrivacy,
+      saveEmbedPrivacy: this.saveStore.embedPrivacy,
+      changes
+    })
+
+    return changes
+  }
+
+  // ---------------------------------------------------------------------------
+
+  hasPendingChanges () {
+    return this.hasCaptionChanges() ||
+      this.hasLiveChanges() ||
+      this.hasReplaceFile() ||
+      this.hasStudioTasks() ||
+      this.hasChaptersChanges() ||
+      this.hasCommonChanges() ||
+      this.hasPluginDataChanges() ||
+      this.hasPlayerSettingsChanges() ||
+      this.hasEmbedPrivacyChanges()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  isPublishedVOD () {
+    return !this.metadata.isLive && this.metadata.state === VideoState.PUBLISHED
+  }
+
+  private updateAfterChange () {
+    this.videoAttributes = {
+      id: this.metadata.id,
+      shortUUID: this.metadata.shortUUID,
+      uuid: this.metadata.uuid,
+      name: this.common.name,
+      state: this.metadata.state,
+      privacy: this.common.privacy,
+      isLive: this.metadata.isLive,
+      publishedAt: this.metadata.publishedAt,
+      aspectRatio: this.metadata.aspectRatio,
+      views: this.metadata.views,
+      downloads: this.metadata.downloads,
+      likes: this.metadata.likes,
+      duration: this.metadata.duration,
+      blacklisted: this.metadata.blacklisted,
+      blacklistedReason: this.metadata.blacklistedReason,
+
+      accountName: this.metadata.accountName,
+      channelName: this.metadata.channelName,
+      channelDisplayName: this.metadata.channelDisplayName,
+
+      live: this.metadata.live
+    }
+  }
+
+  private dvrWindowToMinutes (seconds: number) {
+    return Math.round(seconds / 60)
+  }
+
+  private dvrWindowMinutesToSeconds (minutes: number) {
+    return minutes * 60
+  }
+
+  // ---------------------------------------------------------------------------
+
+  areSameObjects<T, U> (a: Jsonify<T>, b: Jsonify<U>) {
+    // Allow '' === null
+    if (typeof a === 'string') return a === b || !a && b === null
+    if (typeof b === 'string') return a === b || !b && a === null
+
+    // Allow null === undefined
+    if (a === undefined) return !exists(b)
+    if (b === undefined) return !exists(a)
+
+    if (a as any === b as any) return true
+
+    if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) {
+      return false
+    }
+
+    const keysA = Object.keys(a)
+    const keysB = Object.keys(b)
+
+    if (keysA.length !== keysB.length) return false
+
+    for (const key of keysA) {
+      if (!keysB.includes(key)) return false
+
+      if (!this.areSameObjects((a as any)[key], (b as any)[key])) return false
+    }
+
+    return true
+  }
+
+  // ---------------------------------------------------------------------------
+
+  onSave () {
+    this.isNewVideo = false
+
+    this.initialMetadata = {
+      accountName: this.metadata.accountName,
+      channelId: this.common.channelId
+    }
+  }
+
+  enableCheckPluginChanges () {
+    this.checkPluginChanges = true
+  }
+
+  disableCheckPluginChanges () {
+    this.checkPluginChanges = false
+  }
+}

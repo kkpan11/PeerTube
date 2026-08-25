@@ -1,45 +1,48 @@
-import { Component, OnInit, inject } from '@angular/core'
-
-import { ConfirmService, Notifier, RestPagination, RestTable } from '@app/core'
+import { Component, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
+import { ConfirmService, Notifier } from '@app/core'
 import { PTDatePipe } from '@app/shared/shared-main/common/date.pipe'
-import { NgbTooltip } from '@ng-bootstrap/ng-bootstrap'
 import { RunnerRegistrationToken } from '@peertube/peertube-models'
-import { SharedModule, SortMeta } from 'primeng/api'
-import { TableModule } from 'primeng/table'
-
 import { ActionDropdownComponent, DropdownAction } from '../../../../shared/shared-main/buttons/action-dropdown.component'
 import { ButtonComponent } from '../../../../shared/shared-main/buttons/button.component'
 import { CopyButtonComponent } from '../../../../shared/shared-main/buttons/copy-button.component'
-import { AutoColspanDirective } from '../../../../shared/shared-main/common/auto-colspan.directive'
+import { NumberFormatterPipe } from '../../../../shared/shared-main/common/number-formatter.pipe'
+import { DataLoaderOptionsBase, TableColumnInfo, TableComponent } from '../../../../shared/shared-tables/table.component'
 import { RunnerService } from '../runner.service'
 
 @Component({
   selector: 'my-runner-registration-token-list',
   styleUrls: [ './runner-registration-token-list.component.scss' ],
   templateUrl: './runner-registration-token-list.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    TableModule,
-    SharedModule,
-    NgbTooltip,
     ButtonComponent,
     ActionDropdownComponent,
     CopyButtonComponent,
-    AutoColspanDirective,
-    PTDatePipe
+    PTDatePipe,
+    NumberFormatterPipe,
+    TableComponent
   ]
 })
-export class RunnerRegistrationTokenListComponent extends RestTable<RunnerRegistrationToken> implements OnInit {
+export class RunnerRegistrationTokenListComponent implements OnInit {
   private runnerService = inject(RunnerService)
   private notifier = inject(Notifier)
   private confirmService = inject(ConfirmService)
 
-  registrationTokens: RunnerRegistrationToken[] = []
-  totalRecords = 0
-
-  sort: SortMeta = { field: 'createdAt', order: -1 }
-  pagination: RestPagination = { count: this.rowsPerPage, start: 0 }
+  readonly table = viewChild<TableComponent<RunnerRegistrationToken>>('table')
 
   actions: DropdownAction<RunnerRegistrationToken>[][] = []
+
+  columns: TableColumnInfo<string>[] = [
+    { id: 'token', label: $localize`Token`, sortable: false },
+    { id: 'createdAt', label: $localize`Created`, sortable: true },
+    { id: 'runners', label: $localize`Associated runners`, sortable: false }
+  ]
+
+  dataLoader: typeof this._dataLoader
+
+  constructor () {
+    this.dataLoader = this._dataLoader.bind(this)
+  }
 
   ngOnInit () {
     this.actions = [
@@ -50,23 +53,17 @@ export class RunnerRegistrationTokenListComponent extends RestTable<RunnerRegist
         }
       ]
     ]
-
-    this.initialize()
-  }
-
-  getIdentifier () {
-    return 'RunnerRegistrationTokenListComponent'
   }
 
   generateToken () {
     this.runnerService.generateToken()
       .subscribe({
         next: () => {
-          this.reloadData()
+          this.table().loadData()
           this.notifier.success($localize`Registration token generated.`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -81,23 +78,15 @@ export class RunnerRegistrationTokenListComponent extends RestTable<RunnerRegist
     this.runnerService.removeToken(token)
       .subscribe({
         next: () => {
-          this.reloadData()
+          this.table().loadData()
           this.notifier.success($localize`Registration token removed.`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
-  protected reloadDataInternal () {
-    this.runnerService.listRegistrationTokens({ pagination: this.pagination, sort: this.sort })
-      .subscribe({
-        next: resultList => {
-          this.registrationTokens = resultList.data
-          this.totalRecords = resultList.total
-        },
-
-        error: err => this.notifier.error(err.message)
-      })
+  private _dataLoader (options: DataLoaderOptionsBase) {
+    return this.runnerService.listRegistrationTokens(options)
   }
 }

@@ -1,9 +1,11 @@
-import { logger } from '@server/helpers/logger.js'
+import { UserNotificationSettingValue, UserNotificationType } from '@peertube/peertube-models'
+import { tu } from '@server/helpers/i18n.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { toSafeHtml } from '@server/helpers/markdown.js'
 import { WEBSERVER } from '@server/initializers/constants.js'
-import { AccountBlocklistModel } from '@server/models/account/account-blocklist.js'
-import { getServerActor } from '@server/models/application/application.js'
-import { ServerBlocklistModel } from '@server/models/server/server-blocklist.js'
+import { getServerAccount } from '@server/models/application/application.js'
+import { AccountBlocklistModel } from '@server/models/blocklist/account-blocklist.js'
+import { ServerBlocklistModel } from '@server/models/blocklist/server-blocklist.js'
 import { UserNotificationModel } from '@server/models/user/user-notification.js'
 import { UserModel } from '@server/models/user/user.js'
 import {
@@ -13,16 +15,17 @@ import {
   MUserWithNotificationSetting,
   UserNotificationModelForApi
 } from '@server/types/models/index.js'
-import { UserNotificationSettingValue, UserNotificationType } from '@peertube/peertube-models'
 import { AbstractNotification } from '../common/index.js'
 
-export class CommentMention extends AbstractNotification <MCommentOwnerVideo, MUserNotifSettingAccount> {
+const logger = createLogger()
+
+export class CommentMention extends AbstractNotification<MCommentOwnerVideo, MUserNotifSettingAccount> {
   private users: MUserDefault[]
 
   private serverAccountId: number
 
-  private accountMutedHash: { [ id: number ]: boolean }
-  private instanceMutedHash: { [ id: number ]: boolean }
+  private accountMutedHash: { [id: number]: boolean }
+  private instanceMutedHash: { [id: number]: boolean }
 
   isDisabled () {
     return this.payload.heldForReview === true
@@ -31,13 +34,15 @@ export class CommentMention extends AbstractNotification <MCommentOwnerVideo, MU
   async prepare () {
     const extractedUsernames = this.payload.extractMentions()
     logger.debug(
-      'Extracted %d username from comment %s.', extractedUsernames.length, this.payload.url,
+      'Extracted %d username from comment %s.',
+      extractedUsernames.length,
+      this.payload.url,
       { usernames: extractedUsernames, text: this.payload.text }
     )
 
     this.users = await UserModel.listByUsernames(extractedUsernames)
 
-    if (this.payload.Video.isOwned()) {
+    if (this.payload.Video.isLocal()) {
       const userException = await UserModel.loadByVideoId(this.payload.videoId)
       this.users = this.users.filter(u => u.id !== userException.id)
     }
@@ -47,7 +52,7 @@ export class CommentMention extends AbstractNotification <MCommentOwnerVideo, MU
 
     if (this.users.length === 0) return
 
-    this.serverAccountId = (await getServerActor()).Account.id
+    this.serverAccountId = (await getServerAccount()).id
 
     const sourceAccounts = this.users.map(u => u.Account.id).concat([ this.serverAccountId ])
 
@@ -86,7 +91,9 @@ export class CommentMention extends AbstractNotification <MCommentOwnerVideo, MU
     return notification
   }
 
-  createEmail (to: string) {
+  createEmail (user: MUserWithNotificationSetting) {
+    const to = { email: user.email, language: user.getLanguage() }
+
     const comment = this.payload
 
     const accountName = comment.Account.getDisplayName()
@@ -98,17 +105,18 @@ export class CommentMention extends AbstractNotification <MCommentOwnerVideo, MU
     return {
       template: 'video-comment-mention',
       to,
-      subject: 'Mention on video ' + video.name,
+      subject: tu('Mention on video {videoName}', user, { videoName: video.name }),
+      action: {
+        text: tu('View comment', user),
+        url: commentUrl
+      },
       locals: {
         comment,
         commentHtml,
         video,
         videoUrl,
         accountName,
-        action: {
-          text: 'View comment',
-          url: commentUrl
-        }
+        accountUrl: comment.Account.getClientUrl()
       }
     }
   }

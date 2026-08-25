@@ -1,13 +1,10 @@
 /* eslint-disable @typescript-eslint/no-implied-eval */
-import debug from 'debug'
-import { firstValueFrom, ReplaySubject } from 'rxjs'
-import { first, shareReplay } from 'rxjs/operators'
-import { RegisterClientHelpers } from '../types/register-client-option.model'
 import { getExternalAuthHref, getHookType, internalRunHook } from '@peertube/peertube-core-utils'
 import {
   ClientDoAction,
   ClientHookName,
   clientHookObject,
+  ClientRouter,
   ClientScriptJSON,
   HTMLServerConfig,
   PluginClientScope,
@@ -20,8 +17,11 @@ import {
   RegisterClientVideoFieldOptions,
   ServerConfigPlugin
 } from '@peertube/peertube-models'
-import { environment } from '../environments/environment'
+import debug from 'debug'
+import { firstValueFrom, ReplaySubject } from 'rxjs'
+import { first, shareReplay } from 'rxjs/operators'
 import { ClientScript } from '../types'
+import { RegisterClientHelpers } from '../types/register-client-option.model'
 import { logger } from './logger'
 
 interface HookStructValue extends RegisterClientHookOptions {
@@ -29,7 +29,7 @@ interface HookStructValue extends RegisterClientHookOptions {
   clientScript: ClientScriptJSON
 }
 
-type Hooks = { [ name: string ]: HookStructValue[] }
+type Hooks = { [name: string]: HookStructValue[] }
 
 type PluginInfo = {
   plugin: ServerConfigPlugin
@@ -55,13 +55,13 @@ const debugLogger = debug('peertube:plugins')
 class PluginsManager {
   private hooks: Hooks = {}
 
-  private scopes: { [ scopeName: string ]: PluginInfo[] } = {}
+  private scopes: { [scopeName: string]: PluginInfo[] } = {}
 
-  private loadedScripts: { [ script: string ]: boolean } = {}
+  private loadedScripts: { [script: string]: boolean } = {}
   private loadedScopes: PluginClientScope[] = []
   private loadingScopes: { [id in PluginClientScope]?: boolean } = {}
 
-  private pluginsLoaded: { [ scope in PluginClientScope ]: ReplaySubject<boolean> } = {
+  private pluginsLoaded: { [scope in PluginClientScope]: ReplaySubject<boolean> } = {
     'common': new ReplaySubject<boolean>(1),
     'admin-plugin': new ReplaySubject<boolean>(1),
     'search': new ReplaySubject<boolean>(1),
@@ -78,6 +78,7 @@ class PluginsManager {
     'moderation': new ReplaySubject<boolean>(1)
   }
 
+  private readonly router: ClientRouter
   private readonly doAction: ClientDoAction
   private readonly peertubeHelpersFactory: PeertubeHelpersFactory
   private readonly onFormFields: OnFormFields
@@ -86,6 +87,7 @@ class PluginsManager {
   private readonly backendUrl: string
 
   constructor (options: {
+    router?: ClientRouter
     doAction?: ClientDoAction
     peertubeHelpersFactory: PeertubeHelpersFactory
     onFormFields?: OnFormFields
@@ -93,6 +95,7 @@ class PluginsManager {
     onClientRoute?: OnClientRoute
     backendUrl?: string
   }) {
+    this.router = options.router
     this.doAction = options.doAction
     this.peertubeHelpersFactory = options.peertubeHelpersFactory
     this.onFormFields = options.onFormFields
@@ -106,7 +109,7 @@ class PluginsManager {
   }
 
   static getDefaultLoginHref (apiUrl: string, serverConfig: HTMLServerConfig) {
-    if (!serverConfig || serverConfig.client.menu.login.redirectOnSingleExternalAuth !== true) return undefined
+    if (serverConfig?.client.menu.login.redirectOnSingleExternalAuth !== true) return undefined
 
     const externalAuths = serverConfig.plugin.registeredExternalAuths
     if (externalAuths.length !== 1) return undefined
@@ -122,7 +125,6 @@ class PluginsManager {
 
   async runHook<T> (hookName: ClientHookName, resultArg?: T | Promise<T>, params?: any) {
     if (!this.hooks[hookName]) {
-      // eslint-disable-next-line no-return-await
       return await resultArg
     }
 
@@ -151,7 +153,7 @@ class PluginsManager {
     this.loadPluginsByScope(scope)
 
     const obs = this.pluginsLoaded[scope].asObservable()
-               .pipe(first(), shareReplay())
+      .pipe(first(), shareReplay())
 
     return firstValueFrom(obs)
   }
@@ -284,10 +286,11 @@ class PluginsManager {
 
     logger.info(`Loading script ${clientScript.script} of plugin ${plugin.name}`)
 
-    const absURL = (this.backendUrl || environment.apiUrl || window.location.origin) + clientScript.script
+    const absURL = (this.backendUrl || window.location.origin) + clientScript.script
     return dynamicImport(absURL)
       .then((script: ClientScript) => {
         return script.register({
+          router: this.router,
           doAction,
           registerHook,
           registerVideoField,
@@ -311,11 +314,10 @@ class PluginsManager {
 
 export {
   PluginsManager,
-
-  type PluginInfo,
-  type PeertubeHelpersFactory,
   type OnFormFields,
-  type OnSettingsScripts
+  type OnSettingsScripts,
+  type PeertubeHelpersFactory,
+  type PluginInfo
 }
 
 // ---------------------------------------------------------------------------

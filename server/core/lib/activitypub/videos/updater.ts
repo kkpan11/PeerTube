@@ -1,20 +1,25 @@
-import { Transaction } from 'sequelize'
 import { VideoObject, VideoPrivacy } from '@peertube/peertube-models'
 import { resetSequelizeInstance, runInReadCommittedTransaction } from '@server/helpers/database-utils.js'
-import { logger, loggerTagsFactory, LoggerTagsFn } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
+import { createVideoAutomaticTagsJob } from '@server/lib/automatic-tags/automatic-tags.js'
 import { Notifier } from '@server/lib/notifier/index.js'
 import { PeerTubeSocket } from '@server/lib/peertube-socket.js'
 import { Hooks } from '@server/lib/plugins/hooks.js'
 import { autoBlacklistVideoIfNeeded } from '@server/lib/video-blacklist.js'
 import { VideoLiveModel } from '@server/models/video/video-live.js'
 import {
-  MActor,
+  MActorHost,
   MChannelAccountLight,
   MChannelId,
   MVideoAccountLightBlacklistAllFiles,
-  MVideoFullLight
+  MVideoFull
 } from '@server/types/models/index.js'
+import { Transaction } from 'sequelize'
+import { haveActorsSameRemoteHost } from '../actors/check-actor.js'
+import { checkUrlsSameHost } from '../url.js'
 import { APVideoAbstractBuilder, getVideoAttributesFromObject, updateVideoRates } from './shared/index.js'
+
+const logger = createLogger('ap', 'video', 'update')
 
 export class APVideoUpdater extends APVideoAbstractBuilder {
   private readonly wasPrivateVideo: boolean
@@ -22,11 +27,10 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
 
   private readonly oldVideoChannel: MChannelAccountLight
 
-  protected lTags: LoggerTagsFn
-
   constructor (
     protected readonly videoObject: VideoObject,
-    private readonly video: MVideoAccountLightBlacklistAllFiles
+    private readonly video: MVideoAccountLightBlacklistAllFiles,
+    private readonly contextUrl: string
   ) {
     super()
 
@@ -34,15 +38,26 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
     this.wasUnlistedVideo = this.video.privacy === VideoPrivacy.UNLISTED
 
     this.oldVideoChannel = this.video.VideoChannel
-
-    this.lTags = loggerTagsFactory('ap', 'video', 'update', video.uuid, video.url)
   }
 
   async update (overrideTo?: string[]) {
+    return logger.withContext([ this.video.uuid, this.video.url ], () => this.runUpdate(overrideTo))
+  }
+
+  private async runUpdate (overrideTo?: string[]) {
     logger.debug(
-      'Updating remote video "%s".', this.videoObject.uuid,
-      { videoObject: this.videoObject, ...this.lTags() }
+      'Updating remote video "%s".',
+      this.videoObject.uuid,
+      { videoObject: this.videoObject }
     )
+
+    if (!checkUrlsSameHost(this.contextUrl, this.videoObject.id)) {
+      logger.warn('Video sent by update is not from the same host as the context URL.', {
+        videoObject: this.videoObject,
+        contextUrl: this.contextUrl
+      })
+      return undefined
+    }
 
     const oldInputFileUpdatedAt = this.video.inputFileUpdatedAt
 
@@ -65,22 +80,21 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
         runInReadCommittedTransaction(t => this.setTags(videoUpdated, t)),
         runInReadCommittedTransaction(t => this.setTrackers(videoUpdated, t)),
         runInReadCommittedTransaction(t => this.setStoryboard(videoUpdated, t)),
-        runInReadCommittedTransaction(t => this.setAutomaticTags({ video: videoUpdated, transaction: t, oldVideo })),
-        runInReadCommittedTransaction(t => {
-          return Promise.all([
-            this.setPreview(videoUpdated, t),
-            this.setThumbnail(videoUpdated, t)
-          ])
-        }),
+        runInReadCommittedTransaction(t => this.setThumbnails(videoUpdated, t)),
         this.setOrDeleteLive(videoUpdated)
       ])
 
+      const rebuildAutomaticTags = this.automaticTagsNeedRebuild({ video: videoUpdated, oldVideo })
+
       await runInReadCommittedTransaction(t => this.setCaptions(videoUpdated, t))
 
-      await this.updateChaptersOutsideTransaction(videoUpdated)
+      await this.updateChapters(videoUpdated)
+      await this.upsertPlayerSettings(videoUpdated)
 
       await autoBlacklistVideoIfNeeded({
         video: videoUpdated,
+        // Already published: don't hold it while its automatic tags are rebuilt
+        holdIfAutoTagPolicy: false,
         user: undefined,
         isRemote: true,
         isNew: false,
@@ -88,21 +102,23 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
         transaction: undefined
       })
 
+      if (rebuildAutomaticTags) {
+        createVideoAutomaticTagsJob({ video: videoUpdated, moderation: 'apply' })
+      }
+
       await updateVideoRates(videoUpdated, this.videoObject)
 
       // Notify our users?
-      if (this.wasPrivateVideo || this.wasUnlistedVideo) {
-        Notifier.Instance.notifyOnNewVideoOrLiveIfNeeded(videoUpdated)
-      }
-
       if (videoUpdated.isLive && oldState !== videoUpdated.state) {
         PeerTubeSocket.Instance.sendVideoLiveNewState(videoUpdated)
+        Notifier.Instance.notifyOnNewVideoOrLiveIfNeeded(videoUpdated)
+      } else if (this.wasPrivateVideo || this.wasUnlistedVideo) {
         Notifier.Instance.notifyOnNewVideoOrLiveIfNeeded(videoUpdated)
       }
 
       Hooks.runAction('action:activity-pub.remote-video.updated', { video: videoUpdated, videoAPObject: this.videoObject })
 
-      logger.info('Remote video with uuid %s updated', this.videoObject.uuid, this.lTags())
+      logger.info('Remote video with uuid %s updated', this.videoObject.uuid)
 
       return videoUpdated
     } catch (err) {
@@ -111,19 +127,16 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
   }
 
   // Check we can update the channel: we trust the remote server
-  private checkChannelUpdateOrThrow (newChannelActor: MActor) {
-    if (!this.oldVideoChannel.Actor.serverId || !newChannelActor.serverId) {
-      throw new Error('Cannot check old channel/new channel validity because `serverId` is null')
-    }
-
-    if (this.oldVideoChannel.Actor.serverId !== newChannelActor.serverId) {
-      throw new Error(`New channel ${newChannelActor.url} is not on the same server than new channel ${this.oldVideoChannel.Actor.url}`)
+  private checkChannelUpdateOrThrow (newChannelActor: MActorHost) {
+    if (haveActorsSameRemoteHost(this.oldVideoChannel.Actor, newChannelActor) !== true) {
+      throw new Error(`Actor ${this.oldVideoChannel.Actor.url} is not on the same host as ${newChannelActor.url}`)
     }
   }
 
   private updateVideo (channel: MChannelId, transaction?: Transaction, overrideTo?: string[]) {
     const to = overrideTo || this.videoObject.to
     const videoData = getVideoAttributesFromObject(channel, this.videoObject, to)
+
     this.video.name = videoData.name
     this.video.uuid = videoData.uuid
     this.video.url = videoData.url
@@ -133,6 +146,8 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
     this.video.description = videoData.description
     this.video.support = videoData.support
     this.video.nsfw = videoData.nsfw
+    this.video.nsfwSummary = videoData.nsfwSummary
+    this.video.nsfwFlags = videoData.nsfwFlags
     this.video.commentsPolicy = videoData.commentsPolicy
     this.video.downloadEnabled = videoData.downloadEnabled
     this.video.waitTranscoding = videoData.waitTranscoding
@@ -145,27 +160,29 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
     this.video.privacy = videoData.privacy
     this.video.channelId = videoData.channelId
     this.video.views = videoData.views
+    this.video.downloads = videoData.downloads
     this.video.isLive = videoData.isLive
     this.video.aspectRatio = videoData.aspectRatio
+    this.video.embedPrivacyPolicy = videoData.embedPrivacyPolicy
 
     // Ensures we update the updatedAt attribute, even if main attributes did not change
     this.video.changed('updatedAt', true)
 
-    return this.video.save({ transaction }) as Promise<MVideoFullLight>
+    return this.video.save({ transaction }) as Promise<MVideoFull>
   }
 
-  private async setCaptions (videoUpdated: MVideoFullLight, t: Transaction) {
+  private async setCaptions (videoUpdated: MVideoFull, t: Transaction) {
     await this.insertOrReplaceCaptions(videoUpdated, t)
   }
 
-  private async setStoryboard (videoUpdated: MVideoFullLight, t: Transaction) {
+  private async setStoryboard (videoUpdated: MVideoFull, t: Transaction) {
     await this.insertOrReplaceStoryboard(videoUpdated, t)
   }
 
-  private async setOrDeleteLive (videoUpdated: MVideoFullLight, transaction?: Transaction) {
-    if (!this.video.isLive) return
-
-    if (this.video.isLive) return this.insertOrReplaceLive(videoUpdated, transaction)
+  private async setOrDeleteLive (videoUpdated: MVideoFull, transaction?: Transaction) {
+    if (this.video.isLive) {
+      return this.insertOrReplaceLive(videoUpdated, transaction)
+    }
 
     // Delete existing live if it exists
     await VideoLiveModel.destroy({
@@ -184,7 +201,7 @@ export class APVideoUpdater extends APVideoAbstractBuilder {
     }
 
     // This is just a debug because we will retry the insert
-    logger.debug('Cannot update the remote video.', { err, ...this.lTags() })
+    logger.debug('Cannot update the remote video.', { err })
     throw err
   }
 }

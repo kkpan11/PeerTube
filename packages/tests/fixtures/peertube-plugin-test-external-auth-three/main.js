@@ -35,10 +35,30 @@ async function register ({
         })
       },
       onLogout: (user, req) => {
-        return 'https://example.com/redirectUrl?access_token=' + req.headers['authorization'].split(' ')[1]
+        return 'https://example.com/redirectUrl' +
+          '?access_token=' + req.headers['authorization'].split(' ')[1] +
+          '&session_id=' + req.cookies['session_id']
       }
     })
   }
+
+  const result = registerExternalAuth({
+    authName: 'external-auth-9',
+    authDisplayName: () => 'External Auth 9',
+    onAuthRequest: (req, res) => {
+      result.userAuthenticated({
+        req,
+        res,
+        username: 'cid',
+        email: 'cid@example.com',
+        displayName: 'Cid Marquez',
+        externalRedirectUri: 'https://external.com/some/redirect/path'
+      })
+    },
+    onLogout: (user, req) => {
+      return 'https://example.com/redirectUrl'
+    }
+  })
 }
 
 async function unregister () {

@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { wait } from '@peertube/peertube-core-utils'
 import { UserNotification, UserNotificationType, VideoPrivacy, VideoStudioTask } from '@peertube/peertube-models'
@@ -6,17 +6,20 @@ import { buildUUID } from '@peertube/peertube-node-utils'
 import { cleanupTests, findExternalSavedVideo, PeerTubeServer, stopFfmpeg, waitJobs } from '@peertube/peertube-server-commands'
 import { FIXTURE_URLS } from '@tests/shared/fixture-urls.js'
 import { MockSmtpServer } from '@tests/shared/mock-servers/mock-email.js'
+import { checkNewActorFollow } from '@tests/shared/notifications/check-follow-notifications.js'
 import {
-  CheckerBaseParams,
   checkMyVideoImportIsFinished,
   checkMyVideoIsPublished,
-  checkNewActorFollow,
   checkNewLiveFromSubscription,
   checkNewVideoFromSubscription,
-  checkVideoStudioEditionIsFinished,
+  checkVideoStudioEditionIsFinished
+} from '@tests/shared/notifications/check-video-notifications.js'
+import {
+  getAllNotificationsSettings,
   prepareNotificationsTest,
   waitUntilNotification
-} from '@tests/shared/notifications.js'
+} from '@tests/shared/notifications/notifications-common.js'
+import { CheckerBaseParams } from '@tests/shared/notifications/shared/notification-checker.js'
 import { uploadRandomVideoOnServers } from '@tests/shared/videos.js'
 import { expect } from 'chai'
 
@@ -145,11 +148,12 @@ describe('Test user notifications', function () {
       await checkNewVideoFromSubscription({ ...baseParams, videoName: name, shortUUID, checkType: 'absence' })
     })
 
-    it('Should send a new video notification when a video becomes public', async function () {
+    it('Should send a new video notification when a video becomes public for the first time', async function () {
       this.timeout(50000)
 
       for (const privacy of [ VideoPrivacy.PUBLIC, VideoPrivacy.INTERNAL ]) {
         const { name, uuid, shortUUID } = await uploadRandomVideoOnServers(servers, 1, { privacy: VideoPrivacy.PRIVATE })
+        await waitJobs(servers)
 
         await checkNewVideoFromSubscription({ ...baseParams, videoName: name, shortUUID, checkType: 'absence' })
 
@@ -157,14 +161,26 @@ describe('Test user notifications', function () {
 
         await waitJobs(servers)
         await checkNewVideoFromSubscription({ ...baseParams, videoName: name, shortUUID, checkType: 'presence' })
+
+        const beforeAnotherUpdate = new Date()
+        await servers[0].videos.update({ id: uuid, attributes: { privacy: VideoPrivacy.PRIVATE } })
+        await servers[0].videos.update({ id: uuid, attributes: { privacy } })
+        await waitJobs(servers)
+
+        const { data: notifications } = await servers[0].notifications.list({
+          token: userAccessToken,
+          typeOneOf: [ UserNotificationType.NEW_VIDEO_FROM_SUBSCRIPTION ]
+        })
+        expect(notifications.filter(n => new Date(n.createdAt) > beforeAnotherUpdate)).to.have.lengthOf(0)
       }
     })
 
-    it('Should send a new video notification when a remote video becomes public', async function () {
+    it('Should send a new video notification when a remote video becomes public for the first time', async function () {
       this.timeout(120000)
 
       const data = { privacy: VideoPrivacy.PRIVATE }
       const { name, uuid, shortUUID } = await uploadRandomVideoOnServers(servers, 2, data)
+      await waitJobs(servers)
 
       await checkNewVideoFromSubscription({ ...baseParams, videoName: name, shortUUID, checkType: 'absence' })
 
@@ -172,6 +188,17 @@ describe('Test user notifications', function () {
 
       await waitJobs(servers)
       await checkNewVideoFromSubscription({ ...baseParams, videoName: name, shortUUID, checkType: 'presence' })
+
+      const beforeAnotherUpdate = new Date()
+      await servers[1].videos.update({ id: uuid, attributes: { privacy: VideoPrivacy.PRIVATE } })
+      await servers[1].videos.update({ id: uuid, attributes: { privacy: VideoPrivacy.PUBLIC } })
+      await waitJobs(servers)
+
+      const { data: notifications } = await servers[0].notifications.list({
+        token: userAccessToken,
+        typeOneOf: [ UserNotificationType.NEW_VIDEO_FROM_SUBSCRIPTION ]
+      })
+      expect(notifications.filter(n => new Date(n.createdAt) > beforeAnotherUpdate)).to.have.lengthOf(0)
     })
 
     it('Should not send a new video notification when a video becomes unlisted', async function () {
@@ -396,7 +423,6 @@ describe('Test user notifications', function () {
   })
 
   describe('My live replay is published', function () {
-
     let baseParams: CheckerBaseParams
 
     before(() => {
@@ -408,7 +434,7 @@ describe('Test user notifications', function () {
       }
     })
 
-    it('Should send a notification is a live replay of a non permanent live is published', async function () {
+    it('Should send a notification when a live replay of a non permanent live is published', async function () {
       this.timeout(120000)
 
       const { shortUUID } = await servers[1].live.create({
@@ -434,7 +460,7 @@ describe('Test user notifications', function () {
       await checkMyVideoIsPublished({ ...baseParams, videoName: 'non permanent live', shortUUID, checkType: 'presence' })
     })
 
-    it('Should send a notification is a live replay of a permanent live is published', async function () {
+    it('Should send a notification when a live replay of a permanent live is published', async function () {
       this.timeout(120000)
 
       const { shortUUID } = await servers[1].live.create({
@@ -552,6 +578,103 @@ describe('Test user notifications', function () {
     })
   })
 
+  describe('Video ownership change notifications', function () {
+    const nextOwner = 'ownership_request_target'
+    let nextOwnerToken: string
+
+    const videoName = 'ownership change'
+    let videoId: string
+
+    before(async function () {
+      nextOwnerToken = await servers[0].users.generateUserAndToken(nextOwner)
+
+      await servers[0].notifications.updateMySettings({ token: nextOwnerToken, settings: getAllNotificationsSettings() })
+      const { uuid } = await servers[0].videos.quickUpload({ name: videoName, privacy: VideoPrivacy.PRIVATE })
+
+      videoId = uuid
+    })
+
+    it('Should notify the next owner when ownership change is requested', async function () {
+      const requestDate = new Date()
+      await servers[0].changeOwnership.createVideo({ videoId, username: nextOwner })
+
+      await waitUntilNotification({
+        server: servers[0],
+        token: nextOwnerToken,
+        notificationType: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REQUEST,
+        fromDate: requestDate
+      })
+
+      const notification = await servers[0].notifications.getLatest({
+        token: nextOwnerToken,
+        type: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REQUEST
+      })
+      expect(notification.type).to.equal(UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REQUEST)
+      expect(notification.changeOwnership.id).to.exist
+      expect(notification.changeOwnership.video.name).to.equal(videoName)
+      expect(notification.changeOwnership.initiatorAccount.name).to.equal('root')
+      expect(notification.changeOwnership.nextOwnerAccount.name).to.equal(nextOwner)
+    })
+
+    it('Should notify the video owner when ownership change is accepted', async function () {
+      const { data } = await servers[0].changeOwnership.listVideos({ token: nextOwnerToken })
+
+      const acceptedAt = new Date()
+      await servers[0].changeOwnership.acceptVideo({
+        token: nextOwnerToken,
+        ownershipId: data[0].id,
+        channelId: await servers[0].channels.getDefaultId({ token: nextOwnerToken })
+      })
+
+      await waitUntilNotification({
+        server: servers[0],
+        token: servers[0].accessToken,
+        notificationType: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_ACCEPTED,
+        fromDate: acceptedAt
+      })
+
+      const notification = await servers[0].notifications.getLatest({ type: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_ACCEPTED })
+      expect(notification.type).to.equal(UserNotificationType.VIDEO_OWNERSHIP_CHANGED_ACCEPTED)
+      expect(notification.changeOwnership.id).to.exist
+      expect(notification.changeOwnership.video.name).to.equal(videoName)
+      expect(notification.changeOwnership.initiatorAccount.name).to.equal('root')
+      expect(notification.changeOwnership.nextOwnerAccount.name).to.equal(nextOwner)
+    })
+
+    it('Should notify rejected channel collaborators when ownership change is rejected', async function () {
+      const collaboratorToken = await servers[0].channelCollaborators.createEditor('ownership_reject_collaborator', `${nextOwner}_channel`)
+
+      const nextNextOwner = 'ownership_reject_target'
+      const nextNextOwnerToken = await servers[0].users.generateUserAndToken(nextNextOwner)
+
+      await servers[0].changeOwnership.createVideo({ videoId, username: nextNextOwner })
+      const { data } = await servers[0].changeOwnership.listVideos({ token: nextNextOwnerToken })
+
+      const rejectedAt = new Date()
+      await servers[0].changeOwnership.refuseVideo({
+        token: nextNextOwnerToken,
+        ownershipId: data[0].id
+      })
+
+      await waitUntilNotification({
+        server: servers[0],
+        token: collaboratorToken,
+        notificationType: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REJECTED,
+        fromDate: rejectedAt
+      })
+
+      const notification = await servers[0].notifications.getLatest({
+        token: collaboratorToken,
+        type: UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REJECTED
+      })
+      expect(notification.type).to.equal(UserNotificationType.VIDEO_OWNERSHIP_CHANGED_REJECTED)
+      expect(notification.changeOwnership.id).to.exist
+      expect(notification.changeOwnership.video.name).to.equal(videoName)
+      expect(notification.changeOwnership.initiatorAccount.name).to.equal('root') // root made the request on behalf of the nextOwner user
+      expect(notification.changeOwnership.nextOwnerAccount.name).to.equal(nextNextOwner)
+    })
+  })
+
   describe('New actor follow', function () {
     let baseParams: CheckerBaseParams
     const myChannelName = 'super channel name'
@@ -640,7 +763,7 @@ describe('Test user notifications', function () {
   })
 
   after(async function () {
-    MockSmtpServer.Instance.kill()
+    await MockSmtpServer.Instance.kill()
 
     await cleanupTests(servers)
   })

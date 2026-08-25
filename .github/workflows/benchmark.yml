@@ -21,7 +21,7 @@ jobs:
           - 6379:6379
 
       postgres:
-        image: postgres:9.6
+        image: postgres:14
         ports:
           - 5432:5432
         env:
@@ -33,11 +33,11 @@ jobs:
       PGHOST: localhost
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - uses: './.github/actions/reusable-prepare-peertube-build'
         with:
-          node-version: '20.x'
+          node-version: '22.x'
 
       - uses: './.github/actions/reusable-prepare-peertube-run'
 

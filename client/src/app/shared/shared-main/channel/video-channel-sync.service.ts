@@ -1,10 +1,10 @@
-import { SortMeta } from 'primeng/api'
-import { catchError, Observable } from 'rxjs'
-import { environment } from 'src/environments/environment'
 import { HttpClient, HttpParams } from '@angular/common/http'
-import { Injectable, inject } from '@angular/core'
+import { inject, Injectable } from '@angular/core'
 import { RestExtractor, RestPagination, RestService } from '@app/core'
 import { ResultList, VideoChannelSync, VideoChannelSyncCreate } from '@peertube/peertube-models'
+import { SortMeta } from 'primeng/api'
+import { catchError, Observable } from 'rxjs'
+import { environment } from '../../../../environments/environment'
 import { Account } from '../account/account.model'
 import { AccountService } from '../account/account.service'
 
@@ -18,15 +18,20 @@ export class VideoChannelSyncService {
 
   static BASE_VIDEO_CHANNEL_URL = environment.apiUrl + '/api/v1/video-channel-syncs'
 
-  listAccountVideoChannelsSyncs (parameters: {
+  listByAccount (parameters: {
     sort: SortMeta
     pagination: RestPagination
     account: Account
+    includeCollaborations: boolean
   }): Observable<ResultList<VideoChannelSync>> {
-    const { pagination, sort, account } = parameters
+    const { pagination, sort, account, includeCollaborations } = parameters
 
     let params = new HttpParams()
     params = this.restService.addRestGetParams(params, pagination, sort)
+
+    if (includeCollaborations) {
+      params = params.append('includeCollaborations', 'true')
+    }
 
     const url = AccountService.BASE_ACCOUNT_URL + account.nameWithHost + '/video-channel-syncs'
 
@@ -34,13 +39,13 @@ export class VideoChannelSyncService {
       .pipe(catchError(err => this.restExtractor.handleError(err)))
   }
 
-  createSync (body: VideoChannelSyncCreate) {
+  create (body: VideoChannelSyncCreate) {
     return this.authHttp.post<{ videoChannelSync: VideoChannelSync }>(VideoChannelSyncService.BASE_VIDEO_CHANNEL_URL, body)
       .pipe(catchError(err => this.restExtractor.handleError(err)))
   }
 
-  deleteSync (videoChannelsSyncId: number) {
-    const url = `${VideoChannelSyncService.BASE_VIDEO_CHANNEL_URL}/${videoChannelsSyncId}`
+  delete (syncId: number) {
+    const url = `${VideoChannelSyncService.BASE_VIDEO_CHANNEL_URL}/${syncId}`
 
     return this.authHttp.delete(url)
       .pipe(catchError(err => this.restExtractor.handleError(err)))

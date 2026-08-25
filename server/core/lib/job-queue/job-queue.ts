@@ -1,4 +1,4 @@
-import { pick, timeoutPromise } from '@peertube/peertube-core-utils'
+import { pick } from '@peertube/peertube-core-utils'
 import {
   ActivitypubFollowPayload,
   ActivitypubHttpBroadcastPayload,
@@ -6,6 +6,8 @@ import {
   ActivitypubHttpUnicastPayload,
   ActorKeysPayload,
   AfterVideoChannelImportPayload,
+  BuildAutomaticTagsPayload,
+  BuildObjectAutomaticTagsPayload,
   CreateUserExportPayload,
   EmailPayload,
   FederateVideoPayload,
@@ -27,8 +29,8 @@ import {
   VideoTranscodingPayload,
   VideoTranscriptionPayload
 } from '@peertube/peertube-models'
-import { jobStates } from '@server/helpers/custom-validators/jobs.js'
-import { CONFIG } from '@server/initializers/config.js'
+import { allJobStates } from '@server/helpers/custom-validators/jobs.js'
+import { CONFIG, registerConfigChangedHandler } from '@server/initializers/config.js'
 import { processVideoRedundancy } from '@server/lib/job-queue/handlers/video-redundancy.js'
 import {
   FlowJob,
@@ -42,7 +44,7 @@ import {
   Worker,
   WorkerOptions
 } from 'bullmq'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { JOB_ATTEMPTS, JOB_CONCURRENCY, JOB_REMOVAL_OPTIONS, JOB_TTL, REPEAT_JOBS, WEBSERVER } from '../../initializers/constants.js'
 import { Hooks } from '../plugins/hooks.js'
 import { Redis } from '../redis.js'
@@ -57,6 +59,8 @@ import { processActivityPubHttpUnicast } from './handlers/activitypub-http-unica
 import { refreshAPObject } from './handlers/activitypub-refresher.js'
 import { processActorKeys } from './handlers/actor-keys.js'
 import { processAfterVideoChannelImport } from './handlers/after-video-channel-import.js'
+import { processBuildAutomaticTags } from './handlers/build-automatic-tags.js'
+import { processBuildObjectAutomaticTags } from './handlers/build-object-automatic-tags.js'
 import { processCreateUserExport } from './handlers/create-user-export.js'
 import { processEmail } from './handlers/email.js'
 import { processFederateVideo } from './handlers/federate-video.js'
@@ -71,48 +75,60 @@ import { processVideoChannelImport } from './handlers/video-channel-import.js'
 import { processVideoFileImport } from './handlers/video-file-import.js'
 import { processVideoImport } from './handlers/video-import.js'
 import { processVideoLiveEnding } from './handlers/video-live-ending.js'
+import { processVideosStats } from './handlers/video-stats.js'
 import { processVideoStudioEdition } from './handlers/video-studio-edition.js'
 import { processVideoTranscoding } from './handlers/video-transcoding.js'
 import { processVideoTranscription } from './handlers/video-transcription.js'
-import { processVideosViewsStats } from './handlers/video-views-stats.js'
 
-export type CreateJobArgument =
-  { type: 'activitypub-http-broadcast', payload: ActivitypubHttpBroadcastPayload } |
-  { type: 'activitypub-http-broadcast-parallel', payload: ActivitypubHttpBroadcastPayload } |
-  { type: 'activitypub-http-unicast', payload: ActivitypubHttpUnicastPayload } |
-  { type: 'activitypub-http-fetcher', payload: ActivitypubHttpFetcherPayload } |
-  { type: 'activitypub-cleaner', payload: {} } |
-  { type: 'activitypub-follow', payload: ActivitypubFollowPayload } |
-  { type: 'video-file-import', payload: VideoFileImportPayload } |
-  { type: 'video-transcoding', payload: VideoTranscodingPayload } |
-  { type: 'email', payload: EmailPayload } |
-  { type: 'transcoding-job-builder', payload: TranscodingJobBuilderPayload } |
-  { type: 'video-import', payload: VideoImportPayload } |
-  { type: 'activitypub-refresher', payload: RefreshPayload } |
-  { type: 'videos-views-stats', payload: {} } |
-  { type: 'video-live-ending', payload: VideoLiveEndingPayload } |
-  { type: 'actor-keys', payload: ActorKeysPayload } |
-  { type: 'video-redundancy', payload: VideoRedundancyPayload } |
-  { type: 'video-studio-edition', payload: VideoStudioEditionPayload } |
-  { type: 'manage-video-torrent', payload: ManageVideoTorrentPayload } |
-  { type: 'move-to-object-storage', payload: MoveStoragePayload } |
-  { type: 'move-to-file-system', payload: MoveStoragePayload } |
-  { type: 'video-channel-import', payload: VideoChannelImportPayload } |
-  { type: 'after-video-channel-import', payload: AfterVideoChannelImportPayload } |
-  { type: 'notify', payload: NotifyPayload } |
-  { type: 'federate-video', payload: FederateVideoPayload } |
-  { type: 'create-user-export', payload: CreateUserExportPayload } |
-  { type: 'generate-video-storyboard', payload: GenerateStoryboardPayload } |
-  { type: 'import-user-archive', payload: ImportUserArchivePayload } |
-  { type: 'video-transcription', payload: VideoTranscriptionPayload }
+const logger = createLogger('job-queue')
+
+export type CreateJobTypeAndPayload =
+  | { type: 'build-automatic-tags', payload: BuildAutomaticTagsPayload }
+  | { type: 'build-object-automatic-tags', payload: BuildObjectAutomaticTagsPayload }
+  | { type: 'activitypub-http-broadcast', payload: ActivitypubHttpBroadcastPayload }
+  | { type: 'activitypub-http-broadcast-parallel', payload: ActivitypubHttpBroadcastPayload }
+  | { type: 'activitypub-http-unicast', payload: ActivitypubHttpUnicastPayload }
+  | { type: 'activitypub-http-fetcher', payload: ActivitypubHttpFetcherPayload }
+  | { type: 'activitypub-cleaner', payload: {} }
+  | { type: 'activitypub-follow', payload: ActivitypubFollowPayload }
+  | { type: 'video-file-import', payload: VideoFileImportPayload }
+  | { type: 'video-transcoding', payload: VideoTranscodingPayload }
+  | { type: 'email', payload: EmailPayload }
+  | { type: 'transcoding-job-builder', payload: TranscodingJobBuilderPayload }
+  | { type: 'video-import', payload: VideoImportPayload }
+  | { type: 'activitypub-refresher', payload: RefreshPayload }
+  | { type: 'videos-stats', payload: {} }
+  | { type: 'video-live-ending', payload: VideoLiveEndingPayload }
+  | { type: 'actor-keys', payload: ActorKeysPayload }
+  | { type: 'video-redundancy', payload: VideoRedundancyPayload }
+  | { type: 'video-studio-edition', payload: VideoStudioEditionPayload }
+  | { type: 'manage-video-torrent', payload: ManageVideoTorrentPayload }
+  | { type: 'move-to-object-storage', payload: MoveStoragePayload }
+  | { type: 'move-to-file-system', payload: MoveStoragePayload }
+  | { type: 'video-channel-import', payload: VideoChannelImportPayload }
+  | { type: 'after-video-channel-import', payload: AfterVideoChannelImportPayload }
+  | { type: 'notify', payload: NotifyPayload }
+  | { type: 'federate-video', payload: FederateVideoPayload }
+  | { type: 'create-user-export', payload: CreateUserExportPayload }
+  | { type: 'generate-video-storyboard', payload: GenerateStoryboardPayload }
+  | { type: 'import-user-archive', payload: ImportUserArchivePayload }
+  | { type: 'video-transcription', payload: VideoTranscriptionPayload }
 
 export type CreateJobOptions = {
   delay?: number
   priority?: number
   failParentOnFailure?: boolean
+  deduplicationId?: string
+
+  // Instead of dropping the job added while another one with the same deduplication id is active,
+  // store it and automatically create it when the active job has finished
+  // It guarantees we don't miss a change that occurred during the processing of the active job
+  deduplicationKeepLastIfActive?: boolean
 }
 
-const handlers: { [id in JobType]: (job: Job) => Promise<any> } = {
+const handlers: { [id in JobType]: (job: Job, signal?: AbortSignal) => Promise<any> } = {
+  'build-automatic-tags': processBuildAutomaticTags,
+  'build-object-automatic-tags': processBuildObjectAutomaticTags,
   'activitypub-cleaner': processActivityPubCleaner,
   'activitypub-follow': processActivityPubFollow,
   'activitypub-http-broadcast-parallel': processActivityPubParallelHttpBroadcast,
@@ -136,7 +152,7 @@ const handlers: { [id in JobType]: (job: Job) => Promise<any> } = {
   'video-redundancy': processVideoRedundancy,
   'video-studio-edition': processVideoStudioEdition,
   'video-transcoding': processVideoTranscoding,
-  'videos-views-stats': processVideosViewsStats,
+  'videos-stats': processVideosStats,
   'generate-video-storyboard': processGenerateStoryboard,
   'create-user-export': processCreateUserExport,
   'import-user-archive': processImportUserArchive,
@@ -149,6 +165,8 @@ const errorHandlers: { [id in JobType]?: (job: Job, err: any) => Promise<any> } 
 }
 
 const jobTypes: JobType[] = [
+  'build-automatic-tags',
+  'build-object-automatic-tags',
   'activitypub-cleaner',
   'activitypub-follow',
   'activitypub-http-broadcast-parallel',
@@ -173,16 +191,17 @@ const jobTypes: JobType[] = [
   'video-redundancy',
   'video-studio-edition',
   'video-transcription',
-  'videos-views-stats',
+  'videos-stats',
   'create-user-export',
   'import-user-archive',
   'video-transcoding'
 ]
 
+const cancelableJobTypes: JobType[] = [ 'video-transcoding', 'video-transcription', 'video-studio-edition', 'generate-video-storyboard' ]
+
 const silentFailure = new Set<JobType>([ 'activitypub-http-unicast' ])
 
 class JobQueue {
-
   private static instance: JobQueue
 
   private workers: { [id in JobType]?: Worker } = {}
@@ -214,9 +233,17 @@ class JobQueue {
       connection: Redis.getRedisClientOptions('FlowProducer'),
       prefix: this.jobRedisPrefix
     })
-    this.flowProducer.on('error', err => { logger.error('Error in flow producer', { err }) })
+    this.flowProducer.on('error', err => {
+      logger.error('Error in flow producer', { err })
+    })
 
     this.addRepeatableJobs()
+
+    registerConfigChangedHandler(() => {
+      for (const handlerName of Object.keys(handlers)) {
+        this.workers[handlerName].concurrency = this.getJobConcurrency(handlerName)
+      }
+    })
   }
 
   private buildWorker (handlerName: JobType) {
@@ -228,19 +255,27 @@ class JobQueue {
       maxStalledCount: 10
     }
 
-    const handler = function (job: Job) {
+    const handler = function (options: { job: Job, signal: AbortSignal }) {
+      const { job, signal } = options
+
       const timeout = JOB_TTL[handlerName]
-      const p = handlers[handlerName](job)
+      if (!timeout) return handlers[handlerName](job, signal)
 
-      if (!timeout) return p
+      const timeoutId = setTimeout(() => {
+        worker.cancelJob(job.id, 'Timeout exceeded')
+      }, timeout)
 
-      return timeoutPromise(p, timeout)
+      return handlers[handlerName](job, signal)
+        .finally(() => clearTimeout(timeoutId))
     }
 
-    const processor = async (jobArg: Job<any>) => {
-      const job = await Hooks.wrapObject(jobArg, 'filter:job-queue.process.params', { type: handlerName })
+    const processor = (jobArg: Job, _, signal: AbortSignal) => {
+      // So every logger call performed by the handler is tagged with the job, without having to inject tags manually
+      return logger.withContext([ handlerName, jobArg.id ], async () => {
+        const job = await Hooks.wrapObject(jobArg, 'filter:job-queue.process.params', { type: handlerName })
 
-      return Hooks.wrapPromiseFun(handler, job, 'filter:job-queue.process.result')
+        return Hooks.wrapPromiseFun(handler, { job, signal }, 'filter:job-queue.process.result')
+      })
     }
 
     const worker = new Worker(handlerName, processor, workerOptions)
@@ -252,13 +287,15 @@ class JobQueue {
 
       logger.log(logLevel, 'Cannot execute job %s in queue %s.', job.id, handlerName, { payload: job.data, err })
 
-      if (errorHandlers[job.name]) {
-        errorHandlers[job.name](job, err)
+      if (job.attemptsMade < job.opts.attempts && errorHandlers[handlerName]) {
+        errorHandlers[handlerName](job, err)
           .catch(err => logger.error('Cannot run error handler for job failure %d in queue %s.', job.id, handlerName, { err }))
       }
     })
 
-    worker.on('error', err => { logger.error('Error in job worker %s.', handlerName, { err }) })
+    worker.on('error', err => {
+      logger.error('Error in job worker %s.', handlerName, { err })
+    })
 
     this.workers[handlerName] = worker
   }
@@ -270,7 +307,9 @@ class JobQueue {
     }
 
     const queue = new Queue(handlerName, queueOptions)
-    queue.on('error', err => { logger.error('Error in job queue %s.', handlerName, { err }) })
+    queue.on('error', err => {
+      logger.error('Error in job queue %s.', handlerName, { err })
+    })
 
     this.queues[handlerName] = queue
 
@@ -286,14 +325,17 @@ class JobQueue {
     }
 
     const queueEvents = new QueueEvents(handlerName, queueEventsOptions)
-    queueEvents.on('error', err => { logger.error('Error in job queue events %s.', handlerName, { err }) })
+    queueEvents.on('error', err => {
+      logger.error('Error in job queue events %s.', handlerName, { err })
+    })
 
     this.queueEvents[handlerName] = queueEvents
   }
 
   // ---------------------------------------------------------------------------
 
-  async terminate () {
+  // Use force: true to not wait for active jobs to complete (they will be retried when detected as stalled)
+  async terminate (options: { force: boolean }) {
     const promises = Object.keys(this.workers)
       .map(handlerName => {
         const worker: Worker = this.workers[handlerName]
@@ -301,7 +343,7 @@ class JobQueue {
         const queueEvent: QueueEvents = this.queueEvents[handlerName]
 
         return Promise.all([
-          worker.close(false),
+          worker.close(options.force),
           queue.close(),
           queueEvent.close()
         ])
@@ -333,22 +375,22 @@ class JobQueue {
     }
   }
 
-  resume () {
+  async resume () {
     for (const handlerName of Object.keys(this.workers)) {
       const worker: Worker = this.workers[handlerName]
 
-      worker.resume()
+      await worker.resume()
     }
   }
 
   // ---------------------------------------------------------------------------
 
-  createJobAsync (options: CreateJobArgument & CreateJobOptions): void {
+  createJobAsync (options: CreateJobTypeAndPayload & CreateJobOptions): void {
     this.createJob(options)
-        .catch(err => logger.error('Cannot create job.', { err, options }))
+      .catch(err => logger.error('Cannot create job.', { err, options }))
   }
 
-  createJob (options: CreateJobArgument & CreateJobOptions | undefined) {
+  createJob (options: CreateJobTypeAndPayload & CreateJobOptions | undefined) {
     if (!options) return
 
     const queue: Queue = this.queues[options.type]
@@ -357,12 +399,15 @@ class JobQueue {
       return
     }
 
-    const jobOptions = this.buildJobOptions(options.type as JobType, pick(options, [ 'priority', 'delay' ]))
+    const jobOptions = this.buildJobOptions(
+      options.type,
+      pick(options, [ 'priority', 'delay', 'deduplicationId', 'deduplicationKeepLastIfActive' ])
+    )
 
     return queue.add('job', options.payload, jobOptions)
   }
 
-  createSequentialJobFlow (...jobs: ((CreateJobArgument & CreateJobOptions) | undefined)[]) {
+  createSequentialJobFlow (...jobs: ((CreateJobTypeAndPayload & CreateJobOptions) | undefined)[]) {
     let lastJob: FlowJob
 
     logger.debug('Creating jobs in local job queue', { jobs })
@@ -382,7 +427,7 @@ class JobQueue {
     return this.flowProducer.add(lastJob)
   }
 
-  createJobWithChildren (parent: CreateJobArgument & CreateJobOptions, children: (CreateJobArgument & CreateJobOptions)[]) {
+  createJobWithChildren (parent: CreateJobTypeAndPayload & CreateJobOptions, children: (CreateJobTypeAndPayload & CreateJobOptions)[]) {
     return this.flowProducer.add({
       ...this.buildJobFlowOption(parent),
 
@@ -390,7 +435,7 @@ class JobQueue {
     })
   }
 
-  private buildJobFlowOption (job: CreateJobArgument & CreateJobOptions): FlowJob {
+  private buildJobFlowOption (job: CreateJobTypeAndPayload & CreateJobOptions): FlowJob {
     return {
       name: 'job',
       data: job.payload,
@@ -398,7 +443,10 @@ class JobQueue {
       opts: {
         failParentOnFailure: true,
 
-        ...this.buildJobOptions(job.type as JobType, pick(job, [ 'priority', 'delay', 'failParentOnFailure' ]))
+        ...this.buildJobOptions(
+          job.type,
+          pick(job, [ 'priority', 'delay', 'failParentOnFailure', 'deduplicationId', 'deduplicationKeepLastIfActive' ])
+        )
       }
     }
   }
@@ -409,6 +457,13 @@ class JobQueue {
       attempts: JOB_ATTEMPTS[type],
       priority: options.priority,
       delay: options.delay,
+
+      deduplication: options.deduplicationId
+        ? {
+          id: options.deduplicationId,
+          keepLastIfActive: options.deduplicationKeepLastIfActive
+        }
+        : undefined,
 
       ...this.buildJobRemovalOptions(type)
     }
@@ -438,10 +493,7 @@ class JobQueue {
         continue
       }
 
-      let jobs = await queue.getJobs(states, 0, start + count, asc)
-
-      // FIXME: we have sometimes undefined values https://github.com/taskforcesh/bullmq/issues/248
-      jobs = jobs.filter(j => !!j)
+      const jobs = await queue.getJobs(states, 0, start + count, asc)
 
       results = results.concat(jobs)
     }
@@ -474,15 +526,39 @@ class JobQueue {
       const counts = await queue.getJobCounts()
 
       for (const s of states) {
-        total += counts[s]
+        total += counts[s] ?? 0
       }
     }
 
     return total
   }
 
+  async getJob (jobType: JobType, jobId: string): Promise<Job> {
+    const queue = this.queues[jobType]
+    if (!queue) throw new Error(`Unknown queue ${jobType}`)
+
+    return queue.getJob(jobId)
+  }
+
+  async canCancelJob (jobType: JobType, job: Job) {
+    if (!cancelableJobTypes.includes(jobType)) return false
+
+    const isActive = await job.isActive()
+
+    return isActive
+  }
+
+  cancelJob (jobType: JobType, job: Job) {
+    logger.info('Cancelling job %s in queue %s.', job.id, job.queueName)
+
+    const worker = this.workers[jobType]
+    if (!worker) throw new Error(`Unknown queue ${jobType}`)
+
+    return worker.cancelJob(job.id, 'Job cancelled by admin')
+  }
+
   private buildStateFilter (state?: JobState) {
-    if (!state) return Array.from(jobStates)
+    if (!state) return Array.from(allJobStates)
 
     const states = [ state ]
 
@@ -510,18 +586,41 @@ class JobQueue {
   // ---------------------------------------------------------------------------
 
   private addRepeatableJobs () {
-    this.queues['videos-views-stats'].add('job', {}, {
-      repeat: REPEAT_JOBS['videos-views-stats'],
-
-      ...this.buildJobRemovalOptions('videos-views-stats')
-    }).catch(err => logger.error('Cannot add repeatable job.', { err }))
+    this.pruneRepeatableJobs(this.queues['videos-stats'], 'videos-stats')
+      .then(() =>
+        this.queues['videos-stats'].upsertJobScheduler(
+          'videos-stats',
+          REPEAT_JOBS['videos-stats'],
+          { opts: this.buildJobRemovalOptions('videos-stats') }
+        )
+      ).catch(err => logger.error('Cannot add repeatable job.', { err }))
 
     if (CONFIG.FEDERATION.VIDEOS.CLEANUP_REMOTE_INTERACTIONS) {
-      this.queues['activitypub-cleaner'].add('job', {}, {
-        repeat: REPEAT_JOBS['activitypub-cleaner'],
+      this.pruneRepeatableJobs(this.queues['activitypub-cleaner'], 'activitypub-cleaner')
+        .then(() =>
+          this.queues['activitypub-cleaner'].upsertJobScheduler(
+            'activitypub-cleaner',
+            REPEAT_JOBS['activitypub-cleaner'],
+            { opts: this.buildJobRemovalOptions('activitypub-cleaner') }
+          )
+        ).catch(err => logger.error('Cannot add repeatable job.', { err }))
+    } else {
+      // Remove everything: it may have been added by a previous run where the config flag was enabled,
+      // either as a job scheduler or (before this fix) as a legacy repeatable job
+      this.pruneRepeatableJobs(this.queues['activitypub-cleaner'])
+        .catch(err => logger.error('Cannot remove repeatable job.', { err }))
+    }
+  }
 
-        ...this.buildJobRemovalOptions('activitypub-cleaner')
-      }).catch(err => logger.error('Cannot add repeatable job.', { err }))
+  // Removes repeatable jobs (job schedulers and legacy repeatable jobs added by older PeerTube versions)
+  private async pruneRepeatableJobs (queue: Queue, keepSchedulerId?: string) {
+    const jobSchedulers = await queue.getJobSchedulers()
+
+    for (const jobScheduler of jobSchedulers) {
+      if (jobScheduler.key === keepSchedulerId) continue
+
+      await queue.removeJobScheduler(jobScheduler.key)
+        .catch(err => logger.error('Cannot remove stale repeatable job.', { err, key: jobScheduler.key }))
     }
   }
 
@@ -544,7 +643,7 @@ class JobQueue {
         // Wants seconds
         age: (JOB_REMOVAL_OPTIONS.FAILURE[queueName] || JOB_REMOVAL_OPTIONS.FAILURE.DEFAULT) / 1000,
 
-        count: JOB_REMOVAL_OPTIONS.COUNT / 1000
+        count: JOB_REMOVAL_OPTIONS.COUNT
       }
     }
   }
@@ -557,5 +656,6 @@ class JobQueue {
 // ---------------------------------------------------------------------------
 
 export {
-  JobQueue, jobTypes
+  JobQueue,
+  jobTypes
 }

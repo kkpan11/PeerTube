@@ -4,15 +4,16 @@ import {
   AbuseObject,
   AbusePredefinedReasonsString,
   AbusePredefinedReasonsType,
+  AbuseState,
   AbuseVideoIs,
   AdminAbuse,
   AdminVideoAbuse,
   AdminVideoCommentAbuse,
   UserAbuse,
   UserVideoAbuse,
-  type AbuseStateType,
-  AbuseState
+  type AbuseStateType
 } from '@peertube/peertube-models'
+import { uuidToShort } from '@peertube/peertube-node-utils'
 import { isAbuseModerationCommentValid, isAbuseReasonValid, isAbuseStateValid } from '@server/helpers/custom-validators/abuses.js'
 import invert from 'lodash-es/invert.js'
 import { Op, QueryTypes, literal } from 'sequelize'
@@ -25,7 +26,8 @@ import {
   Default,
   ForeignKey,
   HasOne,
-  Is, Scopes,
+  Is,
+  Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
@@ -38,11 +40,11 @@ import {
   MAbuseUserFormattable,
   MUserAccountId
 } from '../../types/models/index.js'
-import { AccountModel, ScopeNames as AccountScopeNames, SummaryOptions as AccountSummaryOptions } from '../account/account.js'
+import { AccountModel, ScopeNames as AccountScopeNames } from '../account/account.js'
 import { SequelizeModel, getSort, parseAggregateResult, throwIfNotValid } from '../shared/index.js'
-import { ThumbnailModel } from '../video/thumbnail.js'
+import { ThumbnailModel, thumbnailAPIAttributes } from '../video/thumbnail.js'
 import { VideoBlacklistModel } from '../video/video-blacklist.js'
-import { SummaryOptions as ChannelSummaryOptions, VideoChannelModel, ScopeNames as VideoChannelScopeNames } from '../video/video-channel.js'
+import { VideoChannelModel, ScopeNames as VideoChannelScopeNames } from '../video/video-channel.js'
 import { ScopeNames as CommentScopeNames, VideoCommentModel } from '../video/video-comment.js'
 import { VideoModel, ScopeNames as VideoScopeNames } from '../video/video.js'
 import { BuildAbusesQueryOptions, buildAbuseListQuery } from './sql/abuse-query-builder.js'
@@ -64,7 +66,7 @@ export enum ScopeNames {
                 'SELECT count(*) ' +
                 'FROM "abuseMessage" ' +
                 'WHERE "abuseId" = "AbuseModel"."id"' +
-              ')'
+                ')'
             ),
             'countMessages'
           ],
@@ -76,7 +78,7 @@ export enum ScopeNames {
                 'FROM "videoAbuse" ' +
                 'WHERE "videoId" IN (SELECT "videoId" FROM "videoAbuse" WHERE "abuseId" = "AbuseModel"."id") ' +
                 'AND "videoId" IS NOT NULL' +
-              ')'
+                ')'
             ),
             'countReportsForVideo'
           ],
@@ -86,11 +88,11 @@ export enum ScopeNames {
               '(' +
                 'SELECT t.nth ' +
                 'FROM ( ' +
-                  'SELECT id, "abuseId", row_number() OVER (PARTITION BY "videoId" ORDER BY "createdAt") AS nth ' +
-                  'FROM "videoAbuse" ' +
+                'SELECT id, "abuseId", row_number() OVER (PARTITION BY "videoId" ORDER BY "createdAt") AS nth ' +
+                'FROM "videoAbuse" ' +
                 ') t ' +
                 'WHERE t."abuseId" = "AbuseModel"."id" ' +
-              ')'
+                ')'
             ),
             'nthReportForVideo'
           ],
@@ -100,7 +102,7 @@ export enum ScopeNames {
                 'SELECT count("abuse"."id") ' +
                 'FROM "abuse" ' +
                 'WHERE "abuse"."reporterAccountId" = "AbuseModel"."reporterAccountId"' +
-              ')'
+                ')'
             ),
             'countReportsForReporter'
           ],
@@ -110,7 +112,7 @@ export enum ScopeNames {
                 'SELECT count("abuse"."id") ' +
                 'FROM "abuse" ' +
                 'WHERE "abuse"."flaggedAccountId" = "AbuseModel"."flaggedAccountId"' +
-              ')'
+                ')'
             ),
             'countReportsForReportee'
           ]
@@ -121,7 +123,7 @@ export enum ScopeNames {
           model: AccountModel.scope({
             method: [
               AccountScopeNames.SUMMARY,
-              { actorRequired: false } as AccountSummaryOptions
+              { actorRequired: false }
             ]
           }),
           as: 'ReporterAccount'
@@ -130,7 +132,7 @@ export enum ScopeNames {
           model: AccountModel.scope({
             method: [
               AccountScopeNames.SUMMARY,
-              { actorRequired: false } as AccountSummaryOptions
+              { actorRequired: false }
             ]
           }),
           as: 'FlaggedAccount'
@@ -157,14 +159,14 @@ export enum ScopeNames {
               model: VideoModel.unscoped(),
               include: [
                 {
-                  attributes: [ 'filename', 'fileUrl', 'type' ],
+                  attributes: thumbnailAPIAttributes,
                   model: ThumbnailModel
                 },
                 {
                   model: VideoChannelModel.scope({
                     method: [
                       VideoChannelScopeNames.SUMMARY,
-                      { withAccount: false, actorRequired: false } as ChannelSummaryOptions
+                      { withAccount: false, actorRequired: false }
                     ]
                   }),
                   required: false
@@ -194,43 +196,42 @@ export enum ScopeNames {
   ]
 })
 export class AbuseModel extends SequelizeModel<AbuseModel> {
-
   @AllowNull(false)
   @Default(null)
   @Is('AbuseReason', value => throwIfNotValid(value, isAbuseReasonValid, 'reason'))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ABUSES.REASON.max))
-  reason: string
+  declare reason: string
 
   @AllowNull(false)
   @Default(null)
   @Is('AbuseState', value => throwIfNotValid(value, isAbuseStateValid, 'state'))
   @Column
-  state: AbuseStateType
+  declare state: AbuseStateType
 
   @AllowNull(true)
   @Default(null)
   @Is('AbuseModerationComment', value => throwIfNotValid(value, isAbuseModerationCommentValid, 'moderationComment', true))
   @Column(DataType.STRING(CONSTRAINTS_FIELDS.ABUSES.MODERATION_COMMENT.max))
-  moderationComment: string
+  declare moderationComment: string
 
   @AllowNull(true)
   @Default(null)
   @Column(DataType.ARRAY(DataType.INTEGER))
-  predefinedReasons: AbusePredefinedReasonsType[]
+  declare predefinedReasons: AbusePredefinedReasonsType[]
 
   @AllowNull(true)
   @Column
-  processedAt: Date
+  declare processedAt: Date
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @ForeignKey(() => AccountModel)
   @Column
-  reporterAccountId: number
+  declare reporterAccountId: number
 
   @BelongsTo(() => AccountModel, {
     foreignKey: {
@@ -240,11 +241,11 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     as: 'ReporterAccount',
     onDelete: 'set null'
   })
-  ReporterAccount: Awaited<AccountModel>
+  declare ReporterAccount: Awaited<AccountModel>
 
   @ForeignKey(() => AccountModel)
   @Column
-  flaggedAccountId: number
+  declare flaggedAccountId: number
 
   @BelongsTo(() => AccountModel, {
     foreignKey: {
@@ -254,7 +255,7 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     as: 'FlaggedAccount',
     onDelete: 'set null'
   })
-  FlaggedAccount: Awaited<AccountModel>
+  declare FlaggedAccount: Awaited<AccountModel>
 
   @HasOne(() => VideoCommentAbuseModel, {
     foreignKey: {
@@ -263,7 +264,7 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     },
     onDelete: 'cascade'
   })
-  VideoCommentAbuse: Awaited<VideoCommentAbuseModel>
+  declare VideoCommentAbuse: Awaited<VideoCommentAbuseModel>
 
   @HasOne(() => VideoAbuseModel, {
     foreignKey: {
@@ -272,7 +273,7 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     },
     onDelete: 'cascade'
   })
-  VideoAbuse: Awaited<VideoAbuseModel>
+  declare VideoAbuse: Awaited<VideoAbuseModel>
 
   static loadByIdWithReporter (id: number): Promise<MAbuseReporter> {
     const query = {
@@ -448,8 +449,8 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
   static getStats () {
     const query = `SELECT ` +
       `AVG(EXTRACT(EPOCH FROM ("processedAt" - "createdAt") * 1000)) ` +
-        `FILTER (WHERE "processedAt" IS NOT NULL AND "createdAt" > CURRENT_DATE - INTERVAL '3 months')` +
-        `AS "avgResponseTime", ` +
+      `FILTER (WHERE "processedAt" IS NOT NULL AND "createdAt" > CURRENT_DATE - INTERVAL '3 months')` +
+      `AS "avgResponseTime", ` +
       // "processedAt" has been introduced in PeerTube 6.1 so also check the abuse state to check processed abuses
       `COUNT(*) FILTER (WHERE "processedAt" IS NOT NULL OR "state" != ${AbuseState.PENDING}) AS "processedAbuses", ` +
       `COUNT(*) AS "totalAbuses" ` +
@@ -501,20 +502,25 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     const abuseModel = this.VideoAbuse
     const entity = abuseModel.Video || abuseModel.deletedVideo
 
+    const video = abuseModel.Video
+
     return {
       id: entity.id,
       uuid: entity.uuid,
+      shortUUID: uuidToShort(entity.uuid),
       name: entity.name,
       nsfw: entity.nsfw,
 
       startAt: abuseModel.startAt,
       endAt: abuseModel.endAt,
 
-      deleted: !abuseModel.Video,
-      blacklisted: abuseModel.Video?.isBlacklisted() || false,
-      thumbnailPath: abuseModel.Video?.getMiniatureStaticPath(),
+      deleted: !video,
+      blacklisted: video?.isBlacklisted() || false,
 
-      channel: abuseModel.Video?.VideoChannel.toFormattedJSON() || abuseModel.deletedVideo?.channel
+      thumbnailPath: video?.getSmallestThumbnailStaticPath('16:9'),
+      thumbnails: video?.Thumbnails.map(t => t.toFormattedJSON()) || [],
+
+      channel: video?.VideoChannel.toFormattedJSON() || abuseModel.deletedVideo?.channel
     }
   }
 
@@ -573,8 +579,8 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
         ? this.ReporterAccount.toFormattedJSON()
         : null,
 
-      countReportsForReporter: (countReportsForReporter || 0),
-      countReportsForReportee: (countReportsForReportee || 0)
+      countReportsForReporter: countReportsForReporter || 0,
+      countReportsForReportee: countReportsForReportee || 0
     })
   }
 
@@ -600,7 +606,7 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     const endAt = this.VideoAbuse?.endAt
 
     return {
-      type: 'Flag' as 'Flag',
+      type: 'Flag',
       content: this.reason,
       mediaType: 'text/markdown',
       object,
@@ -639,15 +645,15 @@ export class AbuseModel extends SequelizeModel<AbuseModel> {
     if (ids.length === 0) return []
 
     return AbuseModel.scope(ScopeNames.FOR_API)
-                     .findAll({
-                       order: getSort(parameters.sort),
-                       where: {
-                         id: {
-                           [Op.in]: ids
-                         }
-                       },
-                       limit: parameters.count
-                     })
+      .findAll({
+        order: getSort(parameters.sort),
+        where: {
+          id: {
+            [Op.in]: ids
+          }
+        },
+        limit: parameters.count
+      })
   }
 
   private static getStateLabel (id: number) {

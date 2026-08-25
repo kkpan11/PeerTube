@@ -1,4 +1,12 @@
-import { HttpMethodType, PeerTubeProblemDocumentData, ServerLogLevel, VideoCreate } from '@peertube/peertube-models'
+import {
+  HttpMethodType,
+  HttpStatusCodeType,
+  PeerTubeProblemDocumentData,
+  ServerErrorCodeType,
+  ServerLogLevel,
+  VideoCreate
+} from '@peertube/peertube-models'
+import { SignupMode } from '@server/lib/signup.ts'
 import { RegisterServerAuthExternalOptions } from '@server/types/index.js'
 import {
   MAbuseMessage,
@@ -6,30 +14,39 @@ import {
   MAccountBlocklist,
   MActorFollowActorsDefault,
   MActorUrl,
+  MBlocklistSubscription,
+  MChangeOwnershipFull,
   MChannelBannerAccountDefault,
+  MChannelCollaboratorAccount,
   MChannelSyncChannel,
+  MLocalVideoViewerWithWatchSections,
   MRegistration,
   MStreamingPlaylist,
   MUserAccountUrl,
   MUserExport,
-  MVideoChangeOwnershipFull,
+  MVideoEmbedDomain,
   MVideoFile,
   MVideoFormattableDetails,
   MVideoId,
   MVideoImmutable,
-  MVideoLiveFormattable,
+  MVideoLiveSessionReplay,
+  MVideoLiveWithSettingSchedules,
   MVideoPassword,
   MVideoPlaylistFull,
   MVideoPlaylistFullSummary,
-  MVideoThumbnailBlacklist,
-  MWatchedWordsList
+  MVideoThumbnails,
+  MVideoWithBlacklist,
+  MVideoWithRights,
+  MWatchedWordsList,
+  MWatchedWordsSubscription
 } from '@server/types/models/index.js'
-import { MOAuthTokenUser } from '@server/types/models/oauth/oauth-token.js'
+import { MOAuthToken, MOAuthTokenUser } from '@server/types/models/oauth/oauth-token.js'
 import { MPlugin, MServer, MServerBlocklist } from '@server/types/models/server.js'
 import { MVideoImportDefault } from '@server/types/models/video/video-import.js'
 import { MVideoPlaylistElement, MVideoPlaylistElementVideoUrlPlaylistPrivacy } from '@server/types/models/video/video-playlist-element.js'
 import { MAccountVideoRateAccountVideo } from '@server/types/models/video/video-rate.js'
 import { Metadata, File as UploadXFile } from '@uploadx/core'
+import { Job as BullJob } from 'bullmq'
 import { FfprobeData } from 'fluent-ffmpeg'
 import { OutgoingHttpHeaders } from 'http'
 import { Writable } from 'stream'
@@ -42,9 +59,10 @@ import {
   MComment,
   MCommentOwnerVideoReply,
   MUserDefault,
+  MVideoAP,
   MVideoBlacklist,
   MVideoCaptionVideo,
-  MVideoFullLight,
+  MVideoFull,
   MVideoRedundancyVideo,
   MVideoShareActor
 } from './models/index.js'
@@ -56,6 +74,8 @@ declare module 'express' {
     query: any
     method: HttpMethodType
     rawBody: Buffer // Allow plugin routes to access the raw body
+
+    t: (key: string, context?: Record<string, string | number>) => string
   }
 
   // ---------------------------------------------------------------------------
@@ -77,8 +97,8 @@ declare module 'express' {
   // ---------------------------------------------------------------------------
 
   // Upload file with a duration added by our middleware
-  export type VideoLegacyUploadFile = Pick<Express.Multer.File, 'path' | 'filename' | 'size', 'originalname'> & {
-    duration: number
+  export type VideoLegacyUploadFile = Pick<Express.Multer.File, 'path' | 'filename' | 'size' | 'originalname'> & {
+    duration?: number
   }
 
   // Our custom UploadXFile object using our custom metadata
@@ -105,8 +125,8 @@ declare module 'express' {
       message: string
 
       title?: string
-      status?: number
-      type?: ServerErrorCode | string
+      status?: HttpStatusCodeType
+      type?: ServerErrorCodeType
       instance?: string
 
       data?: PeerTubeProblemDocumentData
@@ -116,6 +136,8 @@ declare module 'express' {
     }) => void
 
     locals: {
+      signupMode?: SignupMode
+
       requestStart: number
 
       apicacheGroups: string[]
@@ -134,13 +156,16 @@ declare module 'express' {
       ffprobe?: FfprobeData
 
       videoAPI?: MVideoFormattableDetails
-      videoAll?: MVideoFullLight
-      onlyImmutableVideo?: MVideoImmutable
-      onlyVideo?: MVideoThumbnailBlacklist
+      videoAP?: MVideoAP
+      videoFull?: MVideoFull
+      videoImmutable?: MVideoImmutable
+      videoWithBlacklist?: MVideoWithBlacklist
+      videoWithRights?: MVideoWithRights
+      videoThumbnails?: MVideoThumbnails
       videoId?: MVideoId
 
-      videoLive?: MVideoLiveFormattable
-      videoLiveSession?: MVideoLiveSession
+      videoLive?: MVideoLiveWithSettingSchedules
+      videoLiveSession?: MVideoLiveSessionReplay
 
       videoShare?: MVideoShareActor
 
@@ -187,8 +212,10 @@ declare module 'express' {
       follow?: MActorFollowActorsDefault
       subscription?: MActorFollowActorsDefaultSubscription
 
-      nextOwner?: MAccountDefault
-      videoChangeOwnership?: MVideoChangeOwnershipFull
+      changeOwnership?: MChangeOwnershipFull
+      changeOwnershipNextOwner?: MAccountDefault
+
+      videoEmbedDomain?: MVideoEmbedDomain
 
       account?: MAccountDefault
 
@@ -197,6 +224,9 @@ declare module 'express' {
 
       user?: MUserDefault
       userRegistration?: MRegistration
+      // For verification links
+      userEmail?: MUserDefault
+      userPendingEmail?: MUserDefault
 
       server?: MServer
 
@@ -234,6 +264,15 @@ declare module 'express' {
       userExport?: MUserExport
 
       watchedWordsList?: MWatchedWordsList
+      watchedWordsSubscription?: MWatchedWordsSubscription
+
+      tokenSession?: MOAuthToken
+
+      channelCollaborator?: MChannelCollaboratorAccount
+
+      blocklistSubscription?: MBlocklistSubscription
+
+      job?: BullJob
     }
   }
 }

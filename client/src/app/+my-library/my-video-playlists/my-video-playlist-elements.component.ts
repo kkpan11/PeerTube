@@ -1,6 +1,5 @@
 import { CdkDrag, CdkDragDrop, CdkDropList } from '@angular/cdk/drag-drop'
-import { NgFor, NgIf } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { Component, OnDestroy, OnInit, inject, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { ActivatedRoute, Router } from '@angular/router'
 import { ComponentPagination, ConfirmService, HooksService, Notifier, ScreenService, updatePaginationOnDelete } from '@app/core'
 import { ButtonComponent } from '@app/shared/shared-main/buttons/button.component'
@@ -10,7 +9,6 @@ import { VideoPlaylist } from '@app/shared/shared-video-playlist/video-playlist.
 import { VideoPlaylistService } from '@app/shared/shared-video-playlist/video-playlist.service'
 import { VideoPlaylistType } from '@peertube/peertube-models'
 import { Subject, Subscription } from 'rxjs'
-
 import { ActionDropdownComponent, DropdownAction } from '../../shared/shared-main/buttons/action-dropdown.component'
 import { InfiniteScrollerDirective } from '../../shared/shared-main/common/infinite-scroller.directive'
 import { VideoPlaylistElementMiniatureComponent } from '../../shared/shared-video-playlist/video-playlist-element-miniature.component'
@@ -19,14 +17,13 @@ import { VideoPlaylistMiniatureComponent } from '../../shared/shared-video-playl
 @Component({
   templateUrl: './my-video-playlist-elements.component.html',
   styleUrls: [ './my-video-playlist-elements.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     ButtonComponent,
     VideoPlaylistMiniatureComponent,
     ActionDropdownComponent,
     InfiniteScrollerDirective,
     CdkDropList,
-    NgFor,
     CdkDrag,
     VideoPlaylistElementMiniatureComponent,
     VideoShareComponent
@@ -42,6 +39,8 @@ export class MyVideoPlaylistElementsComponent implements OnInit, OnDestroy {
   private videoPlaylistService = inject(VideoPlaylistService)
 
   readonly videoShareModal = viewChild<VideoShareComponent>('videoShareModal')
+
+  private errored = false
 
   playlistElements: VideoPlaylistElement[] = []
   playlist: VideoPlaylist
@@ -103,13 +102,13 @@ export class MyVideoPlaylistElementsComponent implements OnInit, OnDestroy {
     this.playlistElements.splice(previousIndex, 1)
     this.playlistElements.splice(newIndex, 0, element)
 
-    this.videoPlaylistService.reorderPlaylist(this.playlist.id, oldPosition, insertAfter)
+    this.videoPlaylistService.reorderVideosOfPlaylist(this.playlist.id, oldPosition, insertAfter)
       .subscribe({
         next: () => {
           this.reorderClientPositions()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -155,7 +154,7 @@ export class MyVideoPlaylistElementsComponent implements OnInit, OnDestroy {
           this.notifier.success($localize`Playlist ${videoPlaylist.displayName} deleted.`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -181,18 +180,36 @@ export class MyVideoPlaylistElementsComponent implements OnInit, OnDestroy {
       'my-library',
       'filter:api.my-library.video-playlist-elements.list.params',
       'filter:api.my-library.video-playlist-elements.list.result'
-    ).subscribe(({ total, data }) => {
-      this.playlistElements = this.playlistElements.concat(data)
-      this.pagination.totalItems = total
+    ).subscribe({
+      next: ({ total, data }) => {
+        this.playlistElements = this.playlistElements.concat(data)
+        this.pagination.totalItems = total
 
-      this.onDataSubject.next(data)
+        this.onDataSubject.next(data)
+      },
+
+      error: err => {
+        if (!this.errored) {
+          this.notifier.handleError(err)
+          this.errored = true
+        }
+      }
     })
   }
 
   private loadPlaylistInfo () {
     this.videoPlaylistService.getVideoPlaylist(this.videoPlaylistId)
-      .subscribe(playlist => {
-        this.playlist = playlist
+      .subscribe({
+        next: playlist => {
+          this.playlist = playlist
+        },
+
+        error: err => {
+          if (!this.errored) {
+            this.notifier.handleError(err)
+            this.errored = true
+          }
+        }
       })
   }
 

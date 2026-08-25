@@ -1,13 +1,11 @@
-import { HttpStatusCode, LiveVideo, VideoDetails, VideoToken } from '@peertube/peertube-models'
+import { HttpStatusCode, LiveVideo, VideoDetails, VideoEmbedPrivacyAllowed, VideoToken } from '@peertube/peertube-models'
 import { logger } from '../../../root-helpers'
 import { PeerTubeServerError } from '../../../types'
 import { AuthHTTP } from './auth-http'
 import { getBackendUrl } from './url'
 
 export class VideoFetcher {
-
   constructor (private readonly http: AuthHTTP) {
-
   }
 
   async loadVideo ({ videoId, videoPassword }: { videoId: string, videoPassword?: string }) {
@@ -19,32 +17,37 @@ export class VideoFetcher {
     try {
       videoResponse = await videoPromise
       isResponseOk = videoResponse.status === HttpStatusCode.OK_200
-    } catch (err) {
+    } catch (err: any) {
       logger.error(err)
 
       isResponseOk = false
     }
 
     if (!isResponseOk) {
-      if (videoResponse?.status === HttpStatusCode.NOT_FOUND_404) {
+      const status = videoResponse?.status
+
+      if (status === HttpStatusCode.NOT_FOUND_404) {
         throw new Error('This video does not exist.')
       }
-      if (videoResponse?.status === HttpStatusCode.FORBIDDEN_403) {
+
+      if (status === HttpStatusCode.UNAUTHORIZED_401 || status === HttpStatusCode.FORBIDDEN_403) {
         const res = await videoResponse.json()
         throw new PeerTubeServerError(res.message || res.detail, res.code)
       }
+
       throw new Error('We cannot fetch the video. Please try again later.')
     }
 
     const captionsPromise = this.loadVideoCaptions({ videoId, videoPassword })
     const chaptersPromise = this.loadVideoChapters({ videoId, videoPassword })
     const storyboardsPromise = this.loadStoryboards(videoId)
+    const playerSettingsPromise = this.loadPlayerSettings({ videoId, videoPassword })
 
-    return { captionsPromise, chaptersPromise, storyboardsPromise, videoResponse }
+    return { captionsPromise, chaptersPromise, storyboardsPromise, videoResponse, playerSettingsPromise }
   }
 
-  loadLive (video: VideoDetails) {
-    return this.http.fetch(this.getLiveUrl(video.uuid), { optionalAuth: true })
+  loadLive (video: VideoDetails, videoPassword?: string) {
+    return this.http.fetch(this.getLiveUrl(video.uuid), { optionalAuth: true }, videoPassword)
       .then(res => res.json() as Promise<LiveVideo>)
   }
 
@@ -52,6 +55,17 @@ export class VideoFetcher {
     return this.http.fetch(this.getVideoTokenUrl(video.uuid), { optionalAuth: true, method: 'POST' }, videoPassword)
       .then(res => res.json() as Promise<VideoToken>)
       .then(token => token.files.token)
+  }
+
+  loadEmbedAllowed (video: VideoDetails): Promise<boolean> {
+    if (!document.referrer) return Promise.resolve(false)
+
+    const params = new URLSearchParams()
+    params.append('domain', new URL(document.referrer).host)
+
+    return this.http.fetch(this.getVideoUrl(video.uuid) + '/embed-privacy/allowed?' + params.toString(), { optionalAuth: false })
+      .then(res => res.json() as Promise<VideoEmbedPrivacyAllowed>)
+      .then(({ domainAllowed }) => domainAllowed)
   }
 
   getVideoViewsUrl (videoUUID: string) {
@@ -70,8 +84,16 @@ export class VideoFetcher {
     return this.http.fetch(this.getVideoUrl(videoId) + '/chapters', { optionalAuth: true }, videoPassword)
   }
 
+  private loadPlayerSettings ({ videoId, videoPassword }: { videoId: string, videoPassword?: string }): Promise<Response> {
+    return this.http.fetch(this.getPlayerSettingsUrl(videoId), { optionalAuth: true }, videoPassword)
+  }
+
   private getVideoUrl (id: string) {
     return getBackendUrl() + '/api/v1/videos/' + id
+  }
+
+  private getPlayerSettingsUrl (id: string) {
+    return getBackendUrl() + '/api/v1/player-settings/videos/' + id
   }
 
   private getLiveUrl (videoId: string) {

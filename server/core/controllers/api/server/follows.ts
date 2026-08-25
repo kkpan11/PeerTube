@@ -1,7 +1,7 @@
 import express from 'express'
 import { HttpStatusCode, ServerFollowCreate, UserRight } from '@peertube/peertube-models'
 import { getServerActor } from '@server/models/application/application.js'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { getFormattedObjects } from '../../../helpers/utils.js'
 import { sequelizeTypescript } from '../../../initializers/database.js'
 import { autoFollowBackIfNeeded } from '../../../lib/activitypub/follow.js'
@@ -29,8 +29,11 @@ import {
 } from '../../../middlewares/validators/index.js'
 import { ActorFollowModel } from '../../../models/actor/actor-follow.js'
 
+const logger = createLogger()
+
 const serverFollowsRouter = express.Router()
-serverFollowsRouter.get('/following',
+serverFollowsRouter.get(
+  '/following',
   listFollowsValidator,
   paginationValidator,
   instanceFollowingSortValidator,
@@ -39,7 +42,8 @@ serverFollowsRouter.get('/following',
   asyncMiddleware(listFollowing)
 )
 
-serverFollowsRouter.post('/following',
+serverFollowsRouter.post(
+  '/following',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   followValidator,
@@ -47,14 +51,16 @@ serverFollowsRouter.post('/following',
   asyncMiddleware(addFollow)
 )
 
-serverFollowsRouter.delete('/following/:hostOrHandle',
+serverFollowsRouter.delete(
+  '/following/:hostOrHandle',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(removeFollowingValidator),
   asyncMiddleware(removeFollowing)
 )
 
-serverFollowsRouter.get('/followers',
+serverFollowsRouter.get(
+  '/followers',
   listFollowsValidator,
   paginationValidator,
   instanceFollowersSortValidator,
@@ -63,14 +69,16 @@ serverFollowsRouter.get('/followers',
   asyncMiddleware(listFollowers)
 )
 
-serverFollowsRouter.delete('/followers/:nameWithHost',
+serverFollowsRouter.delete(
+  '/followers/:handle',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(getFollowerValidator),
   asyncMiddleware(removeFollower)
 )
 
-serverFollowsRouter.post('/followers/:nameWithHost/reject',
+serverFollowsRouter.post(
+  '/followers/:handle/reject',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(getFollowerValidator),
@@ -78,7 +86,8 @@ serverFollowsRouter.post('/followers/:nameWithHost/reject',
   asyncMiddleware(rejectFollower)
 )
 
-serverFollowsRouter.post('/followers/:nameWithHost/accept',
+serverFollowsRouter.post(
+  '/followers/:handle/accept',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(getFollowerValidator),

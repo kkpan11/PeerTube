@@ -1,9 +1,9 @@
 import { FileStorage, UserExportState, type FileStorageType, type UserExport, type UserExportStateType } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import {
-  JWT_TOKEN_USER_EXPORT_FILE_LIFETIME,
   DOWNLOAD_PATHS,
+  JWT_TOKEN_USER_EXPORT_FILE_LIFETIME,
   USER_EXPORT_FILE_PREFIX,
   USER_EXPORT_STATES,
   WEBSERVER
@@ -21,6 +21,8 @@ import { SequelizeModel } from '../shared/sequelize-type.js'
 import { getSort } from '../shared/sort.js'
 import { UserModel } from './user.js'
 
+const logger = createLogger()
+
 @Table({
   tableName: 'userExport',
   indexes: [
@@ -35,42 +37,38 @@ import { UserModel } from './user.js'
 })
 export class UserExportModel extends SequelizeModel<UserExportModel> {
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @AllowNull(true)
   @Column
-  filename: string
+  declare filename: string
 
   @AllowNull(false)
   @Column
-  withVideoFiles: boolean
+  declare withVideoFiles: boolean
 
   @AllowNull(false)
   @Column
-  state: UserExportStateType
+  declare state: UserExportStateType
 
   @AllowNull(true)
   @Column(DataType.TEXT)
-  error: string
+  declare error: string
 
   @AllowNull(true)
   @Column(DataType.BIGINT)
-  size: number
+  declare size: number
 
   @AllowNull(false)
   @Column
-  storage: FileStorageType
-
-  @AllowNull(true)
-  @Column
-  fileUrl: string
+  declare storage: FileStorageType
 
   @ForeignKey(() => UserModel)
   @Column
-  userId: number
+  declare userId: number
 
   @BelongsTo(() => UserModel, {
     foreignKey: {
@@ -78,7 +76,7 @@ export class UserExportModel extends SequelizeModel<UserExportModel> {
     },
     onDelete: 'CASCADE'
   })
-  User: Awaited<UserModel>
+  declare User: Awaited<UserModel>
 
   @BeforeDestroy
   static removeFile (instance: UserExportModel) {
@@ -200,7 +198,7 @@ export class UserExportModel extends SequelizeModel<UserExportModel> {
     }
   }
 
-  getFileDownloadUrl () {
+  getLocalDownloadFileUrl () {
     if (this.state !== UserExportState.COMPLETED) return null
 
     return WEBSERVER.URL + join(DOWNLOAD_PATHS.USER_EXPORTS, this.filename) + '?jwt=' + this.generateJWT()
@@ -219,11 +217,9 @@ export class UserExportModel extends SequelizeModel<UserExportModel> {
 
       size: this.size,
 
-      fileUrl: this.fileUrl,
-      privateDownloadUrl: this.getFileDownloadUrl(),
+      privateDownloadUrl: this.getLocalDownloadFileUrl(),
       createdAt: this.createdAt.toISOString(),
       expiresOn: new Date(this.createdAt.getTime() + CONFIG.EXPORT.USERS.EXPORT_EXPIRATION).toISOString()
     }
   }
-
 }

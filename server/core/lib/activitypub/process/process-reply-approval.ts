@@ -12,11 +12,15 @@ export function processReplyApprovalFactory (type: Extract<ActivityType, 'Approv
     const { activity, byActor } = options
     const comment = await VideoCommentModel.loadByUrlAndPopulateAccountAndVideoAndReply(activity.object)
 
-    if (!comment || comment.isDeleted()) {
-      throw new Error(`Cannot process reply approval on comment ${comment.url} that doesn't exist`)
+    if (!comment) {
+      throw new Error(`Cannot process reply approval on comment ${activity.object} that doesn't exist`)
     }
 
-    if (comment.isOwned() !== true) {
+    if (comment.isDeleted()) {
+      throw new Error(`Cannot process reply approval on deleted comment ${comment.url}`)
+    }
+
+    if (comment.isLocal() !== true) {
       throw new Error(`Cannot process reply approval on non-owned comment ${comment.url}`)
     }
 

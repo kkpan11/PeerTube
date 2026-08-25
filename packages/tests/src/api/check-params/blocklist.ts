@@ -1,6 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { checkBadCountPagination, checkBadSortPagination, checkBadStartPagination } from '@tests/shared/checks.js'
+import { checkBadCountPagination, checkBadSort, checkBadStartPagination } from '@tests/shared/checks.js'
 import { HttpStatusCode } from '@peertube/peertube-models'
 import {
   cleanupTests,
@@ -37,7 +37,6 @@ describe('Test blocklist API validators', function () {
   // ---------------------------------------------------------------
 
   describe('When managing user blocklist', function () {
-
     describe('When managing user accounts blocklist', function () {
       const path = '/api/v1/users/me/blocklist/accounts'
 
@@ -59,7 +58,7 @@ describe('Test blocklist API validators', function () {
         })
 
         it('Should fail with an incorrect sort', async function () {
-          await checkBadSortPagination(server.url, path, server.accessToken)
+          await checkBadSort(server.url, path, server.accessToken)
         })
       })
 
@@ -154,7 +153,7 @@ describe('Test blocklist API validators', function () {
         })
 
         it('Should fail with an incorrect sort', async function () {
-          await checkBadSortPagination(server.url, path, server.accessToken)
+          await checkBadSort(server.url, path, server.accessToken)
         })
       })
 
@@ -230,7 +229,6 @@ describe('Test blocklist API validators', function () {
   })
 
   describe('When managing server blocklist', function () {
-
     describe('When managing server accounts blocklist', function () {
       const path = '/api/v1/server/blocklist/accounts'
 
@@ -261,7 +259,7 @@ describe('Test blocklist API validators', function () {
         })
 
         it('Should fail with an incorrect sort', async function () {
-          await checkBadSortPagination(server.url, path, server.accessToken)
+          await checkBadSort(server.url, path, server.accessToken)
         })
       })
 
@@ -384,7 +382,7 @@ describe('Test blocklist API validators', function () {
         })
 
         it('Should fail with an incorrect sort', async function () {
-          await checkBadSortPagination(server.url, path, server.accessToken)
+          await checkBadSort(server.url, path, server.accessToken)
         })
       })
 
@@ -544,6 +542,19 @@ describe('Test blocklist API validators', function () {
         query: {
           hosts: [ 'example.com' ],
           accounts: [ 'john@example.com' ]
+        },
+        expectedStatus: HttpStatusCode.OK_200
+      })
+
+      let i = 0
+      let j = 0
+
+      await makeGetRequest({
+        url: server.url,
+        path,
+        query: {
+          hosts: new Array(101).map(() => i++ && 'example.com'),
+          accounts: new Array(101).map(() => j++ && 'john@example.com')
         },
         expectedStatus: HttpStatusCode.OK_200
       })

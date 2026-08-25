@@ -1,18 +1,16 @@
 import { PlayerPage } from '../po/player.po'
 import { VideoWatchPage } from '../po/video-watch.po'
-import { FIXTURE_URLS, go, isMobileDevice, isSafari } from '../utils'
+import { FIXTURE_URLS, go, isSafari, prepareWebBrowser } from '../utils'
 
 describe('Live all workflow', () => {
   let videoWatchPage: VideoWatchPage
   let playerPage: PlayerPage
 
   beforeEach(async () => {
-    videoWatchPage = new VideoWatchPage(isMobileDevice(), isSafari())
+    videoWatchPage = new VideoWatchPage(isSafari())
     playerPage = new PlayerPage()
 
-    if (!isMobileDevice()) {
-      await browser.maximizeWindow()
-    }
+    await prepareWebBrowser()
   })
 
   it('Should go to the live page', async () => {

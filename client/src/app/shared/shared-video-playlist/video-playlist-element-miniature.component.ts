@@ -1,23 +1,22 @@
+import { CommonModule } from '@angular/common'
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit, inject, input, output, viewChild } from '@angular/core'
-import { AuthService, Notifier, ServerService } from '@app/core'
-import { NgbDropdown, NgbDropdownToggle, NgbDropdownMenu, NgbDropdownButtonItem, NgbDropdownItem } from '@ng-bootstrap/ng-bootstrap'
+import { FormsModule } from '@angular/forms'
+import { RouterLink } from '@angular/router'
+import { Notifier, ServerService, User, UserService } from '@app/core'
+import { NgbDropdown, NgbDropdownModule, NgbTooltipModule } from '@ng-bootstrap/ng-bootstrap'
 import { secondsToTime } from '@peertube/peertube-core-utils'
 import { HTMLServerConfig, VideoPlaylistElementType, VideoPlaylistElementUpdate, VideoPrivacy } from '@peertube/peertube-models'
+import { PeertubeCheckboxComponent } from '../shared-forms/peertube-checkbox.component'
+import { TimestampInputComponent } from '../shared-forms/timestamp-input.component'
+import { GlobalIconComponent } from '../shared-icons/global-icon.component'
+import { DateToggleComponent } from '../shared-main/date/date-toggle.component'
+import { Video } from '../shared-main/video/video.model'
+import { VideoService } from '../shared-main/video/video.service'
+import { VideoThumbnailComponent } from '../shared-thumbnail/video-thumbnail.component'
+import { VideoViewsCounterComponent } from '../shared-video/video-views-counter.component'
 import { VideoPlaylistElement } from './video-playlist-element.model'
 import { VideoPlaylist } from './video-playlist.model'
 import { VideoPlaylistService } from './video-playlist.service'
-import { TimestampInputComponent } from '../shared-forms/timestamp-input.component'
-import { FormsModule } from '@angular/forms'
-import { PeertubeCheckboxComponent } from '../shared-forms/peertube-checkbox.component'
-
-import { VideoViewsCounterComponent } from '../shared-video/video-views-counter.component'
-import { DateToggleComponent } from '../shared-main/date/date-toggle.component'
-import { VideoThumbnailComponent } from '../shared-thumbnail/video-thumbnail.component'
-import { GlobalIconComponent } from '../shared-icons/global-icon.component'
-import { RouterLink } from '@angular/router'
-import { NgClass, NgIf } from '@angular/common'
-import { Video } from '../shared-main/video/video.model'
-import { VideoService } from '../shared-main/video/video.service'
 
 @Component({
   selector: 'my-video-playlist-element-miniature',
@@ -25,25 +24,21 @@ import { VideoService } from '../shared-main/video/video.service'
   templateUrl: './video-playlist-element-miniature.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
   imports: [
-    NgClass,
+    CommonModule,
     RouterLink,
-    NgIf,
     GlobalIconComponent,
     VideoThumbnailComponent,
     DateToggleComponent,
     VideoViewsCounterComponent,
-    NgbDropdown,
-    NgbDropdownToggle,
-    NgbDropdownMenu,
-    NgbDropdownButtonItem,
-    NgbDropdownItem,
+    NgbDropdownModule,
     PeertubeCheckboxComponent,
     FormsModule,
-    TimestampInputComponent
+    TimestampInputComponent,
+    NgbTooltipModule
   ]
 })
 export class VideoPlaylistElementMiniatureComponent implements OnInit {
-  private authService = inject(AuthService)
+  private userService = inject(UserService)
   private serverService = inject(ServerService)
   private notifier = inject(Notifier)
   private videoPlaylistService = inject(VideoPlaylistService)
@@ -73,9 +68,14 @@ export class VideoPlaylistElementMiniatureComponent implements OnInit {
   } = {} as any
 
   private serverConfig: HTMLServerConfig
+  private user: User
 
   ngOnInit (): void {
     this.serverConfig = this.serverService.getHTMLConfig()
+
+    this.userService.getAnonymousOrLoggedUser().subscribe(user => {
+      this.user = user
+    })
   }
 
   getVideoAriaLabel () {
@@ -125,23 +125,38 @@ export class VideoPlaylistElementMiniatureComponent implements OnInit {
     }
   }
 
-  isVideoBlur (video: Video) {
-    return video.isVideoNSFWForUser(this.authService.getUser(), this.serverConfig)
+  hasNSFWBlur (video: Video) {
+    return video.isNSFWBlurForUser(this.user, this.serverConfig)
+  }
+
+  hasNSFWWarning (video: Video) {
+    return video.isNSFWWarnedForUser(this.user, this.serverConfig)
+  }
+
+  getNSFWTooltip (video: Video) {
+    return this.videoService.buildNSFWTooltip(video)
   }
 
   removeFromPlaylist (playlistElement: VideoPlaylistElement) {
     const playlistElementValue = this.playlistElement()
     const videoId = playlistElementValue.video ? playlistElementValue.video.id : undefined
 
-    this.videoPlaylistService.removeVideoFromPlaylist(this.playlist().id, playlistElement.id, videoId)
-      .subscribe({
-        next: () => {
-          this.notifier.success($localize`Video removed from ${this.playlist().displayName}`)
-          this.elementRemoved.emit(playlistElement)
-        },
+    this.videoPlaylistService.removeElementsFromPlaylist({
+      playlistId: this.playlist().id,
+      elements: [
+        {
+          playlistElementId: playlistElement.id,
+          videoId
+        }
+      ]
+    }).subscribe({
+      next: () => {
+        this.notifier.success($localize`Video removed from ${this.playlist().displayName}`)
+        this.elementRemoved.emit(playlistElement)
+      },
 
-        error: err => this.notifier.error(err.message)
-      })
+      error: err => this.notifier.handleError(err)
+    })
 
     this.moreDropdown().close()
   }
@@ -149,22 +164,34 @@ export class VideoPlaylistElementMiniatureComponent implements OnInit {
   updateTimestamps (playlistElement: VideoPlaylistElement) {
     const body: VideoPlaylistElementUpdate = {}
 
-    body.startTimestamp = this.timestampOptions.startTimestampEnabled ? this.timestampOptions.startTimestamp : null
-    body.stopTimestamp = this.timestampOptions.stopTimestampEnabled ? this.timestampOptions.stopTimestamp : null
+    this.videoPlaylistService.updateVideoOfPlaylist({
+      playlistId: this.playlist().id,
+      elements: [
+        {
+          playlistElementId: playlistElement.id,
 
-    this.videoPlaylistService.updateVideoOfPlaylist(this.playlist().id, playlistElement.id, body, this.playlistElement().video.id)
-      .subscribe({
-        next: () => {
-          this.notifier.success($localize`Timestamps updated`)
+          startTimestamp: this.timestampOptions.startTimestampEnabled
+            ? this.timestampOptions.startTimestamp
+            : null,
+          stopTimestamp: this.timestampOptions.stopTimestampEnabled
+            ? this.timestampOptions.stopTimestamp
+            : null,
 
-          playlistElement.startTimestamp = body.startTimestamp
-          playlistElement.stopTimestamp = body.stopTimestamp
+          videoId: this.playlistElement().video.id
+        }
+      ]
+    }).subscribe({
+      next: () => {
+        this.notifier.success($localize`Timestamps updated`)
 
-          this.cdr.detectChanges()
-        },
+        playlistElement.startTimestamp = body.startTimestamp
+        playlistElement.stopTimestamp = body.stopTimestamp
 
-        error: err => this.notifier.error(err.message)
-      })
+        this.cdr.detectChanges()
+      },
+
+      error: err => this.notifier.handleError(err)
+    })
 
     this.moreDropdown().close()
   }

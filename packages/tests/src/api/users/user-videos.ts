@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { HttpStatusCode } from '@peertube/peertube-models'
@@ -36,7 +36,6 @@ describe('Test user videos', function () {
   })
 
   describe('List my videos', function () {
-
     it('Should list my videos', async function () {
       const { data, total } = await server.videos.listMyVideos()
 
@@ -46,7 +45,6 @@ describe('Test user videos', function () {
   })
 
   describe('Upload', function () {
-
     it('Should upload the video with the correct token', async function () {
       await server.videos.upload({ token })
       const { data } = await server.videos.list()
@@ -63,7 +61,6 @@ describe('Test user videos', function () {
   })
 
   describe('Ratings', function () {
-
     it('Should retrieve a video rating', async function () {
       await server.videos.rate({ id: videoId, token, rating: 'like' })
       const rating = await server.users.getMyRating({ token, videoId })
@@ -96,7 +93,6 @@ describe('Test user videos', function () {
   })
 
   describe('Remove video', function () {
-
     it('Should not be able to remove the video with an incorrect token', async function () {
       await server.videos.remove({ token: 'bad_token', id: videoId, expectedStatus: HttpStatusCode.UNAUTHORIZED_401 })
     })
@@ -112,15 +108,17 @@ describe('Test user videos', function () {
   })
 
   describe('My videos & quotas', function () {
-
     it('Should be able to upload a video with a user', async function () {
       this.timeout(30000)
 
-      const attributes = {
-        name: 'super user video',
-        fixture: 'video_short.webm'
-      }
-      await server.videos.upload({ token, attributes })
+      await server.videos.upload({
+        token,
+        attributes: {
+          name: 'super user video',
+          fixture: 'video_short.webm',
+          tags: [ 'tag1', 'tag2' ]
+        }
+      })
 
       await server.channels.create({ token, attributes: { name: 'other_channel' } })
     })
@@ -143,11 +141,12 @@ describe('Test user videos', function () {
 
       const video = data[0]
       expect(video.name).to.equal('super user video')
-      expect(video.thumbnailPath).to.not.be.null
-      expect(video.previewPath).to.not.be.null
+      expect(video.thumbnails).to.have.lengthOf(5)
+
+      expect(video.tags).to.have.members([ 'tag1', 'tag2' ])
     })
 
-    it('Should be able to filter by channel in my videos', async function () {
+    it('Should be able to filter by a specific channel in my videos', async function () {
       const myInfo = await server.users.getMyInfo({ token })
       const mainChannel = myInfo.videoChannels.find(c => c.name !== 'other_channel')
       const otherChannel = myInfo.videoChannels.find(c => c.name === 'other_channel')
@@ -159,14 +158,33 @@ describe('Test user videos', function () {
 
         const video = data[0]
         expect(video.name).to.equal('super user video')
-        expect(video.thumbnailPath).to.not.be.null
-        expect(video.previewPath).to.not.be.null
+        expect(video.thumbnails).to.have.lengthOf(5)
       }
 
       {
         const { total, data } = await server.videos.listMyVideos({ token, channelId: otherChannel.id })
         expect(total).to.equal(0)
         expect(data).to.have.lengthOf(0)
+      }
+    })
+
+    it('Should be able to filter by multiple channels in my videos', async function () {
+      {
+        const { total, data } = await server.videos.listMyVideos({ token, channelNameOneOf: [ 'user_channel' ] })
+        expect(total).to.equal(1)
+        expect(data).to.have.lengthOf(1)
+      }
+
+      {
+        const { total, data } = await server.videos.listMyVideos({ token, channelNameOneOf: [ 'other_channel' ] })
+        expect(total).to.equal(0)
+        expect(data).to.have.lengthOf(0)
+      }
+
+      {
+        const { total, data } = await server.videos.listMyVideos({ token, channelNameOneOf: [ 'user_channel', 'other_channel' ] })
+        expect(total).to.equal(1)
+        expect(data).to.have.lengthOf(1)
       }
     })
 

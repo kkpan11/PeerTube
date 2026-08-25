@@ -6,8 +6,10 @@ import { MActor } from '../types/models/index.js'
 import { getAllContext } from './activity-pub-utils.js'
 import { jsonld } from './custom-jsonld-signature.js'
 import { isArray } from './custom-validators/misc.js'
-import { logger } from './logger.js'
+import { createLogger } from './logger.js'
 import { assertIsInWorkerThread } from './threads.js'
+
+const logger = createLogger()
 
 type ExpressRequest = { body: any }
 
@@ -29,23 +31,14 @@ export async function compactJSONLDAndCheckRSA2017Signature (fromActor: MActor, 
 
   req.body = { ...compacted, signature: req.body.signature }
 
-  if (compacted['@include']) {
-    logger.warn('JSON-LD @include is not supported')
+  if (containInvalidJsonldKeys(compacted)) {
+    logger.warn('JSON-LD @included, @graph or @reverse are not supported')
     return false
   }
 
-  // TODO: compat with < 6.1, remove in 8.0
-  let safe = true
-  if (
-    (compacted.type === 'Create' && (compacted?.object?.type === 'WatchAction' || compacted?.object?.type === 'CacheFile')) ||
-    (compacted.type === 'Undo' && compacted?.object?.type === 'Create' && compacted?.object?.object.type === 'CacheFile')
-  ) {
-    safe = false
-  }
-
   const [ documentHash, optionsHash ] = await Promise.all([
-    hashObject(compacted, safe),
-    createSignatureHash(req.body.signature, safe)
+    hashObject(compacted),
+    createSignatureHash(req.body.signature)
   ])
 
   const toVerify = optionsHash + documentHash
@@ -56,7 +49,8 @@ export async function compactJSONLDAndCheckRSA2017Signature (fromActor: MActor, 
   return verify.verify(fromActor.publicKey, req.body.signature.signatureValue, 'base64')
 }
 
-function fixCompacted (original: any, compacted: any) {
+function fixCompacted (original: any, compacted: any, depth = 1) {
+  if (depth > 20) return
   if (!original || !compacted) return
 
   for (const [ k, v ] of Object.entries(original)) {
@@ -83,12 +77,12 @@ function fixCompacted (original: any, compacted: any) {
     }
 
     if (typeof v === 'object') {
-      fixCompacted(original[k], compacted[k])
+      fixCompacted(original[k], compacted[k], depth += 1)
     }
   }
 }
 
-export async function signJsonLDObject <T> (options: {
+export async function signJsonLDObject<T> (options: {
   byActor: { url: string, privateKey: string }
   data: T
   disableWorkerThreadAssertion?: boolean
@@ -123,8 +117,8 @@ export async function signJsonLDObject <T> (options: {
 // Private
 // ---------------------------------------------------------------------------
 
-async function hashObject (obj: any, safe: boolean): Promise<any> {
-  const res = await jsonldNormalize(obj, safe)
+async function hashObject (obj: any): Promise<any> {
+  const res = await jsonldNormalize(obj)
 
   return sha256(res)
 }
@@ -133,9 +127,9 @@ function jsonldCompact (obj: any) {
   return (jsonld as any).promises.compact(obj, getAllContext())
 }
 
-function jsonldNormalize (obj: any, safe: boolean) {
+function jsonldNormalize (obj: any) {
   return (jsonld as any).promises.normalize(obj, {
-    safe,
+    safe: true,
     algorithm: 'URDNA2015',
     format: 'application/n-quads'
   })
@@ -143,7 +137,7 @@ function jsonldNormalize (obj: any, safe: boolean) {
 
 // ---------------------------------------------------------------------------
 
-function createSignatureHash (signature: any, safe = true) {
+function createSignatureHash (signature: any) {
   return hashObject({
     '@context': [
       'https://w3id.org/security/v1',
@@ -151,12 +145,26 @@ function createSignatureHash (signature: any, safe = true) {
     ],
 
     ...omit(signature, [ 'type', 'id', 'signatureValue' ])
-  }, safe)
+  })
 }
 
 function createDocWithoutSignatureHash (doc: any) {
   const docWithoutSignature = cloneDeep(doc)
   delete docWithoutSignature.signature
 
-  return hashObject(docWithoutSignature, true)
+  return hashObject(docWithoutSignature)
+}
+
+function containInvalidJsonldKeys (obj: any, depth = 1) {
+  if (depth > 20) return true
+
+  if (typeof obj !== 'object' || obj === null) return false
+
+  if (Array.isArray(obj)) {
+    return obj.some(item => containInvalidJsonldKeys(item, depth + 1))
+  }
+
+  if ('@included' in obj || '@graph' in obj || '@reverse' in obj) return true
+
+  return Object.values(obj).some(value => containInvalidJsonldKeys(value, depth + 1))
 }

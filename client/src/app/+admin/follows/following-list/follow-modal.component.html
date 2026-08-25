@@ -10,31 +10,36 @@
   <div class="modal-body">
     <form novalidate [formGroup]="form" (ngSubmit)="submit()">
       <div class="form-group">
-        <label i18n for="hostsOrHandles">1 host (without "http://"), account handle or channel handle per line</label>
+        <label i18n for="hostsOrHandles">1 domain (without "http://"), account handle or channel handle per line</label>
 
         <textarea
           [placeholder]="placeholder" formControlName="hostsOrHandles" type="text" id="hostsOrHandles" name="hostsOrHandles"
           class="form-control" [ngClass]="{ 'input-error': formErrors['hostsOrHandles'] }" ngbAutofocus
         ></textarea>
 
-        <div *ngIf="formErrors.hostsOrHandles" class="form-error" role="alert">
-          {{ formErrors.hostsOrHandles }}
-
-          <div *ngIf="form.controls['hostsOrHandles'].errors.validHostsOrHandles">
-            {{ form.controls['hostsOrHandles'].errors.validHostsOrHandles.value }}
+        @if (formErrors.hostsOrHandles) {
+          <div class="form-error" role="alert">
+            {{ formErrors.hostsOrHandles }}
+            @if (form.controls['hostsOrHandles'].errors.validHostsOrHandles) {
+              <div>
+                {{ form.controls['hostsOrHandles'].errors.validHostsOrHandles.value }}
+              </div>
+            }
           </div>
-        </div>
+        }
       </div>
 
-      <my-alert i18n *ngIf="httpEnabled() === false"  type="warning">
+      @if (httpEnabled() === false) {
+        <my-alert i18n  type="warning">
         It seems that you are not on a HTTPS server. Your webserver needs to have TLS activated in order to follow servers.
       </my-alert>
+      }
 
       <div class="form-group inputs">
         <input
           type="button" role="button" i18n-value value="Cancel" class="peertube-button secondary-button"
           (click)="hide()" (key.enter)="hide()"
-        >
+          >
 
         <input type="submit" i18n-value value="Follow" class="peertube-button primary-button" [disabled]="!form.valid" />
       </div>

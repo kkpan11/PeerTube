@@ -1,10 +1,10 @@
-import { Transaction } from 'sequelize'
 import { ActivityFollow } from '@peertube/peertube-models'
 import { isBlockedByServerOrAccount } from '@server/lib/blocklist.js'
 import { AccountModel } from '@server/models/account/account.js'
 import { getServerActor } from '@server/models/application/application.js'
+import { Transaction } from 'sequelize'
 import { retryTransactionWrapper } from '../../../helpers/database-utils.js'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { CONFIG } from '../../../initializers/config.js'
 import { sequelizeTypescript } from '../../../initializers/database.js'
 import { getAPId } from '../../../lib/activitypub/activity.js'
@@ -16,13 +16,15 @@ import { Notifier } from '../../notifier/index.js'
 import { autoFollowBackIfNeeded } from '../follow.js'
 import { sendAccept, sendReject } from '../send/index.js'
 
+const logger = createLogger()
+
 async function processFollowActivity (options: APProcessorOptions<ActivityFollow>) {
   const { activity, byActor } = options
 
   const activityId = activity.id
   const objectId = getAPId(activity.object)
 
-  return retryTransactionWrapper(processFollow, byActor, activityId, objectId)
+  return retryTransactionWrapper(() => processFollow(byActor, activityId, objectId))
 }
 
 // ---------------------------------------------------------------------------
@@ -38,7 +40,7 @@ async function processFollow (byActor: MActorSignature, activityId: string, targ
     const targetActor = await ActorModel.loadByUrlAndPopulateAccountAndChannel(targetActorURL, t)
 
     if (!targetActor) throw new Error('Unknown actor')
-    if (targetActor.isOwned() === false) throw new Error('This is not a local actor.')
+    if (targetActor.isLocal() === false) throw new Error('This is not a local actor.')
 
     if (await rejectIfInstanceFollowDisabled(byActor, activityId, targetActor)) return { actorFollow: undefined }
     if (await rejectIfMuted(byActor, activityId, targetActor)) return { actorFollow: undefined }
@@ -90,8 +92,16 @@ async function processFollow (byActor: MActorSignature, activityId: string, targ
 }
 
 async function rejectIfInstanceFollowDisabled (byActor: MActorSignature, activityId: string, targetActor: MActorFull) {
-  if (await isFollowingInstance(targetActor) && CONFIG.FOLLOWERS.INSTANCE.ENABLED === false) {
-    logger.info('Rejecting %s because instance followers are disabled.', targetActor.url)
+  if (await isFollowingInstance(targetActor)) {
+    if (CONFIG.FOLLOWERS.INSTANCE.ENABLED === false) {
+      logger.info('Rejecting %s because instance followers are disabled.', targetActor.url)
+
+      sendReject(activityId, byActor, targetActor)
+
+      return true
+    }
+  } else if (CONFIG.FOLLOWERS.CHANNELS.ENABLED === false) {
+    logger.info('Rejecting %s because channel followers are disabled.', targetActor.url)
 
     sendReject(activityId, byActor, targetActor)
 

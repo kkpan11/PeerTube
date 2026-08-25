@@ -22,6 +22,7 @@ export const instanceFollowingSortValidator = checkSortFactory(SORTABLE_COLUMNS.
 export const userSubscriptionsSortValidator = checkSortFactory(SORTABLE_COLUMNS.USER_SUBSCRIPTIONS)
 export const accountsBlocklistSortValidator = checkSortFactory(SORTABLE_COLUMNS.ACCOUNTS_BLOCKLIST)
 export const serversBlocklistSortValidator = checkSortFactory(SORTABLE_COLUMNS.SERVERS_BLOCKLIST)
+export const blocklistSubscriptionsSortValidator = checkSortFactory(SORTABLE_COLUMNS.BLOCKLIST_SUBSCRIPTIONS)
 export const userNotificationsSortValidator = checkSortFactory(SORTABLE_COLUMNS.USER_NOTIFICATIONS)
 export const videoPlaylistsSortValidator = checkSortFactory(SORTABLE_COLUMNS.VIDEO_PLAYLISTS)
 export const pluginsSortValidator = checkSortFactory(SORTABLE_COLUMNS.PLUGINS)
@@ -29,17 +30,24 @@ export const availablePluginsSortValidator = checkSortFactory(SORTABLE_COLUMNS.A
 export const videoRedundanciesSortValidator = checkSortFactory(SORTABLE_COLUMNS.VIDEO_REDUNDANCIES)
 export const videoChannelSyncsSortValidator = checkSortFactory(SORTABLE_COLUMNS.VIDEO_CHANNEL_SYNCS)
 export const videoPasswordsSortValidator = checkSortFactory(SORTABLE_COLUMNS.VIDEO_PASSWORDS)
+export const changeOwnershipSortValidator = checkSortFactory(SORTABLE_COLUMNS.CHANGE_OWNERSHIP)
 
 export const watchedWordsListsSortValidator = checkSortFactory(SORTABLE_COLUMNS.WATCHED_WORDS_LISTS)
+export const watchedWordsSubscriptionsSortValidator = checkSortFactory(SORTABLE_COLUMNS.WATCHED_WORDS_SUBSCRIPTIONS)
 
 export const accountsFollowersSortValidator = checkSortFactory(SORTABLE_COLUMNS.ACCOUNT_FOLLOWERS)
-export const videoChannelsFollowersSortValidator = checkSortFactory(SORTABLE_COLUMNS.CHANNEL_FOLLOWERS)
+export const videoChannelFollowersSortValidator = checkSortFactory(SORTABLE_COLUMNS.CHANNEL_FOLLOWERS)
+export const videoChannelActivitiesSortValidator = checkSortFactory(SORTABLE_COLUMNS.VIDEO_CHANNEL_ACTIVITIES)
 
 export const userRegistrationsSortValidator = checkSortFactory(SORTABLE_COLUMNS.USER_REGISTRATIONS)
+
+export const tokenSessionsSortValidator = checkSortFactory(SORTABLE_COLUMNS.TOKEN_SESSIONS)
 
 export const runnersSortValidator = checkSortFactory(SORTABLE_COLUMNS.RUNNERS)
 export const runnerRegistrationTokensSortValidator = checkSortFactory(SORTABLE_COLUMNS.RUNNER_REGISTRATION_TOKENS)
 export const runnerJobsSortValidator = checkSortFactory(SORTABLE_COLUMNS.RUNNER_JOBS)
+
+export const liveSessionsSortValidator = checkSortFactory(SORTABLE_COLUMNS.LIVE_SESSIONS)
 
 // ---------------------------------------------------------------------------
 

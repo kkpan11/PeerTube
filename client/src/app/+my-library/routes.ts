@@ -2,21 +2,23 @@ import { Route, Routes, UrlSegment } from '@angular/router'
 import { userResolver } from '@app/core/routing/user.resolver'
 import { AbuseService } from '@app/shared/shared-moderation/abuse.service'
 import { BlocklistService } from '@app/shared/shared-moderation/blocklist.service'
+import { BulkService } from '@app/shared/shared-moderation/bulk.service'
 import { VideoBlockService } from '@app/shared/shared-moderation/video-block.service'
 import { UserSubscriptionService } from '@app/shared/shared-user-subscription/user-subscription.service'
 import { VideoCommentService } from '@app/shared/shared-video-comment/video-comment.service'
 import { LiveVideoService } from '@app/shared/shared-video-live/live-video.service'
-import { VideoPlaylistService } from '@app/shared/shared-video-playlist/video-playlist.service'
-import { WatchedWordsListService } from '@app/shared/standalone-watched-words/watched-words-list.service'
+import { WatchedWordsListService } from '@app/shared/shared-watched-words/watched-words-list.service'
 import { LoginGuard } from '../core'
 import { CommentsOnMyVideosComponent } from './comments-on-my-videos/comments-on-my-videos.component'
-import { AutomaticTagService } from './my-auto-tag-policies/automatic-tag.service'
+import { AutomaticTagService } from '@app/shared/shared-moderation/automatic-tag.service'
 import { MyAutoTagPoliciesComponent } from './my-auto-tag-policies/my-auto-tag-policies.component'
+import { autoTagPoliciesResolver } from './my-auto-tag-policies/my-auto-tag-policies.resolver'
+import { MyChannelSpaceComponent } from './my-channel-space.component'
 import { MyFollowersComponent } from './my-follows/my-followers.component'
 import { MySubscriptionsComponent } from './my-follows/my-subscriptions.component'
 import { MyHistoryComponent } from './my-history/my-history.component'
 import { MyLibraryComponent } from './my-library.component'
-import { MyOwnershipComponent } from './my-ownership/my-ownership.component'
+import { MyOwnershipChangesComponent } from './my-ownership-changes/my-ownership-changes.component'
 import { MyVideoChannelSyncsComponent } from './my-video-channel-syncs/my-video-channel-syncs.component'
 import { VideoChannelSyncEditComponent } from './my-video-channel-syncs/video-channel-sync-edit/video-channel-sync-edit.component'
 import { MyVideoImportsComponent } from './my-video-imports/my-video-imports.component'
@@ -27,12 +29,11 @@ import { MyVideoPlaylistsComponent } from './my-video-playlists/my-video-playlis
 import { MyVideoSpaceComponent } from './my-video-space.component'
 import { MyVideosComponent } from './my-videos/my-videos.component'
 import { MyWatchedWordsListComponent } from './my-watched-words-list/my-watched-words-list.component'
-import { BulkService } from '@app/shared/shared-moderation/bulk.service'
+import { MyWatchedWordsSubscriptionsComponent } from './my-watched-words-subscriptions/my-watched-words-subscriptions.component'
 
 const commonConfig = {
   path: '',
   providers: [
-    VideoPlaylistService,
     BlocklistService,
     VideoBlockService,
     AbuseService,
@@ -50,10 +51,85 @@ const commonConfig = {
 }
 
 const videoSpaceRoutes = [
-  // ---------------------------------------------------------------------------
-  // Channels
-  // ---------------------------------------------------------------------------
+  {
+    path: 'videos/comments',
+    redirectTo: 'comments-on-my-videos',
+    pathMatch: 'full'
+  },
 
+  {
+    path: 'comments-on-my-videos',
+    component: CommentsOnMyVideosComponent,
+    data: {
+      meta: {
+        title: $localize`Comments on your videos`
+      }
+    }
+  },
+
+  {
+    path: 'watched-words/list',
+    component: MyWatchedWordsListComponent,
+    data: {
+      meta: {
+        title: $localize`Your watched words`
+      }
+    }
+  },
+
+  {
+    path: 'watched-words/subscriptions',
+    component: MyWatchedWordsSubscriptionsComponent,
+    data: {
+      meta: {
+        title: $localize`Your watched words subscriptions`
+      }
+    }
+  },
+
+  {
+    path: 'auto-tag-policies',
+    component: MyAutoTagPoliciesComponent,
+    resolve: {
+      tags: autoTagPoliciesResolver
+    },
+    data: {
+      meta: {
+        title: $localize`Your automatic tag policies`
+      }
+    }
+  },
+
+  {
+    path: 'videos',
+    component: MyVideosComponent,
+    data: {
+      meta: {
+        title: $localize`My videos`
+      }
+    }
+  },
+  {
+    path: 'video-imports',
+    component: MyVideoImportsComponent,
+    data: {
+      meta: {
+        title: $localize`My video imports`
+      }
+    }
+  },
+  {
+    path: 'ownership',
+    component: MyOwnershipChangesComponent,
+    data: {
+      meta: {
+        title: $localize`Ownership changes`
+      }
+    }
+  }
+] satisfies Routes
+
+const channelSpaceRoutes = [
   {
     path: '',
     redirectTo: 'video-channels',
@@ -93,83 +169,10 @@ const videoSpaceRoutes = [
         title: $localize`Create new synchronization`
       }
     }
-  },
-
-  // ---------------------------------------------------------------------------
-  // Videos
-  // ---------------------------------------------------------------------------
-
-  {
-    path: 'videos/comments',
-    redirectTo: 'comments-on-my-videos',
-    pathMatch: 'full'
-  },
-
-  {
-    path: 'comments-on-my-videos',
-    component: CommentsOnMyVideosComponent,
-    data: {
-      meta: {
-        title: $localize`Comments on your videos`
-      }
-    }
-  },
-
-  {
-    path: 'watched-words/list',
-    component: MyWatchedWordsListComponent,
-    data: {
-      meta: {
-        title: $localize`Your watched words`
-      }
-    }
-  },
-
-  {
-    path: 'auto-tag-policies',
-    component: MyAutoTagPoliciesComponent,
-    data: {
-      meta: {
-        title: $localize`Your automatic tag policies`
-      }
-    }
-  },
-
-  {
-    path: 'videos',
-    component: MyVideosComponent,
-    data: {
-      meta: {
-        title: $localize`My videos`
-      },
-      reuse: {
-        enabled: true,
-        key: 'my-videos-list'
-      }
-    }
-  },
-  {
-    path: 'video-imports',
-    component: MyVideoImportsComponent,
-    data: {
-      meta: {
-        title: $localize`My video imports`
-      }
-    }
-  },
-  {
-    path: 'ownership',
-    component: MyOwnershipComponent,
-    data: {
-      meta: {
-        title: $localize`Ownership changes`
-      }
-    }
   }
 ] satisfies Routes
 
 const libraryRoutes = [
-
   // ---------------------------------------------------------------------------
   // Playlists
   // ---------------------------------------------------------------------------
@@ -248,6 +251,14 @@ function isVideoSpaceRoute (segments: UrlSegment[]) {
   return videoSpaceRoutes.some(r => r.path === rootPath || r.path.startsWith(`${rootPath}/`))
 }
 
+function isChannelSpaceRoute (segments: UrlSegment[]) {
+  if (segments.length === 0) return false
+
+  const rootPath = segments[0].path
+
+  return channelSpaceRoutes.some(r => r.path === rootPath || r.path.startsWith(`${rootPath}/`))
+}
+
 export default [
   {
     ...commonConfig,
@@ -264,10 +275,22 @@ export default [
   {
     ...commonConfig,
 
+    component: MyChannelSpaceComponent,
+    canMatch: [
+      (_route: Route, segments: UrlSegment[]) => {
+        return isChannelSpaceRoute(segments)
+      }
+    ],
+
+    children: channelSpaceRoutes
+  },
+  {
+    ...commonConfig,
+
     component: MyLibraryComponent,
     canMatch: [
       (_route: Route, segments: UrlSegment[]) => {
-        return !isVideoSpaceRoute(segments)
+        return !isVideoSpaceRoute(segments) && !isChannelSpaceRoute(segments)
       }
     ],
     children: libraryRoutes

@@ -1,17 +1,18 @@
-import { logger } from '../../helpers/logger.js'
-import { AbstractScheduler } from './abstract-scheduler.js'
+import { createLogger } from '../../helpers/logger.js'
+import { CONFIG } from '../../initializers/config.js'
 import { SCHEDULER_INTERVALS_MS } from '../../initializers/constants.js'
 import { UserVideoHistoryModel } from '../../models/user/user-video-history.js'
-import { CONFIG } from '../../initializers/config.js'
+import { AbstractScheduler } from './abstract-scheduler.js'
+
+const logger = createLogger('schedulers')
 
 export class RemoveOldHistoryScheduler extends AbstractScheduler {
-
   private static instance: AbstractScheduler
 
   protected schedulerIntervalMs = SCHEDULER_INTERVALS_MS.REMOVE_OLD_HISTORY
 
   private constructor () {
-    super()
+    super({ randomRunOnEnable: true })
   }
 
   protected internalExecute () {

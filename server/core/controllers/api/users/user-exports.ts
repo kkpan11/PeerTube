@@ -1,5 +1,5 @@
 import express from 'express'
-import { FileStorage, HttpStatusCode, UserExportRequest, UserExportRequestResult, UserExportState } from '@peertube/peertube-models'
+import { FileStorage, HttpStatusCode, UserExportRequest, UserExportState } from '@peertube/peertube-models'
 import {
   asyncMiddleware,
   authenticate,
@@ -15,19 +15,17 @@ import { CONFIG } from '@server/initializers/config.js'
 
 const userExportsRouter = express.Router()
 
-userExportsRouter.post('/:userId/exports/request',
+userExportsRouter.post(
+  '/:userId/exports/request',
   authenticate,
   asyncMiddleware(userExportRequestValidator),
   asyncMiddleware(requestExport)
 )
 
-userExportsRouter.get('/:userId/exports',
-  authenticate,
-  asyncMiddleware(userExportsListValidator),
-  asyncMiddleware(listUserExports)
-)
+userExportsRouter.get('/:userId/exports', authenticate, asyncMiddleware(userExportsListValidator), asyncMiddleware(listUserExports))
 
-userExportsRouter.delete('/:userId/exports/:id',
+userExportsRouter.delete(
+  '/:userId/exports/:id',
   authenticate,
   asyncMiddleware(userExportDeleteValidator),
   asyncMiddleware(deleteUserExport)
@@ -67,7 +65,7 @@ async function requestExport (req: express.Request, res: express.Response) {
     export: {
       id: exportModel.id
     }
-  } as UserExportRequestResult)
+  })
 }
 
 async function listUserExports (req: express.Request, res: express.Response) {
@@ -83,15 +81,19 @@ async function listUserExports (req: express.Request, res: express.Response) {
 async function deleteUserExport (req: express.Request, res: express.Response) {
   const userExport = res.locals.userExport
 
-  await sequelizeTypescript.transaction(async transaction => {
+  const result = await sequelizeTypescript.transaction(async transaction => {
     await userExport.reload({ transaction })
 
     if (!userExport.canBeSafelyRemoved()) {
-      return res.sendStatus(HttpStatusCode.CONFLICT_409)
+      res.sendStatus(HttpStatusCode.CONFLICT_409)
+      return false
     }
 
     await userExport.destroy({ transaction })
+
+    return true
   })
+  if (!result) return
 
   return res.sendStatus(HttpStatusCode.NO_CONTENT_204)
 }

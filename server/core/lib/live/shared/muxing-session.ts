@@ -1,4 +1,11 @@
-import { wait } from '@peertube/peertube-core-utils'
+import {
+  compareLiveFilenames,
+  getLivePlaylistIdFromSegmentPath,
+  getLivePlaylistNameFromSegmentPath,
+  isLivePlaylistPath,
+  isLiveSegmentPath,
+  wait
+} from '@peertube/peertube-core-utils'
 import {
   FileStorage,
   LiveVideoError,
@@ -7,8 +14,9 @@ import {
   VideoResolution,
   VideoStreamingPlaylistType
 } from '@peertube/peertube-models'
+import { DirectoryWatcher, TypedEventEmitter } from '@peertube/peertube-node-utils'
 import { computeOutputFPS } from '@server/helpers/ffmpeg/index.js'
-import { LoggerTagsFn, logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { MEMOIZE_TTL, P2P_MEDIA_LOADER_PEER_VERSION, VIDEO_LIVE } from '@server/initializers/constants.js'
 import { removeHLSFileObjectStorageByPath, storeHLSFileFromContent, storeHLSFileFromPath } from '@server/lib/object-storage/index.js'
@@ -16,11 +24,9 @@ import { VideoFileModel } from '@server/models/video/video-file.js'
 import { VideoStreamingPlaylistModel } from '@server/models/video/video-streaming-playlist.js'
 import { MStreamingPlaylistVideo, MUserId, MVideoLiveVideo } from '@server/types/models/index.js'
 import Bluebird from 'bluebird'
-import { FSWatcher, watch } from 'chokidar'
-import { EventEmitter } from 'events'
 import { FfprobeData } from 'fluent-ffmpeg'
 import { ensureDir } from 'fs-extra/esm'
-import { appendFile, readFile, stat } from 'fs/promises'
+import { appendFile, readdir, readFile, stat } from 'fs/promises'
 import memoizee from 'memoizee'
 import PQueue from 'p-queue'
 import { basename, join } from 'path'
@@ -33,8 +39,10 @@ import {
 import { isUserQuotaValid } from '../../user.js'
 import { LiveQuotaStore } from '../live-quota-store.js'
 import { LiveSegmentShaStore } from '../live-segment-sha-store.js'
-import { buildConcatenatedName, getLiveSegmentTime } from '../live-utils.js'
+import { buildConcatenatedName, getLiveSegmentListSize, getLiveSegmentTime } from '../live-utils.js'
 import { AbstractTranscodingWrapper, FFmpegTranscodingWrapper, RemoteTranscodingWrapper } from './transcoding-wrapper/index.js'
+
+const logger = createLogger('muxing')
 
 interface MuxingSessionEvents {
   'live-ready': (options: { videoUUID: string }) => void
@@ -49,18 +57,7 @@ interface MuxingSessionEvents {
   'after-cleanup': (options: { videoUUID: string }) => void
 }
 
-declare interface MuxingSession {
-  on<U extends keyof MuxingSessionEvents>(
-    event: U, listener: MuxingSessionEvents[U]
-  ): this
-
-  emit<U extends keyof MuxingSessionEvents>(
-    event: U, ...args: Parameters<MuxingSessionEvents[U]>
-  ): boolean
-}
-
-class MuxingSession extends EventEmitter {
-
+class MuxingSession extends TypedEventEmitter<MuxingSessionEvents> {
   private transcodingWrapper: AbstractTranscodingWrapper
 
   private readonly context: any
@@ -90,25 +87,41 @@ class MuxingSession extends EventEmitter {
   private readonly outDirectory: string
   private readonly replayDirectory: string
 
-  private readonly lTags: LoggerTagsFn
-
   // Path -> Queue
   private readonly objectStorageSendQueues = new Map<string, PQueue>()
 
   private segmentsToProcessPerPlaylist: { [playlistId: string]: string[] } = {}
 
+  // A segment can be seen twice: by the files watcher and by the cleanup task
+  private readonly processedSegments = new Set<string>()
+
+  // Playlist ID -> Queue
+  // Segments of a same playlist are processed in order, and the cleanup can wait for the pending ones
+  private readonly segmentProcessingQueues = new Map<string, PQueue>()
+
+  // Closing the files watcher stops new events but not the async handlers it already started, that can still write
+  // in the live directory (or in object storage): the cleanup waits for them
+  private readonly pendingWatcherHandlers = new Set<Promise<void>>()
+
+  private cleanupResolve: () => void
+  // Settled by runCleanup(), and by destroy() as a safety net so waitForCleanup() callers can never hang
+  private readonly cleanupPromise = new Promise<void>(resolve => {
+    this.cleanupResolve = resolve
+  })
+
   private streamingPlaylist: MStreamingPlaylistVideo
   private liveSegmentShaStore: LiveSegmentShaStore
 
-  private filesWatcher: FSWatcher
+  private filesWatcher: DirectoryWatcher
 
   private masterPlaylistCreated = false
   private liveReady = false
 
   private aborted = false
+  private cleanupScheduled = false
 
-  private readonly isAbleToUploadVideoWithCache = memoizee((userId: number) => {
-    return isUserQuotaValid({ userId, uploadSize: 1000 })
+  private readonly isAbleToUploadVideoWithCache = memoizee((channelUserId: number) => {
+    return isUserQuotaValid({ channelUserId, uploadSize: 1000 })
   }, { maxAge: MEMOIZE_TTL.LIVE_ABLE_TO_UPLOAD })
 
   private readonly hasClientSocketInBadHealthWithCache = memoizee((sessionId: string) => {
@@ -163,8 +176,6 @@ class MuxingSession extends EventEmitter {
 
     this.outDirectory = getLiveDirectory(this.videoLive.Video)
     this.replayDirectory = join(getLiveReplayBaseDirectory(this.videoLive.Video), new Date().toISOString())
-
-    this.lTags = loggerTagsFactory('live', this.sessionId, this.videoUUID)
   }
 
   async runMuxing () {
@@ -177,123 +188,205 @@ class MuxingSession extends EventEmitter {
 
     await this.prepareDirectories()
 
+    // Watch the directory *before* running the transcoding process, so the watcher can never be created after the
+    // session was cleaned up and destroyed: run() can abort and emit 'end' before it returns, and the cleanup would
+    // then close a watcher that does not exist yet
+    // The watcher also emits 'add' for the files it finds on init, so we don't miss anything by watching earlier
+    this.filesWatcher = new DirectoryWatcher({
+      directory: this.outDirectory,
+      // Only the segments and the playlists interest us: in particular 'segments-sha256.json' is frequently updated by
+      // this session itself, and the '.tmp' files of the transcoding process are incomplete
+      filter: filename => isLiveSegmentPath(filename) || isLivePlaylistPath(filename),
+      // A listing has to rebuild the order in which the transcoding process generated the files
+      sort: compareLiveFilenames
+    })
+
+    this.filesWatcher.on('error', err => logger.error('Error in live files watcher of %s.', this.outDirectory, { err }))
+
+    this.watchMasterFile()
+    this.watchTSFiles()
+
+    this.filesWatcher.watch()
+
     this.transcodingWrapper = this.buildTranscodingWrapper(toTranscode)
 
     this.transcodingWrapper.on('end', () => this.onTranscodedEnded())
     this.transcodingWrapper.on('error', () => this.onTranscodingError())
 
+    // abort() was called before the wrapper existed
+    // Abort the wrapper anyway, so it emits 'end' and the cleanup of this session is scheduled
+    if (this.aborted) {
+      logger.debug('Live muxing of %s was aborted before the transcoding process started.', this.videoUUID)
+
+      this.transcodingWrapper.abort()
+      return
+    }
+
     await this.transcodingWrapper.run()
-
-    this.filesWatcher = watch(this.outDirectory, { depth: 0 })
-
-    this.watchMasterFile()
-    this.watchTSFiles()
   }
 
   abort () {
-    if (!this.transcodingWrapper) return
-
+    if (this.aborted) return
     this.aborted = true
-    this.transcodingWrapper.abort()
+
+    // The wrapper may not exist yet: runMuxing() checks this flag before running it
+    this.transcodingWrapper?.abort()
+  }
+
+  // Resolves when this session does not write in the live directory anymore
+  // The transcoding process has exited and all its segments have been hashed/stored
+  waitForCleanup () {
+    return this.cleanupPromise
   }
 
   destroy () {
+    // Ensure the files watcher is always closed, even when the cleanup was never scheduled
+    // (e.g. an ffmpeg error makes the transcoding wrapper abort() short-circuit without emitting 'end')
+    // Every caller gets the same close promise, so runCleanup() can still close it itself
+    this.filesWatcher?.close()
+      .catch(err => logger.error('Cannot close files watcher of %s.', this.outDirectory, { err }))
+
+    // We removed its listeners below, so don't leave a pending timer that would emit an event nobody handles
+    this.transcodingWrapper?.destroy()
+
+    // Safety net: this session is over, so unblock everyone waiting for its cleanup even if it was never scheduled
+    // (e.g. runMuxing() threw before the transcoding wrapper was able to run)
+    this.cleanupResolve()
+
     this.removeAllListeners()
     this.isAbleToUploadVideoWithCache.clear()
     this.hasClientSocketInBadHealthWithCache.clear()
   }
 
+  // Watcher handlers are async and fire and forget: remember them so the cleanup can wait for the pending ones
+  private trackWatcherHandler (handler: Promise<void>) {
+    const tracked: Promise<void> = handler
+      .catch(err => {
+        logger.error('Error in live files watcher handler of %s.', this.outDirectory, { err })
+      })
+      .finally(() => {
+        this.pendingWatcherHandlers.delete(tracked)
+      })
+
+    this.pendingWatcherHandlers.add(tracked)
+  }
+
   private watchMasterFile () {
-    this.filesWatcher.on('add', async path => {
+    const addHandler = async (path: string) => {
       if (path !== join(this.outDirectory, this.streamingPlaylist.playlistFilename)) return
       if (this.masterPlaylistCreated === true) return
 
       try {
         if (this.streamingPlaylist.storage === FileStorage.OBJECT_STORAGE) {
-          let masterContent = await readFile(path, 'utf-8')
+          const masterContent = await this.readNonEmptyMasterPlaylist(path)
 
-          // If the disk sync is slow, don't upload an empty master playlist on object storage
-          // Wait for ffmpeg to correctly fill it
-          while (!masterContent) {
-            await wait(100)
+          logger.debug('Uploading live master playlist on object storage for %s', this.videoUUID, { masterContent })
 
-            masterContent = await readFile(path, 'utf-8')
-          }
-
-          logger.debug('Uploading live master playlist on object storage for %s', this.videoUUID, { masterContent, ...this.lTags() })
-
-          const url = await storeHLSFileFromContent(this.streamingPlaylist, this.streamingPlaylist.playlistFilename, masterContent)
-
-          this.streamingPlaylist.playlistUrl = url
+          await storeHLSFileFromContent(
+            {
+              video: this.streamingPlaylist.Video,
+              pathOrFilename: this.streamingPlaylist.playlistFilename,
+              content: masterContent
+            }
+          )
         }
 
-        this.streamingPlaylist.assignP2PMediaLoaderInfoHashes(this.videoLive.Video, this.allResolutions.map(r => ({ height: r })))
+        const hlsStreams = [ ...this.allResolutions ]
+        if (this.hasAudio && this.hasVideo && !hlsStreams.includes(VideoResolution.H_NOVIDEO)) {
+          hlsStreams.push(VideoResolution.H_NOVIDEO)
+        }
+
+        await this.streamingPlaylist.buildAndSetInfoHashes(
+          this.videoLive.Video,
+          Array.from(hlsStreams).map(r => ({ resolution: r }))
+        )
 
         await this.streamingPlaylist.save()
       } catch (err) {
-        logger.error('Cannot update streaming playlist.', { err, ...this.lTags() })
+        logger.error('Cannot update streaming playlist.', { err })
+
+        // Don't set masterPlaylistCreated: without a stored master playlist the live would be published but unplayable
+        // Stop the session instead, so we don't federate a broken live
+        this.stopBrokenSession()
+        return
       }
 
       this.masterPlaylistCreated = true
 
-      logger.info('Master playlist file for %s has been created', this.videoUUID, this.lTags())
-    })
+      logger.info('Master playlist file for %s has been created', this.videoUUID)
+    }
+
+    this.filesWatcher.on('add', path => this.trackWatcherHandler(addHandler(path)))
+  }
+
+  // Throws if ffmpeg did not fill the master playlist in time: we don't want to store an empty one
+  private async readNonEmptyMasterPlaylist (path: string) {
+    const deadline = Date.now() + VIDEO_LIVE.MASTER_PLAYLIST_READ_TIMEOUT
+
+    do {
+      const content = await readFile(path, 'utf-8')
+      if (content) return content
+
+      // The session is over: bail out instead of making the cleanup wait for us
+      if (this.cleanupScheduled) break
+
+      // If the disk sync is slow, don't upload an empty master playlist on object storage
+      // Wait for ffmpeg to correctly fill it
+      await wait(100)
+    } while (Date.now() < deadline)
+
+    throw new Error(`Live master playlist ${path} is still empty after ${VIDEO_LIVE.MASTER_PLAYLIST_READ_TIMEOUT} ms`)
   }
 
   private watchTSFiles () {
     const startStreamDateTime = new Date().getTime()
 
-    const addHandler = async (segmentPath: string) => {
-      if (segmentPath.endsWith('.ts') !== true) return
+    const addHandler = (segmentPath: string) => {
+      if (!isLiveSegmentPath(segmentPath)) return
 
-      logger.debug('Live add handler of TS file %s.', segmentPath, this.lTags())
+      logger.debug('Live add handler of TS file %s.', segmentPath)
 
-      const playlistId = this.getPlaylistIdFromTS(segmentPath)
+      const playlistId = getLivePlaylistIdFromSegmentPath(segmentPath)
+      if (!playlistId) {
+        logger.warn('Cannot get the playlist id of live segment %s, ignoring it.', segmentPath)
+        return
+      }
 
       const segmentsToProcess = this.segmentsToProcessPerPlaylist[playlistId] || []
-      this.processSegments(segmentsToProcess)
+      // The cleanup waits for the queue, so we don't need to await it here
+      void this.processSegments(playlistId, segmentsToProcess)
 
       this.segmentsToProcessPerPlaylist[playlistId] = [ segmentPath ]
 
       if (this.hasClientSocketInBadHealthWithCache(this.sessionId)) {
         this.emit('bad-socket-health', { videoUUID: this.videoUUID })
-        return
-      }
-
-      // Duration constraint check
-      if (this.isDurationConstraintValid(startStreamDateTime) !== true) {
+      } // Duration constraint check
+      else if (this.isDurationConstraintValid(startStreamDateTime) !== true) {
         this.emit('duration-exceeded', { videoUUID: this.videoUUID })
-        return
-      }
-
-      // Check user quota if the user enabled replay saving
-      if (await this.isQuotaExceeded(segmentPath) === true) {
-        this.emit('quota-exceeded', { videoUUID: this.videoUUID })
       }
     }
 
     const deleteHandler = async (segmentPath: string) => {
-      if (segmentPath.endsWith('.ts') !== true) return
+      if (!isLiveSegmentPath(segmentPath)) return
 
-      logger.debug('Live delete handler of TS file %s.', segmentPath, this.lTags())
+      logger.debug('Live delete handler of TS file %s.', segmentPath)
 
-      try {
-        await this.liveSegmentShaStore.removeSegmentSha(segmentPath)
-      } catch (err) {
-        logger.warn('Cannot remove segment sha %s from sha store', segmentPath, { err, ...this.lTags() })
-      }
+      // The segment does not exist anymore so the cleanup won't list it: don't track it forever
+      this.processedSegments.delete(segmentPath)
+
+      this.liveSegmentShaStore.removeSegmentSha(segmentPath)
 
       if (this.streamingPlaylist.storage === FileStorage.OBJECT_STORAGE) {
         try {
-          await removeHLSFileObjectStorageByPath(this.streamingPlaylist, segmentPath)
+          await removeHLSFileObjectStorageByPath(this.streamingPlaylist.Video, segmentPath)
         } catch (err) {
-          logger.error('Cannot remove segment %s from object storage', segmentPath, { err, ...this.lTags() })
+          logger.error('Cannot remove segment %s from object storage', segmentPath, { err })
         }
       }
     }
 
     this.filesWatcher.on('add', p => addHandler(p))
-    this.filesWatcher.on('unlink', p => deleteHandler(p))
+    this.filesWatcher.on('unlink', p => this.trackWatcherHandler(deleteHandler(p)))
   }
 
   private async isQuotaExceeded (segmentPath: string) {
@@ -309,7 +402,7 @@ class MuxingSession extends EventEmitter {
 
       return canUpload !== true
     } catch (err) {
-      logger.error('Cannot stat %s or check quota of %d.', segmentPath, this.user.id, { err, ...this.lTags() })
+      logger.error('Cannot stat %s or check quota of %d.', segmentPath, this.user.id, { err })
     }
   }
 
@@ -320,7 +413,6 @@ class MuxingSession extends EventEmitter {
         fps,
         size: -1,
         extname: '.ts',
-        infoHash: null,
         formatFlags: VideoFileFormatFlag.NONE,
         streams: resolution === VideoResolution.H_NOVIDEO
           ? VideoFileStream.AUDIO
@@ -330,7 +422,7 @@ class MuxingSession extends EventEmitter {
       })
 
       VideoFileModel.customUpsert(file, 'streaming-playlist', null)
-        .catch(err => logger.error('Cannot create file for live streaming.', { err, ...this.lTags() }))
+        .catch(err => logger.error('Cannot create file for live streaming.', { err }))
     }
   }
 
@@ -353,31 +445,75 @@ class MuxingSession extends EventEmitter {
     return now <= max
   }
 
-  private processSegments (segmentPaths: string[]) {
-    Bluebird.mapSeries(segmentPaths, previousSegment => this.processSegment(previousSegment))
+  // All the segments must belong to the playlist of `playlistId`
+  private processSegments (playlistId: string, segmentPaths: string[]) {
+    if (segmentPaths.length === 0) return Promise.resolve()
+
+    return this.getSegmentProcessingQueue(playlistId)
+      .add(() =>
+        // Catch per segment: mapSeries would abandon the next ones, and the cleanup is the last chance to process them
+        Bluebird.mapSeries(segmentPaths, segmentPath => {
+          return this.processSegment(segmentPath)
+            .catch(err => {
+              if (this.aborted) return
+
+              logger.error('Cannot process segment %s.', segmentPath, { err })
+            })
+        })
+      )
       .catch(err => {
         if (this.aborted) return
 
-        logger.error('Cannot process segments', { err, ...this.lTags() })
+        logger.error('Cannot process segments', { err })
       })
   }
 
-  private async processSegment (segmentPath: string) {
-    // Add sha hash of previous segments, because ffmpeg should have finished generating them
-    await this.liveSegmentShaStore.addSegmentSha(segmentPath)
-
-    if (this.saveReplay) {
-      await this.addSegmentToReplay(segmentPath)
+  private getSegmentProcessingQueue (playlistId: string) {
+    if (!this.segmentProcessingQueues.has(playlistId)) {
+      this.segmentProcessingQueues.set(playlistId, new PQueue({ concurrency: 1 }))
     }
 
-    if (this.streamingPlaylist.storage === FileStorage.OBJECT_STORAGE) {
-      try {
-        await storeHLSFileFromPath(this.streamingPlaylist, segmentPath)
+    return this.segmentProcessingQueues.get(playlistId)
+  }
 
-        await this.processM3U8ToObjectStorage(segmentPath)
-      } catch (err) {
-        logger.error('Cannot store TS segment %s in object storage', segmentPath, { err, ...this.lTags() })
+  private async processSegment (segmentPath: string) {
+    // Already processed by the files watcher or by the cleanup
+    if (this.processedSegments.has(segmentPath)) return
+    // Mark it before processing it so the cleanup doesn't process it again while we're working on it
+    this.processedSegments.add(segmentPath)
+
+    // The replay is an append only file: retrying a segment we already appended would duplicate it
+    let appendedToReplay = false
+
+    try {
+      // Check user quota if the user enabled replay saving
+      if (await this.isQuotaExceeded(segmentPath) === true) {
+        this.emit('quota-exceeded', { videoUUID: this.videoUUID })
+        return
       }
+
+      // Add sha hash of previous segments, because ffmpeg should have finished generating them
+      await this.liveSegmentShaStore.addSegmentSha(segmentPath)
+
+      if (this.saveReplay) {
+        await this.addSegmentToReplay(segmentPath)
+        appendedToReplay = true
+      }
+
+      if (this.streamingPlaylist.storage === FileStorage.OBJECT_STORAGE) {
+        try {
+          await storeHLSFileFromPath(this.streamingPlaylist.Video, segmentPath)
+
+          await this.processM3U8ToObjectStorage(segmentPath)
+        } catch (err) {
+          logger.error('Cannot store TS segment %s in object storage', segmentPath, { err })
+        }
+      }
+    } catch (err) {
+      // Forget the segment so the cleanup can retry it, unless retrying it would duplicate it in the replay
+      if (!appendedToReplay) this.processedSegments.delete(segmentPath)
+
+      throw err
     }
 
     // Master playlist and segment JSON file are created, live is ready
@@ -389,9 +525,9 @@ class MuxingSession extends EventEmitter {
   }
 
   private async processM3U8ToObjectStorage (segmentPath: string) {
-    const m3u8Path = join(this.outDirectory, this.getPlaylistNameFromTS(segmentPath))
+    const m3u8Path = join(this.outDirectory, getLivePlaylistNameFromSegmentPath(segmentPath))
 
-    logger.debug('Process M3U8 file %s.', m3u8Path, this.lTags())
+    logger.debug('Process M3U8 file %s.', m3u8Path)
 
     const segmentName = basename(segmentPath)
 
@@ -405,48 +541,118 @@ class MuxingSession extends EventEmitter {
       }
 
       const queue = this.objectStorageSendQueues.get(m3u8Path)
-      await queue.add(() => storeHLSFileFromContent(this.streamingPlaylist, m3u8Path, filteredPlaylistContent))
+      await queue.add(() =>
+        storeHLSFileFromContent({
+          video: this.streamingPlaylist.Video,
+          pathOrFilename: m3u8Path,
+          content: filteredPlaylistContent
+        })
+      )
     } catch (err) {
-      logger.error('Cannot store in object storage m3u8 file %s', m3u8Path, { err, ...this.lTags() })
+      logger.error('Cannot store in object storage m3u8 file %s', m3u8Path, { err })
     }
   }
 
   private onTranscodingError () {
-    this.emit('transcoding-error', ({ videoUUID: this.videoUUID }))
+    // On ffmpeg error the transcoding wrapper abort() short-circuits and never emits 'end'
+    // So schedule the cleanup here too
+    // Schedule it before emitting so listeners can wait for the cleanup to complete
+    this.scheduleCleanup()
+
+    this.emit('transcoding-error', { videoUUID: this.videoUUID })
+  }
+
+  // The live is broken but the transcoding process is still running and writing files
+  // Contrary to onTranscodingError() don't schedule the cleanup here
+  private stopBrokenSession () {
+    this.emit('transcoding-error', { videoUUID: this.videoUUID })
   }
 
   private onTranscodedEnded () {
-    this.emit('transcoding-end', ({ videoUUID: this.videoUUID }))
+    // Don't log the input URL, which contains the stream key (a long lived secret)
+    logger.info('RTMP transmuxing for video %s ended. Scheduling cleanup', this.videoUUID)
 
-    logger.info('RTMP transmuxing for video %s ended. Scheduling cleanup', this.inputLocalUrl, this.lTags())
+    // Schedule it before emitting so listeners can wait for the cleanup to complete
+    this.scheduleCleanup()
 
-    setTimeout(() => {
-      // Wait latest segments generation, and close watchers
+    this.emit('transcoding-end', { videoUUID: this.videoUUID })
+  }
 
-      const promise = this.filesWatcher?.close() || Promise.resolve()
-      promise
-        .then(() => {
-          // Process remaining segments hash
-          for (const key of Object.keys(this.segmentsToProcessPerPlaylist)) {
-            this.processSegments(this.segmentsToProcessPerPlaylist[key])
-          }
-        })
-        .catch(err => {
-          logger.error(
-            'Cannot close watchers of %s or process remaining hash segments.', this.outDirectory,
-            { err, ...this.lTags() }
-          )
-        })
+  private scheduleCleanup () {
+    // Cleanup can be triggered by both the transcoding end and error paths: only run it once
+    if (this.cleanupScheduled) return
+    this.cleanupScheduled = true
 
-      this.emit('after-cleanup', { videoUUID: this.videoUUID })
-    }, 1000)
+    this.runCleanup()
+      .catch(err => logger.error('Cannot run cleanup of %s.', this.outDirectory, { err }))
+  }
+
+  private async runCleanup () {
+    try {
+      // The transcoding process exited so no new segment will be generated, but the OS watcher may never have
+      // notified us of the last ones: ask for a final listing before closing the watcher
+      await this.filesWatcher?.flush()
+      await this.filesWatcher?.close()
+
+      // Closing the watcher does not wait for the handlers it already started, that can still write files
+      await Promise.all(this.pendingWatcherHandlers)
+
+      // Wait for the segments the watcher already notified us about
+      await Promise.all(Array.from(this.segmentProcessingQueues.values(), queue => queue.onIdle()))
+
+      await this.processRemainingSegments()
+    } catch (err) {
+      logger.error(
+        'Cannot close watchers of %s or process remaining hash segments.',
+        this.outDirectory,
+        { err }
+      )
+    }
+
+    this.cleanupResolve()
+
+    this.emit('after-cleanup', { videoUUID: this.videoUUID })
+  }
+
+  // Process the segments still on disk that no handler took care of
+  private async processRemainingSegments () {
+    const filenames = await readdir(this.outDirectory)
+
+    const segmentPaths = filenames
+      .filter(f => isLiveSegmentPath(f))
+      // The listing order of the filesystem is arbitrary: process the segments in the order they were generated
+      .sort(compareLiveFilenames)
+      .map(f => join(this.outDirectory, f))
+      .filter(p => !this.processedSegments.has(p))
+
+    let remainingCount = 0
+    const perPlaylist = new Map<string, string[]>()
+
+    for (const segmentPath of segmentPaths) {
+      const playlistId = getLivePlaylistIdFromSegmentPath(segmentPath)
+      // Not a segment generated by our transcoding process
+      if (!playlistId) continue
+
+      if (!perPlaylist.has(playlistId)) perPlaylist.set(playlistId, [])
+      perPlaylist.get(playlistId).push(segmentPath)
+
+      remainingCount++
+    }
+
+    if (remainingCount === 0) return
+
+    logger.debug('Processing %d remaining live segments of %s.', remainingCount, this.videoUUID)
+
+    await Promise.all(
+      Array.from(perPlaylist, ([ playlistId, paths ]) => this.processSegments(playlistId, paths))
+    )
   }
 
   private hasClientSocketInBadHealth (sessionId: string) {
     const rtmpSession = this.context.sessions.get(sessionId)
 
     if (!rtmpSession) {
-      logger.warn('Cannot get session %s to check players socket health.', sessionId, this.lTags())
+      logger.warn('Cannot get session %s to check players socket health.', sessionId)
       return
     }
 
@@ -454,7 +660,7 @@ class MuxingSession extends EventEmitter {
       const playerSession = this.context.sessions.get(playerSessionId)
 
       if (!playerSession) {
-        logger.error('Cannot get player session %s to check socket health.', playerSession, this.lTags())
+        logger.error('Cannot get player session %s to check socket health.', playerSession)
         continue
       }
 
@@ -470,19 +676,19 @@ class MuxingSession extends EventEmitter {
     const segmentName = basename(segmentPath)
     const dest = join(this.replayDirectory, buildConcatenatedName(segmentName))
 
-    logger.debug(`Add segment ${segmentPath} to replay ${dest}`, this.lTags())
+    logger.debug(`Add segment ${segmentPath} to replay ${dest}`)
 
     try {
       const data = await readFile(segmentPath)
 
       await appendFile(dest, data)
     } catch (err) {
-      logger.error('Cannot copy segment %s to replay directory.', segmentPath, { err, ...this.lTags() })
+      logger.error('Cannot copy segment %s to replay directory.', segmentPath, { err })
     }
   }
 
   private async createLivePlaylist (): Promise<MStreamingPlaylistVideo> {
-    const playlist = await VideoStreamingPlaylistModel.loadOrGenerate(this.videoLive.Video)
+    const { playlist } = await VideoStreamingPlaylistModel.loadOrGenerate(this.videoLive.Video)
 
     playlist.playlistFilename = generateHLSMasterPlaylistFilename(true)
     playlist.segmentsSha256Filename = generateHlsSha256SegmentsFilename(true)
@@ -511,8 +717,6 @@ class MuxingSession extends EventEmitter {
       streamingPlaylist: this.streamingPlaylist,
       videoLive: this.videoLive,
 
-      lTags: this.lTags,
-
       sessionId: this.sessionId,
       inputLocalUrl: this.inputLocalUrl,
       inputPublicUrl: this.inputPublicUrl,
@@ -525,7 +729,10 @@ class MuxingSession extends EventEmitter {
       hasVideo: this.hasVideo,
       probe: this.probe,
 
-      segmentListSize: VIDEO_LIVE.SEGMENTS_LIST_SIZE,
+      segmentListSize: getLiveSegmentListSize({
+        latencyMode: this.videoLive.latencyMode,
+        dvrWindow: this.videoLive.dvrWindow
+      }),
       segmentDuration: getLiveSegmentTime(this.videoLive.latencyMode),
 
       outDirectory: this.outDirectory
@@ -534,16 +741,6 @@ class MuxingSession extends EventEmitter {
     return CONFIG.LIVE.TRANSCODING.ENABLED && CONFIG.LIVE.TRANSCODING.REMOTE_RUNNERS.ENABLED
       ? new RemoteTranscodingWrapper(options)
       : new FFmpegTranscodingWrapper(options)
-  }
-
-  private getPlaylistIdFromTS (segmentPath: string) {
-    const playlistIdMatcher = /^([\d+])-/
-
-    return basename(segmentPath).match(playlistIdMatcher)[1]
-  }
-
-  private getPlaylistNameFromTS (segmentPath: string) {
-    return `${this.getPlaylistIdFromTS(segmentPath)}.m3u8`
   }
 
   private buildToTranscode () {

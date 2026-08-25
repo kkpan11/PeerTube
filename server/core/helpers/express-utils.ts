@@ -1,21 +1,53 @@
+import { forceNumber } from '@peertube/peertube-core-utils'
+import { NSFWFlag, VideosCommonQuery } from '@peertube/peertube-models'
+import { getLowercaseExtension } from '@peertube/peertube-node-utils'
 import express, { RequestHandler } from 'express'
 import multer, { diskStorage } from 'multer'
-import { getLowercaseExtension } from '@peertube/peertube-node-utils'
+import { Duplex, Readable } from 'stream'
+import { pipeline } from 'stream/promises'
 import { CONFIG } from '../initializers/config.js'
 import { REMOTE_SCHEME } from '../initializers/constants.js'
 import { isArray } from './custom-validators/misc.js'
-import { logger } from './logger.js'
-import { deleteFileAndCatch, generateRandomString } from './utils.js'
+import { deleteFileAndCatch } from './fs.js'
+import { createLogger } from './logger.js'
+import { generateRandomString } from './utils.js'
 import { getExtFromMimetype } from './video.js'
 
-function buildNSFWFilter (res?: express.Response, paramNSFW?: string) {
-  if (paramNSFW === 'true') return true
-  if (paramNSFW === 'false') return false
-  if (paramNSFW === 'both') return undefined
+const logger = createLogger()
 
-  if (res?.locals.oauth) {
-    const user = res.locals.oauth.token.User
+// ---------------------------------------------------------------------------
+// Extract NSFW Filters options to list videos
+// ---------------------------------------------------------------------------
 
+export function buildNSFWFilters (options: {
+  req?: express.Request
+  res?: express.Response
+} = {}) {
+  return {
+    nsfw: buildNSFWFilter(options),
+
+    nsfwFlagsIncluded: CONFIG.NSFW_FLAGS_SETTINGS.ENABLED
+      ? buildNSFWFlagsIncluded(options)
+      : NSFWFlag.NONE,
+
+    nsfwFlagsExcluded: CONFIG.NSFW_FLAGS_SETTINGS.ENABLED
+      ? buildNSFWFlagsExcluded(options)
+      : NSFWFlag.NONE
+  }
+}
+
+function buildNSFWFilter (options: {
+  req?: express.Request
+  res?: express.Response
+}) {
+  const query = options.req?.query.nsfw as VideosCommonQuery['nsfw']
+  const user = options.res?.locals.oauth?.token.User
+
+  if (query === 'true') return true
+  if (query === 'false') return false
+  if (query === 'both') return undefined
+
+  if (user) {
     // User does not want NSFW videos
     if (user.nsfwPolicy === 'do_not_list') return false
 
@@ -29,7 +61,35 @@ function buildNSFWFilter (res?: express.Response, paramNSFW?: string) {
   return null
 }
 
-function cleanUpReqFiles (req: express.Request) {
+function buildNSFWFlagsIncluded (options: {
+  req?: express.Request
+  res?: express.Response
+}) {
+  const query = options.req?.query.nsfwFlagsIncluded as VideosCommonQuery['nsfwFlagsIncluded']
+  const user = options.res?.locals.oauth?.token.User
+
+  if (query) return query
+  if (user) return user.nsfwFlagsWarned | user.nsfwFlagsBlurred | user.nsfwFlagsDisplayed
+
+  return undefined
+}
+
+function buildNSFWFlagsExcluded (options: {
+  req?: express.Request
+  res?: express.Response
+}) {
+  const query = options.req?.query.nsfwFlagsExcluded as VideosCommonQuery['nsfwFlagsExcluded']
+  const user = options.res?.locals.oauth?.token.User
+
+  if (query) return query
+  if (user) return user.nsfwFlagsHidden
+
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
+
+export function cleanUpReqFiles (req: express.Request) {
   const filesObject = req.files
   if (!filesObject) return
 
@@ -45,7 +105,7 @@ function cleanUpReqFiles (req: express.Request) {
   }
 }
 
-function getHostWithPort (host: string) {
+export function getHostWithPort (host: string) {
   const splitted = host.split(':')
 
   // The port was not specified
@@ -58,7 +118,7 @@ function getHostWithPort (host: string) {
   return host
 }
 
-function createReqFiles (
+export function createReqFiles (
   fieldNames: string[],
   mimeTypes: { [id: string]: string | string[] },
   destination = CONFIG.STORAGE.TMP_DIR
@@ -81,10 +141,10 @@ function createReqFiles (
     })
   }
 
-  return multer({ storage }).fields(fields)
+  return multer({ storage, defParamCharset: 'utf8' }).fields(fields)
 }
 
-function createAnyReqFiles (
+export function createAnyReqFiles (
   mimeTypes: { [id: string]: string | string[] },
   fileFilter: (req: express.Request, file: Express.Multer.File, cb: (err: Error, result: boolean) => void) => void
 ): RequestHandler {
@@ -101,29 +161,81 @@ function createAnyReqFiles (
   return multer({ storage, fileFilter }).any()
 }
 
-function isUserAbleToSearchRemoteURI (res: express.Response) {
+export function isUserAbleToSearchRemoteURI (res: express.Response) {
   const user = res.locals.oauth ? res.locals.oauth.token.User : undefined
 
   return CONFIG.SEARCH.REMOTE_URI.ANONYMOUS === true ||
     (CONFIG.SEARCH.REMOTE_URI.USERS === true && user !== undefined)
 }
 
-function getCountVideos (req: express.Request) {
+export function getCountVideos (req: express.Request) {
   return req.query.skipCount !== true
 }
 
-// ---------------------------------------------------------------------------
-
-export {
-  buildNSFWFilter,
-  getHostWithPort,
-  createAnyReqFiles,
-  isUserAbleToSearchRemoteURI,
-  createReqFiles,
-  cleanUpReqFiles,
-  getCountVideos
+export function getAuthUser (res: express.Response) {
+  return res.locals.oauth
+    ? res.locals.oauth.token.User
+    : undefined
 }
 
+// Only supports a single "bytes=start-end" range
+export function parseRangeHeader (rangeHeader: string | undefined, size: number):
+  | { start: number, end: number }
+  | 'unsatisfiable'
+  | undefined
+{
+  if (!rangeHeader) return undefined
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader)
+  if (!match || (!match[1] && !match[2])) return undefined
+
+  const [ , rawStart, rawEnd ] = match
+
+  let start: number
+  let end: number
+
+  if (rawStart === '') {
+    start = Math.max(size - forceNumber(rawEnd), 0)
+
+    end = size - 1
+  } else {
+    start = forceNumber(rawStart)
+
+    end = rawEnd === ''
+      ? size - 1 :
+      Math.min(forceNumber(rawEnd), size - 1)
+  }
+
+  if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+    return 'unsatisfiable'
+  }
+
+  return { start, end }
+}
+
+// Pipe streams to the HTTP response, ignoring the errors emitted when the client aborts the request
+export async function pipelineToResponse (options: {
+  streams: (Readable | Duplex)[]
+  res: express.Response
+  logLabel: string
+}) {
+  const { streams, res, logLabel } = options
+
+  try {
+    await pipeline([ ...streams, res ])
+  } catch (err) {
+    // The client can close the connection at any time: this is not a server error
+    if ([ 'ERR_STREAM_PREMATURE_CLOSE', 'ECONNRESET', 'EPIPE' ].includes(err.code)) {
+      logger.debug(`Client aborted ${logLabel}`, { err })
+      return
+    }
+
+    throw err
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Private
 // ---------------------------------------------------------------------------
 
 async function generateReqFilename (

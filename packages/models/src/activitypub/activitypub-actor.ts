@@ -12,7 +12,7 @@ export interface ActivityPubActor {
   inbox: string
   outbox: string
   preferredUsername: string
-  url: ActivityUrlObject[] | string
+  url: ActivityUrlObject[]
   name: string
   endpoints: {
     sharedInbox: string
@@ -21,6 +21,9 @@ export interface ActivityPubActor {
   attributedTo?: ActivityPubAttributedTo[]
 
   support?: string
+
+  email?: string
+
   publicKey: {
     id: string
     owner: string
@@ -35,7 +38,13 @@ export interface ActivityPubActor {
 
   published?: string
 
-  // For export
+  // Used by the user export feature
   likes?: string
   dislikes?: string
+
+  // On channels only
+  playerSettings?: string
+
+  indexable?: boolean
+  discoverable?: boolean
 }

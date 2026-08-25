@@ -1,13 +1,9 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
+import { AbuseState, HttpStatusCode, UserAdminFlag, UserNewFeatureInfo, UserRole, VideoPlaylistType } from '@peertube/peertube-models'
+import { cleanupTests, createSingleServer, PeerTubeServer, setAccessTokensToServers } from '@peertube/peertube-server-commands'
 import { testAvatarSize } from '@tests/shared/checks.js'
-import { AbuseState, HttpStatusCode, UserAdminFlag, UserRole, VideoPlaylistType } from '@peertube/peertube-models'
-import {
-  cleanupTests,
-  createSingleServer, PeerTubeServer,
-  setAccessTokensToServers
-} from '@peertube/peertube-server-commands'
+import { expect } from 'chai'
 
 describe('Test users', function () {
   let server: PeerTubeServer
@@ -37,7 +33,6 @@ describe('Test users', function () {
   })
 
   describe('Creating a user', function () {
-
     it('Should be able to create a new user', async function () {
       await server.users.create({ ...user, videoQuota: 2 * 1024 * 1024, adminFlags: UserAdminFlag.BYPASS_VIDEO_AUTO_BLACKLIST })
     })
@@ -60,6 +55,7 @@ describe('Test users', function () {
         expect(user.id).to.be.a('number')
         expect(user.account.displayName).to.equal('user_1')
         expect(user.account.description).to.be.null
+        expect(user.language).to.be.null
       }
 
       expect(userMe.adminFlags).to.equal(UserAdminFlag.BYPASS_VIDEO_AUTO_BLACKLIST)
@@ -81,7 +77,6 @@ describe('Test users', function () {
   })
 
   describe('Users listing', function () {
-
     it('Should list all the users', async function () {
       const { data, total } = await server.users.list()
 
@@ -183,9 +178,30 @@ describe('Test users', function () {
         expect(data[1].username).to.equal('user_1')
       }
     })
+
+    it('Should filter users by role', async function () {
+      {
+        const { total, data } = await server.users.list({ role: UserRole.ADMINISTRATOR })
+        expect(total).to.equal(1)
+        expect(data.length).to.equal(1)
+        expect(data[0].username).to.equal('root')
+      }
+
+      {
+        const { total, data } = await server.users.list({ role: UserRole.USER })
+        expect(total).to.equal(1)
+        expect(data.length).to.equal(1)
+        expect(data[0].username).to.equal('user_1')
+      }
+    })
   })
 
   describe('Update my account', function () {
+    let otherToken: string
+
+    before(async function () {
+      otherToken = await server.login.getAccessToken(user)
+    })
 
     it('Should update my password', async function () {
       await server.users.updateMe({
@@ -196,6 +212,11 @@ describe('Test users', function () {
       user.password = 'new password'
 
       await server.login.login({ user })
+    })
+
+    it('Should have invalided other tokens, but not the one that changed the password', async function () {
+      await server.users.getMyQuotaUsed({ token: userToken })
+      await server.users.getMyQuotaUsed({ token: otherToken, expectedStatus: HttpStatusCode.UNAUTHORIZED_401 })
     })
 
     it('Should be able to change the NSFW display attribute', async function () {
@@ -336,10 +357,23 @@ describe('Test users', function () {
       expect(user.noInstanceConfigWarningModal).to.be.true
       expect(user.noAccountSetupWarningModal).to.be.true
     })
+
+    it('Should be able to update my languages', async function () {
+      await server.users.updateMe({
+        token: userToken,
+        language: 'fr',
+        videoLanguages: [ 'fr', 'en' ]
+      })
+
+      {
+        const user = await server.users.getMyInfo({ token: userToken })
+        expect(user.language).to.equal('fr')
+        expect(user.videoLanguages).to.deep.equal([ 'fr', 'en' ])
+      }
+    })
   })
 
   describe('Updating another user', function () {
-
     it('Should be able to update another user', async function () {
       await server.users.update({
         userId,
@@ -391,7 +425,6 @@ describe('Test users', function () {
   })
 
   describe('Remove a user', function () {
-
     before(async function () {
       await server.users.update({
         userId,
@@ -515,10 +548,15 @@ describe('Test users', function () {
 
     it('Should report correct abuses counts', async function () {
       const reason = 'my super bad reason'
-      await server.abuses.report({ token: user17AccessToken, videoId, reason })
+      // root does not own this video (user17 does), so root can report it and it counts as an incrimination against user17
+      await server.abuses.report({ videoId, reason })
 
       const body1 = await server.abuses.getAdminList()
       const abuseId = body1.data[0].id
+
+      // user17 reports something it does not own to increase its abusesCreatedCount
+      const rootAccount = await server.accounts.get({ accountName: 'root' })
+      await server.abuses.report({ token: user17AccessToken, accountId: rootAccount.id, reason: 'another reason' })
 
       const user2 = await server.users.get({ userId: user17Id, withStats: true })
       expect(user2.abusesCount).to.equal(1) // number of incriminations
@@ -528,6 +566,59 @@ describe('Test users', function () {
 
       const user3 = await server.users.get({ userId: user17Id, withStats: true })
       expect(user3.abusesAcceptedCount).to.equal(1) // number of reports created accepted
+    })
+  })
+
+  describe('Client config', function () {
+    it('Send a cookie on interface language change', async function () {
+      const res = await server.users.updateInterfaceLanguage({
+        language: 'fr',
+        expectedStatus: HttpStatusCode.NO_CONTENT_204
+      })
+
+      const setCookie = res.headers['set-cookie']
+
+      expect(setCookie).to.exist
+      expect(setCookie[0]).to.include('clientLanguage=fr;')
+    })
+
+    it('Should clear cookies if language is null', async function () {
+      const res = await server.users.updateInterfaceLanguage({
+        language: null,
+        expectedStatus: HttpStatusCode.NO_CONTENT_204
+      })
+
+      const setCookie = res.headers['set-cookie']
+
+      expect(setCookie).to.exist
+      expect(setCookie[0]).to.include('clientLanguage=;')
+    })
+  })
+
+  describe('New features info read', function () {
+    let userToken: string
+
+    it('Should create a new user with all new features info as read', async function () {
+      userToken = await server.users.generateUserAndToken('user_features')
+
+      const { newFeaturesInfoRead } = await server.users.getMyInfo({ token: userToken })
+      expect(newFeaturesInfoRead).to.equal(UserNewFeatureInfo.CHANNEL_COLLABORATION)
+    })
+
+    it('Should update new features info read', async function () {
+      {
+        await server.users.readNewFeatureInfo({ feature: 0, token: userToken })
+
+        const { newFeaturesInfoRead } = await server.users.getMyInfo({ token: userToken })
+        expect(newFeaturesInfoRead).to.equal(UserNewFeatureInfo.CHANNEL_COLLABORATION)
+      }
+
+      {
+        await server.users.readNewFeatureInfo({ feature: 2, token: userToken })
+
+        const { newFeaturesInfoRead } = await server.users.getMyInfo({ token: userToken })
+        expect(newFeaturesInfoRead).to.equal(3)
+      }
     })
   })
 

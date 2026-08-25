@@ -1,11 +1,14 @@
+import { PlayerThemeVideoSetting } from '../../player/player-theme.type.js'
 import {
   LiveVideoLatencyModeType,
   VideoCommentPolicyType,
+  VideoEmbedPrivacyPolicyType,
   VideoFileMetadata,
   VideoPrivacyType,
   VideoStateType,
   VideoStreamingPlaylistType_Type
 } from '../../videos/index.js'
+import { ImageExportJSON } from './image-export.model.js'
 
 export interface VideoExportJSON {
   videos: {
@@ -15,6 +18,7 @@ export interface VideoExportJSON {
     updatedAt: string
     publishedAt: string
     originallyPublishedAt: string
+    firstPublishedAt: string
 
     name: string
     category: number
@@ -35,17 +39,23 @@ export interface VideoExportJSON {
       saveReplay: boolean
       permanentLive: boolean
       latencyMode: LiveVideoLatencyModeType
+      dvrWindow?: number
       streamKey: string
 
       replaySettings?: {
         privacy: VideoPrivacyType
       }
+
+      schedules?: {
+        startAt: string
+      }[]
     }
 
     url: string
 
     thumbnailUrl: string
     previewUrl: string
+    thumbnails: ImageExportJSON[]
 
     views: number
 
@@ -54,8 +64,6 @@ export interface VideoExportJSON {
 
     nsfw: boolean
 
-    // TODO: remove, deprecated in 6.2
-    commentsEnabled?: boolean
     commentsPolicy: VideoCommentPolicyType
 
     downloadEnabled: boolean
@@ -102,6 +110,15 @@ export interface VideoExportJSON {
       fps: number
 
       metadata: VideoFileMetadata
+    }
+
+    playerSettings?: {
+      theme: PlayerThemeVideoSetting
+    }
+
+    videoEmbedPrivacy: {
+      policy: VideoEmbedPrivacyPolicyType
+      domains: string[]
     }
 
     archiveFiles: {

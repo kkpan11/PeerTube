@@ -1,5 +1,6 @@
-import { AutomaticTagPolicy, ResultList, UserRight, VideoCommentPolicy, VideoCommentThreadTree } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { AutomaticTagPolicy, UserRight, VideoCommentPolicy, VideoCommentThreadTree } from '@peertube/peertube-models'
+import { afterCommitIfTransaction } from '@server/helpers/database-utils.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { sequelizeTypescript } from '@server/initializers/database.js'
 import { AccountModel } from '@server/models/account/account.js'
 import { AccountAutomaticTagPolicyModel } from '@server/models/automatic-tag/account-automatic-tag-policy.js'
@@ -11,15 +12,18 @@ import {
   MComment,
   MCommentFormattable,
   MCommentOwnerVideo,
-  MCommentOwnerVideoReply, MUserAccountId, MVideoAccountLight,
-  MVideoFullLight
+  MCommentOwnerVideoReply,
+  MUserAccountId,
+  MVideoAccountIdUrl,
+  MVideoAccountLight
 } from '../types/models/index.js'
 import { sendCreateVideoCommentIfNeeded, sendDeleteVideoComment, sendReplyApproval } from './activitypub/send/index.js'
 import { getLocalVideoCommentActivityPubUrl } from './activitypub/url.js'
-import { AutomaticTagger } from './automatic-tags/automatic-tagger.js'
-import { setAndSaveCommentAutomaticTags } from './automatic-tags/automatic-tags.js'
+import { createCommentAutomaticTagsJob } from './automatic-tags/automatic-tags.js'
 import { Notifier } from './notifier/notifier.js'
 import { Hooks } from './plugins/hooks.js'
+
+const logger = createLogger()
 
 export async function removeComment (commentArg: MComment, req: express.Request, res: express.Response) {
   let videoCommentInstanceBefore: MCommentOwnerVideo
@@ -29,7 +33,7 @@ export async function removeComment (commentArg: MComment, req: express.Request,
 
     videoCommentInstanceBefore = cloneDeep(comment)
 
-    if (comment.isOwned() || comment.Video.isOwned()) {
+    if (comment.isLocal() || comment.Video.isLocal()) {
       await sendDeleteVideoComment(comment, t)
     }
 
@@ -43,8 +47,10 @@ export async function removeComment (commentArg: MComment, req: express.Request,
   Hooks.runAction('action:api.video-comment.deleted', { comment: videoCommentInstanceBefore, req, res })
 }
 
-export async function approveComment (commentArg: MComment) {
-  await sequelizeTypescript.transaction(async t => {
+export async function approveComment (commentArg: MComment, options: { notify?: boolean, transaction?: Transaction } = {}) {
+  const { notify = true, transaction } = options
+
+  const run = async (t: Transaction) => {
     const comment = await VideoCommentModel.loadByIdAndPopulateVideoAndAccountAndReply(commentArg.id, t)
 
     const oldHeldForReview = comment.heldForReview
@@ -52,24 +58,27 @@ export async function approveComment (commentArg: MComment) {
     comment.heldForReview = false
     await comment.save({ transaction: t })
 
-    if (comment.isOwned()) {
+    if (comment.isLocal()) {
       await sendCreateVideoCommentIfNeeded(comment, t)
     } else {
-      sendReplyApproval(comment, 'ApproveReply')
+      afterCommitIfTransaction(t, () => sendReplyApproval(comment, 'ApproveReply'))
     }
 
-    if (oldHeldForReview !== comment.heldForReview) {
-      Notifier.Instance.notifyOnNewCommentApproval(comment)
+    if (notify && oldHeldForReview !== comment.heldForReview) {
+      afterCommitIfTransaction(t, () => Notifier.Instance.notifyOnNewCommentApproval(comment))
     }
 
     logger.info('Video comment %d approved.', comment.id)
-  })
+  }
+
+  if (transaction) await run(transaction)
+  else await sequelizeTypescript.transaction(run)
 }
 
 export async function createLocalVideoComment (options: {
   text: string
   inReplyToComment: MComment | null
-  video: MVideoFullLight
+  video: MVideoAccountLight
   user: MUserAccountId
 }) {
   const { user, video, text, inReplyToComment } = options
@@ -85,13 +94,12 @@ export async function createLocalVideoComment (options: {
   return sequelizeTypescript.transaction(async transaction => {
     const account = await AccountModel.load(user.Account.id, transaction)
 
-    const automaticTags = await new AutomaticTagger().buildCommentsAutomaticTags({
-      ownerAccount: video.VideoChannel.Account,
-      text,
+    const holdStatus = await getCommentHoldStatus({
+      user,
+      video,
+      holdIfAutoTagPolicy: true,
       transaction
     })
-
-    const heldForReview = await shouldCommentBeHeldForReview({ user, video, automaticTags, transaction })
 
     const comment = await VideoCommentModel.create({
       text,
@@ -99,7 +107,7 @@ export async function createLocalVideoComment (options: {
       inReplyToCommentId,
       videoId: video.id,
       accountId: account.id,
-      heldForReview,
+      heldForReview: holdStatus !== 'not-held',
       url: new Date().toISOString()
     }, { transaction, validate: false })
 
@@ -107,7 +115,14 @@ export async function createLocalVideoComment (options: {
 
     const savedComment: MCommentOwnerVideoReply = await comment.save({ transaction })
 
-    await setAndSaveCommentAutomaticTags({ comment: savedComment, automaticTags, transaction })
+    createCommentAutomaticTagsJob({
+      comment: savedComment,
+      moderation: holdStatus === 'held-for-auto-tags'
+        ? 'release-hold'
+        : 'none',
+      notify: true,
+      transaction
+    })
 
     savedComment.InReplyToVideoComment = inReplyToComment
     savedComment.Video = video
@@ -115,68 +130,115 @@ export async function createLocalVideoComment (options: {
 
     await sendCreateVideoCommentIfNeeded(savedComment, transaction)
 
-    return savedComment
+    return { comment: savedComment, holdStatus }
   })
 }
 
-export function buildFormattedCommentTree (resultList: ResultList<MCommentFormattable>): VideoCommentThreadTree {
-  // Comments are sorted by id ASC
-  const comments = resultList.data
+// `replies` is a flat and truncated view of the descendants of `parentCommentId
+export function buildFormattedCommentTrees (options: {
+  parentCommentId: number
+  replies: MCommentFormattable[]
+}): VideoCommentThreadTree[] {
+  const { parentCommentId, replies } = options
 
-  const comment = comments.shift()
-  const thread: VideoCommentThreadTree = {
-    comment: comment.toFormattedJSON(),
-    children: []
+  const roots: VideoCommentThreadTree[] = []
+  const idx: { [id: number]: VideoCommentThreadTree } = {}
+
+  for (const reply of replies) {
+    const formattedComment = reply.toFormattedJSON()
+
+    idx[reply.id] = {
+      comment: formattedComment,
+      children: [],
+
+      totalChildren: formattedComment.totalReplies
+    }
   }
-  const idx = {
-    [comment.id]: thread
-  }
 
-  while (comments.length !== 0) {
-    const childComment = comments.shift()
-
-    const childCommentThread: VideoCommentThreadTree = {
-      comment: childComment.toFormattedJSON(),
-      children: []
+  // The flat list is not sorted by depth, so we can only attach children once every node exists
+  for (const reply of replies) {
+    if (reply.inReplyToCommentId === parentCommentId) {
+      roots.push(idx[reply.id])
+      continue
     }
 
-    const parentCommentThread = idx[childComment.inReplyToCommentId]
-    // Maybe the parent comment was blocked by the admin/user
-    if (!parentCommentThread) continue
+    // Maybe the parent comment was blocked by the admin/user, or truncated from the tree
+    const parentNode = idx[reply.inReplyToCommentId]
+    if (!parentNode) continue
 
-    parentCommentThread.children.push(childCommentThread)
-    idx[childComment.id] = childCommentThread
+    parentNode.children.push(idx[reply.id])
   }
 
-  return thread
+  return roots
 }
 
-export async function shouldCommentBeHeldForReview (options: {
-  user: MUserAccountId
-  video: MVideoAccountLight
-  automaticTags: { name: string, accountId: number }[]
-  transaction?: Transaction
-}) {
-  const { user, video, transaction, automaticTags } = options
+export function buildFormattedCommentTree (options: {
+  comment: MCommentFormattable
+  totalChildren: number
+  replies: MCommentFormattable[]
+}): VideoCommentThreadTree {
+  const { comment, totalChildren, replies } = options
 
-  if (video.isOwned() && user) {
-    if (user.hasRight(UserRight.MANAGE_ANY_VIDEO_COMMENT)) return false
-    if (user.Account.id === video.VideoChannel.accountId) return false
+  return {
+    comment: comment.toFormattedJSON(),
+    children: buildFormattedCommentTrees({ parentCommentId: comment.id, replies }),
+    totalChildren
+  }
+}
+
+export type CommentHoldStatus = 'held-for-review' | 'held-for-auto-tags' | 'not-held'
+
+export async function getCommentHoldStatus (options: {
+  user: MUserAccountId
+  video: MVideoAccountIdUrl
+
+  // The automatic tags of the comment have not been built yet: we don't know which tags it will have
+  holdIfAutoTagPolicy: boolean
+  ownerAutomaticTags?: string[]
+
+  transaction?: Transaction
+}): Promise<CommentHoldStatus> {
+  const { user, video, transaction, holdIfAutoTagPolicy, ownerAutomaticTags } = options
+
+  // User bypass check
+  if (video.isLocal() && user) {
+    if (user.hasRight(UserRight.MANAGE_ANY_VIDEO_COMMENT)) return 'not-held'
+    if (user.Account.id === video.VideoChannel.accountId) return 'not-held'
   }
 
-  if (video.commentsPolicy === VideoCommentPolicy.REQUIRES_APPROVAL) return true
-  if (video.isOwned() !== true) return false
+  // Global owner policy
+  if (video.commentsPolicy === VideoCommentPolicy.REQUIRES_APPROVAL) {
+    return 'held-for-review'
+  }
 
-  const ownerAccountTags = automaticTags
-    .filter(t => t.accountId === video.VideoChannel.accountId)
-    .map(t => t.name)
+  // Don't check auto tags policy on remote videos
+  if (video.isLocal() !== true) return 'not-held'
 
-  if (ownerAccountTags.length === 0) return false
+  // Hold the comment if the account could want to review it
+  // Let the `build-object-automatic-tags` job release it if the tags it ends up with don't match any of its review policies
+  if (holdIfAutoTagPolicy) {
+    const hasPolicy = await AccountAutomaticTagPolicyModel.hasPolicy({
+      accountId: video.VideoChannel.accountId,
+      policy: AutomaticTagPolicy.REVIEW_COMMENT,
+      transaction
+    })
 
-  return AccountAutomaticTagPolicyModel.hasPolicyOnTags({
+    return hasPolicy
+      ? 'held-for-auto-tags'
+      : 'not-held'
+  }
+
+  if (!ownerAutomaticTags || ownerAutomaticTags.length === 0) return 'not-held'
+
+  // Check on specific auto tags provided
+  const hasPolicy = await AccountAutomaticTagPolicyModel.hasPolicyOnTags({
     accountId: video.VideoChannel.accountId,
     policy: AutomaticTagPolicy.REVIEW_COMMENT,
-    tags: ownerAccountTags,
+    tags: ownerAutomaticTags,
     transaction
   })
+
+  return hasPolicy
+    ? 'held-for-review'
+    : 'not-held'
 }

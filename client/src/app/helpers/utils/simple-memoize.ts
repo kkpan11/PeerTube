@@ -1,15 +1,13 @@
 /**
- *
  * Simple memoize only support methods that accept 0 or 1 argument
  * You can easily use it adding @SimpleMemoize just above the method name
- *
  */
 
 export function SimpleMemoize () {
   const store = new Map()
 
   return (_target: object, _propertyKey: string, descriptor: TypedPropertyDescriptor<any>) => {
-    if (descriptor.value != null) {
+    if (descriptor.value !== null) {
       descriptor.value = getNewFunction(descriptor.value, store)
       return
     }
@@ -18,7 +16,7 @@ export function SimpleMemoize () {
   }
 }
 
-function getNewFunction (originalMethod: () => void, store: Map<any, any>) {
+function getNewFunction (originalMethod: (...args: any[]) => void, store: Map<any, any>) {
   return function (this: any, ...args: any[]) {
     if (args.length > 1) {
       throw new Error('Simple memoize only support 0 or 1 argument')
@@ -35,13 +33,11 @@ function getNewFunction (originalMethod: () => void, store: Map<any, any>) {
         returnedValue = originalMethod.apply(this, args)
         store.set(hashKey, returnedValue)
       }
+    } else if (store.has(this)) {
+      returnedValue = store.get(this)
     } else {
-      if (store.has(this)) {
-        returnedValue = store.get(this)
-      } else {
-        returnedValue = originalMethod.apply(this, args)
-        store.set(this, returnedValue)
-      }
+      returnedValue = originalMethod.apply(this, args)
+      store.set(this, returnedValue)
     }
 
     return returnedValue

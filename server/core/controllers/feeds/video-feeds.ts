@@ -2,18 +2,17 @@ import { Feed } from '@peertube/feed'
 import { buildDownloadFilesUrl } from '@peertube/peertube-core-utils'
 import { VideoInclude, VideoResolution } from '@peertube/peertube-models'
 import { getVideoFileMimeType } from '@server/lib/video-file.js'
-import { cacheRouteFactory } from '@server/middlewares/index.js'
 import { VideoModel } from '@server/models/video/video.js'
 import express from 'express'
 import { extname } from 'path'
-import { buildNSFWFilter } from '../../helpers/express-utils.js'
+import { buildNSFWFilters } from '../../helpers/express-utils.js'
 import { ROUTE_CACHE_LIFETIME, WEBSERVER } from '../../initializers/constants.js'
 import {
   asyncMiddleware,
-  commonVideosFiltersValidator,
+  cacheRouteFactory,
+  commonVideosFiltersValidatorFactory,
   feedsAccountOrChannelFiltersValidator,
   feedsFormatValidator,
-  setDefaultVideosSort,
   setFeedFormatContentType,
   videosSortValidator,
   videoSubscriptionFeedsValidator
@@ -21,7 +20,7 @@ import {
 import {
   buildFeedMetadata,
   getCommonVideoFeedAttributes,
-  getPodcastFeedUrlCustomTag,
+  getPodcastChannelFeedUrlCustomTag,
   getVideosForFeeds,
   initFeed,
   sendFeed
@@ -38,11 +37,10 @@ const { middleware: cacheRouteMiddleware } = cacheRouteFactory({
 videoFeedsRouter.get(
   '/videos.:format',
   videosSortValidator,
-  setDefaultVideosSort,
   feedsFormatValidator,
   setFeedFormatContentType,
   cacheRouteMiddleware(ROUTE_CACHE_LIFETIME.FEEDS),
-  commonVideosFiltersValidator,
+  commonVideosFiltersValidatorFactory(),
   asyncMiddleware(feedsAccountOrChannelFiltersValidator),
   asyncMiddleware(generateVideoFeed)
 )
@@ -50,11 +48,10 @@ videoFeedsRouter.get(
 videoFeedsRouter.get(
   '/subscriptions.:format',
   videosSortValidator,
-  setDefaultVideosSort,
   feedsFormatValidator,
   setFeedFormatContentType,
   cacheRouteMiddleware(ROUTE_CACHE_LIFETIME.FEEDS),
-  commonVideosFiltersValidator,
+  commonVideosFiltersValidatorFactory(),
   asyncMiddleware(videoSubscriptionFeedsValidator),
   asyncMiddleware(generateVideoFeedForSubscriptions)
 )
@@ -73,7 +70,7 @@ async function generateVideoFeed (req: express.Request, res: express.Response) {
 
   const { name, description, imageUrl, ownerImageUrl, link, ownerLink } = await buildFeedMetadata({ videoChannel, account })
 
-  const feed = initFeed({
+  const feed = await initFeed({
     name,
     description,
     link,
@@ -90,13 +87,14 @@ async function generateVideoFeed (req: express.Request, res: express.Response) {
       }
     ],
     customTags: videoChannel
-      ? [ getPodcastFeedUrlCustomTag(videoChannel) ]
+      ? [ getPodcastChannelFeedUrlCustomTag(videoChannel) ]
       : []
   })
 
   const data = await getVideosForFeeds({
-    sort: req.query.sort,
-    nsfw: buildNSFWFilter(res, req.query.nsfw),
+    ...buildNSFWFilters({ req, res }),
+
+    sort: req.query.sort || '-originallyPublishedAt',
     isLocal: req.query.isLocal,
     include: req.query.include | VideoInclude.FILES,
     accountId: account?.id,
@@ -113,7 +111,7 @@ async function generateVideoFeedForSubscriptions (req: express.Request, res: exp
   const account = res.locals.account
   const { name, description, imageUrl, link } = await buildFeedMetadata({ account })
 
-  const feed = initFeed({
+  const feed = await initFeed({
     name,
     description,
     link,
@@ -124,8 +122,9 @@ async function generateVideoFeedForSubscriptions (req: express.Request, res: exp
   })
 
   const data = await getVideosForFeeds({
-    sort: req.query.sort,
-    nsfw: buildNSFWFilter(res, req.query.nsfw),
+    ...buildNSFWFilters({ req, res }),
+
+    sort: req.query.sort || '-publishedAt',
     isLocal: req.query.isLocal,
     include: req.query.include | VideoInclude.FILES,
     displayOnlyForFollower: {
@@ -197,7 +196,7 @@ function addVideosToFeed (feed: Feed, videos: VideoModel[]) {
       videos: videoFiles,
 
       embed: {
-        url: WEBSERVER.URL + video.getEmbedStaticPath(),
+        url: video.getEmbedStaticUrl(),
         allowFullscreen: true
       },
       player: {

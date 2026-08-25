@@ -1,5 +1,4 @@
-import { NgFor, NgIf } from '@angular/common'
-import { Component, inject } from '@angular/core'
+import { Component, inject, ChangeDetectionStrategy } from '@angular/core'
 import { RouterLink } from '@angular/router'
 import { ComponentPagination, Notifier, resetCurrentPage } from '@app/core'
 import { formatICU } from '@app/helpers'
@@ -7,19 +6,17 @@ import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.mode
 import { UserSubscriptionService } from '@app/shared/shared-user-subscription/user-subscription.service'
 import { Subject } from 'rxjs'
 import { ActorAvatarComponent } from '../../shared/shared-actor-image/actor-avatar.component'
-import { AdvancedInputFilterComponent } from '../../shared/shared-forms/advanced-input-filter.component'
-
+import { SearchInputComponent } from '../../shared/shared-forms/search-input.component'
 import { InfiniteScrollerDirective } from '../../shared/shared-main/common/infinite-scroller.directive'
 import { SubscribeButtonComponent } from '../../shared/shared-user-subscription/subscribe-button.component'
 
 @Component({
   templateUrl: './my-subscriptions.component.html',
   styleUrls: [ './my-subscriptions.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
-    AdvancedInputFilterComponent,
+    SearchInputComponent,
     InfiniteScrollerDirective,
-    NgFor,
     ActorAvatarComponent,
     RouterLink,
     SubscribeButtonComponent
@@ -75,7 +72,7 @@ export class MySubscriptionsComponent {
           this.onDataSubject.next(res.data)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 }

@@ -1,7 +1,9 @@
-import { Job } from 'bullmq'
-import { logger } from '@server/helpers/logger.js'
+import { AfterVideoChannelImportPayload, StreamSyncState, VideoImportPreventExceptionResult } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
 import { VideoChannelSyncModel } from '@server/models/video/video-channel-sync.js'
-import { AfterVideoChannelImportPayload, VideoChannelSyncState, VideoImportPreventExceptionResult } from '@peertube/peertube-models'
+import { Job } from 'bullmq'
+
+const logger = createLogger('channel-synchronization')
 
 export async function processAfterVideoChannelImport (job: Job) {
   const payload = job.data as AfterVideoChannelImportPayload
@@ -17,7 +19,7 @@ export async function processAfterVideoChannelImport (job: Job) {
 
   const childrenValues = await job.getChildrenValues<VideoImportPreventExceptionResult>()
 
-  let errors = 0
+  let errors = payload.buildJobErrors || 0
   let successes = 0
 
   for (const value of Object.values(childrenValues)) {
@@ -26,10 +28,10 @@ export async function processAfterVideoChannelImport (job: Job) {
   }
 
   if (errors > 0) {
-    sync.state = VideoChannelSyncState.FAILED
+    sync.state = StreamSyncState.FAILED
     logger.error(`Finished synchronizing "${sync.VideoChannel.Actor.preferredUsername}" with failures.`, { errors, successes })
   } else {
-    sync.state = VideoChannelSyncState.SYNCED
+    sync.state = StreamSyncState.SYNCED
     logger.info(`Finished synchronizing "${sync.VideoChannel.Actor.preferredUsername}" successfully.`, { successes })
   }
 

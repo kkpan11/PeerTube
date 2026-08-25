@@ -3,7 +3,7 @@ import { join } from 'path'
 import { getCompleteLocale, is18nLocale } from '@peertube/peertube-core-utils'
 import { HttpStatusCode, PluginType } from '@peertube/peertube-models'
 import { isProdInstance } from '@peertube/peertube-node-utils'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { optionalAuthenticate } from '@server/middlewares/auth.js'
 import { buildRateLimiter } from '@server/middlewares/index.js'
@@ -11,6 +11,8 @@ import { PLUGIN_GLOBAL_CSS_PATH } from '../initializers/constants.js'
 import { PluginManager, RegisteredPlugin } from '../lib/plugins/plugin-manager.js'
 import { getExternalAuthValidator, getPluginValidator, pluginStaticDirectoryValidator } from '../middlewares/validators/plugins.js'
 import { serveThemeCSSValidator } from '../middlewares/validators/themes.js'
+
+const logger = createLogger()
 
 const sendFileOptions = {
   maxAge: '30 days',
@@ -20,6 +22,7 @@ const sendFileOptions = {
 const pluginsRouter = express.Router()
 
 const pluginsRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.PLUGINS.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.PLUGINS.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.PLUGINS.MAX
 })

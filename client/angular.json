@@ -137,6 +137,10 @@
             "translation": "src/locale/angular.vi-VN.xlf",
             "baseHref": "/client/vi-VN/"
           },
+          "ka": {
+            "translation": "src/locale/angular.ka.xlf",
+            "baseHref": "/client/ka/"
+          },
           "kab": {
             "translation": "src/locale/angular.kab.xlf",
             "baseHref": "/client/kab/"
@@ -156,6 +160,14 @@
           "is": {
             "translation": "src/locale/angular.is.xlf",
             "baseHref": "/client/is/"
+          },
+          "ro": {
+            "translation": "src/locale/angular.ro.xlf",
+            "baseHref": "/client/ro/"
+          },
+          "ko": {
+            "translation": "src/locale/angular.ko-KR.xlf",
+            "baseHref": "/client/ko-KR/"
           },
           "uk": {
             "translation": "src/locale/angular.uk-UA.xlf",
@@ -185,12 +197,11 @@
                 "."
               ],
               "sass": {
-                "silenceDeprecations": [ "import", "mixed-decls", "color-functions", "global-builtin" ]
+                "silenceDeprecations": [ "import", "color-functions", "global-builtin", "if-function" ]
               }
             },
             "assets": [
-              "src/assets/images",
-              "src/manifest.webmanifest"
+              "src/assets/images"
             ],
             "styles": [
               "src/sass/application.scss"
@@ -202,7 +213,6 @@
               "markdown-it-emoji/light",
               "linkifyjs/lib/linkify-html",
               "linkifyjs/lib/plugins/mention",
-              "sanitize-html",
               "debug",
               "@peertube/p2p-media-loader-hlsjs",
               "video.js",
@@ -214,10 +224,10 @@
               "escape-string-regexp",
               "is-plain-object",
               "parse-srcset",
-              "deepmerge",
               "core-js/features/reflect",
               "hammerjs",
-              "jschannel"
+              "jschannel",
+              "color-bits"
             ],
             "scripts": [],
             "extractLicenses": false,
@@ -233,7 +243,10 @@
             "production": {
               "optimization": true,
               "outputHashing": "all",
-              "sourceMap": false,
+              "sourceMap": {
+                "scripts": true,
+                "styles": false
+              },
               "namedChunks": false,
               "extractLicenses": true,
               "serviceWorker": "src/ngsw-config.json",
@@ -246,7 +259,7 @@
                 {
                   "type": "anyComponentStyle",
                   "maximumWarning": "6kb",
-                  "maximumError": "120kb"
+                  "maximumError": "140kb"
                 }
               ],
               "fileReplacements": [
@@ -326,16 +339,36 @@
       "prefix": "my",
       "style": "scss",
       "skipTests": true,
-      "flat": true
+      "flat": true,
+      "type": "component"
     },
     "@schematics/angular:directive": {
-      "prefix": "my"
+      "prefix": "my",
+      "type": "directive"
     },
     "@angular-eslint/schematics:application": {
       "setParserOptionsProject": true
     },
     "@angular-eslint/schematics:library": {
       "setParserOptionsProject": true
+    },
+    "@schematics/angular:service": {
+      "type": "service"
+    },
+    "@schematics/angular:guard": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:interceptor": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:module": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:pipe": {
+      "typeSeparator": "."
+    },
+    "@schematics/angular:resolver": {
+      "typeSeparator": "."
     }
   },
   "cli": {

@@ -1,0 +1,70 @@
+import { createLogger } from '@server/helpers/logger.js'
+import { VideoModel } from '@server/models/video/video.js'
+import { SCHEDULER_INTERVALS_MS } from '../../initializers/constants.js'
+import { scheduleVideoFederation } from '../activitypub/videos/index.js'
+import { Redis } from '../redis.js'
+import { AbstractScheduler } from './abstract-scheduler.js'
+
+const logger = createLogger('schedulers', 'stats')
+
+/**
+ * Increment video counters in the database with the pending values stored in Redis, and send video updates if needed
+ */
+
+export class VideoStatsBufferScheduler extends AbstractScheduler {
+  private static instance: AbstractScheduler
+
+  protected schedulerIntervalMs = SCHEDULER_INTERVALS_MS.VIDEO_STATS_BUFFER_UPDATE
+
+  private constructor () {
+    super({ randomRunOnEnable: false })
+  }
+
+  protected async internalExecute () {
+    logger.debug(`Running video stats buffer scheduler`)
+
+    const videoIds = await Redis.Instance.listLocalVideosWithStats()
+    if (videoIds.length === 0) return
+
+    for (const videoId of videoIds) {
+      try {
+        const views = await Redis.Instance.getLocalVideoStats('views', videoId)
+        const downloads = await Redis.Instance.getLocalVideoStats('downloads', videoId)
+
+        await Redis.Instance.deleteLocalVideoStats(videoId)
+
+        if (!views && !downloads) continue
+
+        const video = await VideoModel.load(videoId)
+        if (!video) {
+          logger.debug(`Video ${videoId} does not exist anymore, skipping videos stats addition.`)
+          continue
+        }
+
+        await logger.withContext([ video.uuid ], async () => {
+          logger.info(`Processing local video ${video.uuid} stats buffer.`)
+
+          // If this is a remote video, the origin instance will send us an update
+          if (views) {
+            video.views += views
+            await VideoModel.incrementStats('views', videoId, views)
+          }
+
+          if (downloads) {
+            video.downloads += downloads
+            await VideoModel.incrementStats('downloads', videoId, downloads)
+          }
+
+          // Send video update
+          scheduleVideoFederation({ video })
+        })
+      } catch (err) {
+        logger.error(`Cannot process local video stats buffer of video ${videoId}.`, { err })
+      }
+    }
+  }
+
+  static get Instance () {
+    return this.instance || (this.instance = new this())
+  }
+}

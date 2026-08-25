@@ -7,7 +7,10 @@ if [ -z ${1+x} ] || [ "$1" != "--incremental" ]; then
 fi
 
 npm run tsc --  -b --verbose server/tsconfig.json
-npm run resolve-tspaths:server
+npm run tsc-alias:server
 
 cp -r "./server/core/static" "./server/core/assets" ./dist/core
+cp -r "./server/locales" ./dist
 cp "./server/scripts/upgrade.sh" "./dist/scripts"
+
+mkdir -p ./client/dist && cp -r ./client/src/assets ./client/dist

@@ -2,20 +2,21 @@ import { doJSONRequest } from '@server/helpers/requests.js'
 import { ApplicationModel } from '@server/models/application/application.js'
 import { compareSemVer } from '@peertube/peertube-core-utils'
 import { JoinPeerTubeVersions } from '@peertube/peertube-models'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { CONFIG } from '../../initializers/config.js'
 import { PEERTUBE_VERSION, SCHEDULER_INTERVALS_MS } from '../../initializers/constants.js'
 import { Notifier } from '../notifier/index.js'
 import { AbstractScheduler } from './abstract-scheduler.js'
 
-export class PeerTubeVersionCheckScheduler extends AbstractScheduler {
+const logger = createLogger('schedulers')
 
+export class PeerTubeVersionCheckScheduler extends AbstractScheduler {
   private static instance: AbstractScheduler
 
   protected schedulerIntervalMs = SCHEDULER_INTERVALS_MS.CHECK_PEERTUBE_VERSION
 
   private constructor () {
-    super()
+    super({ randomRunOnEnable: true })
   }
 
   protected async internalExecute () {

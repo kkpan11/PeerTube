@@ -1,3 +1,4 @@
+import { arrayify } from '@peertube/peertube-core-utils'
 import {
   AbuseObject,
   ActivityCreate,
@@ -9,12 +10,13 @@ import {
   VideoObject,
   WatchActionObject
 } from '@peertube/peertube-models'
+import { CONFIG } from '@server/initializers/config.js'
 import { isBlockedByServerOrAccount } from '@server/lib/blocklist.js'
 import { isRedundancyAccepted } from '@server/lib/redundancy.js'
 import { VideoCommentModel } from '@server/models/video/video-comment.js'
 import { VideoModel } from '@server/models/video/video.js'
 import { retryTransactionWrapper } from '../../../helpers/database-utils.js'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { sequelizeTypescript } from '../../../initializers/database.js'
 import { APProcessorOptions } from '../../../types/activitypub-processor.model.js'
 import { MActorSignature, MCommentOwnerVideo, MVideoAccountLightBlacklistAllFiles } from '../../../types/models/index.js'
@@ -25,8 +27,11 @@ import { createOrUpdateLocalVideoViewer } from '../local-video-viewer.js'
 import { createOrUpdateVideoPlaylist } from '../playlists/index.js'
 import { sendReplyApproval } from '../send/send-reply-approval.js'
 import { forwardVideoRelatedActivity } from '../send/shared/send-utils.js'
+import { checkUrlsSameHost, getLocalApproveReplyActivityPubUrl } from '../url.js'
 import { resolveThread } from '../video-comments.js'
 import { canVideoBeFederated, getOrCreateAPVideo } from '../videos/index.js'
+
+const logger = createLogger()
 
 async function processCreateActivity (options: APProcessorOptions<ActivityCreate<ActivityCreateObject>>) {
   const { activity, byActor } = options
@@ -44,19 +49,28 @@ async function processCreateActivity (options: APProcessorOptions<ActivityCreate
     // Comments will be fetched from videos
     if (options.fromFetch) return
 
-    return retryTransactionWrapper(processCreateVideoComment, activity, activityObject, byActor, options.fromFetch)
+    return retryTransactionWrapper(() => {
+      return processCreateVideoComment(activity as ActivityCreate<VideoCommentObject | string>, activityObject, byActor, false)
+    })
   }
 
   if (activityType === 'WatchAction') {
-    return retryTransactionWrapper(processCreateWatchAction, activityObject)
+    // Watch actions are only sent to the inbox of the video origin, so we never have to process a fetched one
+    if (options.fromFetch) return
+
+    return retryTransactionWrapper(() => processCreateWatchAction(activityObject, byActor))
   }
 
   if (activityType === 'CacheFile') {
-    return retryTransactionWrapper(processCreateCacheFile, activity, activityObject, byActor)
+    return retryTransactionWrapper(() => {
+      return processCreateCacheFile(activity as ActivityCreate<CacheFileObject | string>, activityObject, byActor)
+    })
   }
 
   if (activityType === 'Playlist') {
-    return retryTransactionWrapper(processCreatePlaylist, activity, activityObject, byActor)
+    return retryTransactionWrapper(() => {
+      return processCreatePlaylist(activity as ActivityCreate<PlaylistObject | string>, activityObject, byActor)
+    })
   }
 
   logger.warn('Unknown activity object type %s when creating activity.', activityType, { activity: activity.id })
@@ -89,7 +103,7 @@ async function processCreateCacheFile (
 
   const { video } = await getOrCreateAPVideo({ videoObject: cacheFile.object })
 
-  if (video.isOwned() && !canVideoBeFederated(video)) {
+  if (video.isLocal() && !canVideoBeFederated(video)) {
     logger.warn(`Do not process create cache file ${cacheFile.object} on a video that cannot be federated`)
     return
   }
@@ -98,18 +112,23 @@ async function processCreateCacheFile (
     return createOrUpdateCacheFile(cacheFile, video, byActor, t)
   })
 
-  if (video.isOwned()) {
+  if (video.isLocal()) {
     // Don't resend the activity to the sender
     const exceptions = [ byActor ]
-    await forwardVideoRelatedActivity(activity, undefined, exceptions, video)
+    await forwardVideoRelatedActivity({ activity, transaction: undefined, followersException: exceptions, video, parallelizable: false })
   }
 }
 
-async function processCreateWatchAction (watchAction: WatchActionObject) {
+async function processCreateWatchAction (watchAction: WatchActionObject, byActor: MActorSignature) {
   if (watchAction.actionStatus !== 'CompletedActionStatus') return
 
+  if (checkUrlsSameHost(watchAction.id, byActor.url) !== true) {
+    logger.warn('Ignoring watch action %s that has not the same host than actor %s.', watchAction.id, byActor.url)
+    return
+  }
+
   const video = await VideoModel.loadByUrl(watchAction.object)
-  if (video.remote) return
+  if (!video || video.remote) return
 
   await sequelizeTypescript.transaction(async t => {
     return createOrUpdateLocalVideoViewer(watchAction, video, t)
@@ -122,15 +141,17 @@ async function processCreateVideoComment (
   byActor: MActorSignature,
   fromFetch: false
 ) {
+  if (CONFIG.VIDEO_COMMENTS.ACCEPT_REMOTE_COMMENTS !== true) return
+
   if (fromFetch) throw new Error('Processing create video comment from fetch is not supported')
 
   const byAccount = byActor.Account
-
   if (!byAccount) throw new Error('Cannot create video comment with the non account actor ' + byActor.url)
 
   let video: MVideoAccountLightBlacklistAllFiles
   let created: boolean
   let comment: MCommentOwnerVideo
+  let heldForAutoTags: boolean
 
   try {
     const resolveThreadResult = await resolveThread({ url: commentObject.id, isVideo: false })
@@ -139,6 +160,7 @@ async function processCreateVideoComment (
     video = resolveThreadResult.video
     created = resolveThreadResult.commentCreated
     comment = resolveThreadResult.comment
+    heldForAutoTags = resolveThreadResult.heldForAutoTags
   } catch (err) {
     logger.debug(
       'Cannot process video comment because we could not resolve thread %s. Maybe it was not a video thread, so skip it.',
@@ -149,7 +171,7 @@ async function processCreateVideoComment (
   }
 
   // Try to not forward unwanted comments on our videos
-  if (video.isOwned()) {
+  if (video.isLocal()) {
     if (!canVideoBeFederated(video)) {
       logger.info('Skip comment forward on non federated video' + video.url)
       return
@@ -167,15 +189,41 @@ async function processCreateVideoComment (
     }
 
     // New comment or re-sent after an approval -> forward comment
-    if (comment.heldForReview === false && (created || commentObject.replyApproval)) {
+    if (comment.heldForReview === false && (created || await consumeReplyApproval(video, comment, commentObject))) {
       // Don't resend the activity to the sender
       const exceptions = [ byActor ]
 
-      await forwardVideoRelatedActivity(activity, undefined, exceptions, video)
+      await forwardVideoRelatedActivity({ activity, transaction: undefined, followersException: exceptions, video, parallelizable: false })
     }
   }
 
-  if (created) Notifier.Instance.notifyOnNewComment(comment)
+  // The `build-object-automatic-tags` job notifies once the held status of the comment is final
+  if (created && !heldForAutoTags) Notifier.Instance.notifyOnNewComment(comment)
+}
+
+// The origin instance re-sends us the comment when we approved the reply
+// Ensure it's the approval we sent and that we didn't already process it
+async function consumeReplyApproval (
+  video: MVideoAccountLightBlacklistAllFiles,
+  comment: MCommentOwnerVideo,
+  commentObject: VideoCommentObject
+) {
+  if (!commentObject.replyApproval) return false
+
+  const expectedApproval = getLocalApproveReplyActivityPubUrl(video, comment)
+
+  if (commentObject.replyApproval !== expectedApproval) {
+    logger.warn('Do not forward comment %s that has an unknown reply approval %s.', comment.url, commentObject.replyApproval)
+    return false
+  }
+
+  // We already forwarded this comment after this approval
+  if (comment.replyApproval === expectedApproval) return false
+
+  comment.replyApproval = expectedApproval
+  await comment.save()
+
+  return true
 }
 
 async function processCreatePlaylist (
@@ -184,8 +232,7 @@ async function processCreatePlaylist (
   byActor: MActorSignature
 ) {
   const byAccount = byActor.Account
-
   if (!byAccount) throw new Error('Cannot create video playlist with the non account actor ' + byActor.url)
 
-  await createOrUpdateVideoPlaylist(playlistObject, activity.to)
+  await createOrUpdateVideoPlaylist({ playlistObject, contextUrl: byActor.url, to: arrayify(activity.to) })
 }

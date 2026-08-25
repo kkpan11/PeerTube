@@ -1,15 +1,16 @@
-import { Component, ElementRef, OnInit, inject, viewChild } from '@angular/core'
+import { ChangeDetectionStrategy, Component, ElementRef, OnInit, inject, viewChild } from '@angular/core'
 import { ActivatedRoute, RouterOutlet } from '@angular/router'
 import { AboutHTML } from '@app/shared/shared-main/instance/instance.service'
+import { HorizontalMenuComponent, HorizontalMenuEntry } from '@app/shared/shared-main/menu/horizontal-menu.component'
 import { ServerConfig, ServerStats } from '@peertube/peertube-models'
 import { ResolverData } from './about-instance.resolver'
 import { InstanceStatRulesComponent } from './instance-stat-rules.component'
-import { HorizontalMenuComponent, HorizontalMenuEntry } from '@app/shared/shared-main/menu/horizontal-menu.component'
 
 @Component({
   selector: 'my-about-instance',
   templateUrl: './about-instance.component.html',
   styleUrls: [ './about-instance.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     InstanceStatRulesComponent,
     HorizontalMenuComponent,
@@ -59,10 +60,27 @@ export class AboutInstanceComponent implements OnInit {
       })
     }
 
-    if (aboutHTML.hardwareInformation) {
+    // Always displayed, we have the "features found on this instance" table on this page
+    this.menuEntries.push({
+      label: $localize`Technical information`,
+      routerLink: '/about/instance/tech'
+    })
+
+    if (serverConfig.instance.support.text) {
       this.menuEntries.push({
-        label: $localize`Technical information`,
-        routerLink: '/about/instance/tech'
+        label: $localize`Support`,
+        routerLink: '/about/instance/support',
+        // Only used to highlight the menu entry, not to display it
+        isDisplayed: () => false
+      })
+    }
+
+    if (serverConfig.email.enabled && serverConfig.contactForm.enabled) {
+      this.menuEntries.push({
+        label: $localize`Contact`,
+        routerLink: '/about/instance/contact',
+        // Only used to highlight the menu entry, not to display it
+        isDisplayed: () => false
       })
     }
   }

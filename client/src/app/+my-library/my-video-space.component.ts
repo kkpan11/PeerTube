@@ -1,15 +1,18 @@
-import { Component, OnInit, inject } from '@angular/core'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { RouterOutlet } from '@angular/router'
 import { ServerService } from '@app/core'
+import { NewFeatureInfoService } from '@app/modal/new-feature-info.service'
 import { HorizontalMenuComponent, HorizontalMenuEntry } from '@app/shared/shared-main/menu/horizontal-menu.component'
 import { HTMLServerConfig } from '@peertube/peertube-models'
 
 @Component({
   templateUrl: './my-video-space.component.html',
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [ RouterOutlet, HorizontalMenuComponent ]
 })
 export class MyVideoSpaceComponent implements OnInit {
   private serverService = inject(ServerService)
+  private newFeatureInfoService = inject(NewFeatureInfoService)
 
   menuEntries: HorizontalMenuEntry[] = []
 
@@ -19,57 +22,23 @@ export class MyVideoSpaceComponent implements OnInit {
     this.serverConfig = this.serverService.getHTMLConfig()
 
     this.buildMenu()
-  }
 
-  isVideoImportEnabled () {
-    const importConfig = this.serverConfig.import.videos
-
-    return importConfig.http.enabled || importConfig.torrent.enabled
+    this.newFeatureInfoService.showChannelCollaboration()
   }
 
   private buildMenu () {
     this.menuEntries = [
       {
-        label: $localize`Channels`,
-        routerLink: '/my-library/video-channels',
-        children: [
-          {
-            label: $localize`Manage`,
-            routerLink: '/my-library/video-channels'
-          },
-          {
-            label: $localize`Followers`,
-            routerLink: '/my-library/followers'
-          },
-          {
-            label: $localize`Synchronizations`,
-            routerLink: '/my-library/video-channel-syncs'
-          }
-        ]
+        label: $localize`Manage my videos`,
+        routerLink: '/my-library/videos'
       },
 
       {
-        label: $localize`Videos`,
-        routerLink: '/my-library/videos',
+        label: $localize`Comments`,
+        routerLink: '/my-library/comments-on-my-videos',
         children: [
           {
-            label: $localize`Manage`,
-            routerLink: '/my-library/videos'
-          },
-
-          {
-            label: $localize`Imports`,
-            routerLink: '/my-library/video-imports',
-            isDisplayed: () => this.isVideoImportEnabled()
-          },
-
-          {
-            label: $localize`Ownership changes`,
-            routerLink: '/my-library/ownership'
-          },
-
-          {
-            label: $localize`Comments`,
+            label: $localize`Comments on my videos`,
             routerLink: '/my-library/comments-on-my-videos'
           },
           {
@@ -77,11 +46,39 @@ export class MyVideoSpaceComponent implements OnInit {
             routerLink: '/my-library/watched-words/list'
           },
           {
+            label: $localize`Watched words subscriptions`,
+            routerLink: '/my-library/watched-words/subscriptions'
+          },
+          {
             label: $localize`Auto tag policies`,
             routerLink: '/my-library/auto-tag-policies'
           }
         ]
+      },
+
+      {
+        label: $localize`More`,
+        routerLink: this.isVideoImportEnabled()
+          ? '/my-library/video-imports'
+          : '/my-library/ownership',
+        children: [
+          {
+            label: $localize`Imports`,
+            routerLink: '/my-library/video-imports',
+            isDisplayed: () => this.isVideoImportEnabled()
+          },
+          {
+            label: $localize`Ownership changes`,
+            routerLink: '/my-library/ownership'
+          }
+        ]
       }
     ]
+  }
+
+  private isVideoImportEnabled () {
+    const config = this.serverConfig.import.videos
+
+    return config.http.enabled || config.torrent.enabled
   }
 }

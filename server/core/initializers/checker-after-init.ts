@@ -2,31 +2,35 @@ import { uniqify } from '@peertube/peertube-core-utils'
 import { getFFmpegVersion } from '@peertube/peertube-ffmpeg'
 import { VideoRedundancyConfigFilter } from '@peertube/peertube-models'
 import { isProdInstance } from '@peertube/peertube-node-utils'
-import config from 'config'
 import { readFileSync, writeFileSync } from 'fs'
 import { basename } from 'path'
 import { URL } from 'url'
 import { parseBytes, parseSemVersion } from '../helpers/core-utils.js'
 import { isArray } from '../helpers/custom-validators/misc.js'
-import { logger } from '../helpers/logger.js'
+import { getBrowseVideosDefaultSortError, getBrowseVideosDefaultScopeError } from '../helpers/custom-validators/browse-videos.js'
+import { createLogger } from '../helpers/logger.js'
 import { ApplicationModel, getServerActor } from '../models/application/application.js'
 import { OAuthClientModel } from '../models/oauth/oauth-client.js'
 import { UserModel } from '../models/user/user.js'
-import { CONFIG, getLocalConfigFilePath, isEmailEnabled, reloadConfig } from './config.js'
+import { CONFIG, getConfigModule, getLocalConfigFilePath, isEmailEnabled, reloadConfig } from './config.js'
 import { WEBSERVER } from './constants.js'
+
+const logger = createLogger()
 
 async function checkActivityPubUrls () {
   const actor = await getServerActor()
 
   const parsed = new URL(actor.url)
   if (WEBSERVER.HOST !== parsed.host) {
+    const config = getConfigModule()
+
     const NODE_ENV = config.util.getEnv('NODE_ENV')
     const NODE_CONFIG_DIR = config.util.getEnv('NODE_CONFIG_DIR')
 
     logger.warn(
       'It seems PeerTube was started (and created some data) with another domain name. ' +
-      'This means you will not be able to federate! ' +
-      'Please use %s %s npm run update-host to fix this.',
+        'This means you will not be able to federate! ' +
+        'Please use %s %s npm run update-host to fix this.',
       NODE_CONFIG_DIR ? `NODE_CONFIG_DIR=${NODE_CONFIG_DIR}` : '',
       NODE_ENV ? `NODE_ENV=${NODE_ENV}` : ''
     )
@@ -35,8 +39,7 @@ async function checkActivityPubUrls () {
 
 // Some checks on configuration files or throw if there is an error
 function checkConfig () {
-
-  const configFiles = config.util.getConfigSources().map(s => s.name).join(' -> ')
+  const configFiles = getConfigModule().util.getConfigSources().map(s => s.name).join(' -> ')
   logger.info('Using following configuration file hierarchy: %s.', configFiles)
 
   checkRemovedConfigKeys()
@@ -55,6 +58,7 @@ function checkConfig () {
   checkObjectStorageConfig()
   checkVideoStudioConfig()
   checkThumbnailsConfig()
+  checkBrowseVideosConfig()
 }
 
 // We get db by param to not import it in this file (import orders)
@@ -102,12 +106,18 @@ async function checkFFmpegVersion () {
 
 export {
   applicationExist,
-  checkActivityPubUrls, checkConfig, checkFFmpegVersion, clientsExist, usersExist
+  checkActivityPubUrls,
+  checkConfig,
+  checkFFmpegVersion,
+  clientsExist,
+  usersExist
 }
 
 // ---------------------------------------------------------------------------
 
 function checkRemovedConfigKeys () {
+  const config = getConfigModule()
+
   // Moved configuration keys
   if (config.has('services.csp-logger')) {
     logger.warn('services.csp-logger configuration has been renamed to csp.report_uri. Please update your configuration file.')
@@ -145,12 +155,14 @@ function checkSecretsConfig () {
 function checkEmailConfig () {
   if (!isEmailEnabled()) {
     if (CONFIG.SIGNUP.ENABLED && CONFIG.SIGNUP.REQUIRES_EMAIL_VERIFICATION) {
-      throw new Error('SMTP is not configured but you require signup email verification.')
+      logger.error('SMTP is not configured but you require signup email verification.')
     }
 
     if (CONFIG.SIGNUP.ENABLED && CONFIG.SIGNUP.REQUIRES_APPROVAL) {
-      // eslint-disable-next-line max-len
-      logger.warn('SMTP is not configured but signup approval is enabled: PeerTube will not be able to send an email to the user upon acceptance/rejection of the registration request')
+      logger.warn(
+        'SMTP is not configured but signup approval is enabled: ' +
+          'PeerTube will not be able to send an email to the user upon acceptance/rejection of the registration request'
+      )
     }
 
     if (CONFIG.CONTACT_FORM.ENABLED) {
@@ -162,7 +174,7 @@ function checkEmailConfig () {
 function checkNSFWPolicyConfig () {
   const defaultNSFWPolicy = CONFIG.INSTANCE.DEFAULT_NSFW_POLICY
 
-  const available = [ 'do_not_list', 'blur', 'display' ]
+  const available = [ 'do_not_list', 'warn', 'blur', 'display' ]
   if (available.includes(defaultNSFWPolicy) === false) {
     throw new Error('NSFW policy setting should be ' + available.join(' or ') + ' instead of ' + defaultNSFWPolicy)
   }
@@ -211,7 +223,7 @@ function checkRemoteRedundancyConfig () {
 function checkStorageConfig () {
   // Check storage directory locations
   if (isProdInstance()) {
-    const configStorage = config.get<{ [ name: string ]: string }>('storage')
+    const configStorage = getConfigModule().get<{ [name: string]: string }>('storage')
 
     for (const key of Object.keys(configStorage)) {
       if (configStorage[key].startsWith('storage/')) {
@@ -324,7 +336,6 @@ function checkObjectStorageConfig () {
   }
 
   if (CONFIG.TRANSCODING.ORIGINAL_FILE.KEEP) {
-
     if (!CONFIG.OBJECT_STORAGE.ORIGINAL_VIDEO_FILES.BUCKET_NAME) {
       throw new Error('original_video_files_bucket should be set when object storage support is enabled.')
     }
@@ -358,8 +369,11 @@ function checkObjectStorageConfig () {
   }
 
   if (CONFIG.OBJECT_STORAGE.MAX_UPLOAD_PART > parseBytes('250MB')) {
-    // eslint-disable-next-line max-len
-    logger.warn(`Object storage max upload part seems to have a big value (${CONFIG.OBJECT_STORAGE.MAX_UPLOAD_PART} bytes). Consider using a lower one (like 100MB).`)
+    // oxlint-disable-next-line max-len
+    logger.warn(
+      `Object storage max upload part seems to have a big value (${CONFIG.OBJECT_STORAGE.MAX_UPLOAD_PART} bytes). ` +
+        `Consider using a lower one (like 100MB).`
+    )
   }
 }
 
@@ -374,7 +388,21 @@ function checkThumbnailsConfig () {
     throw new Error('thumbnails.generation_from_video.frames_to_analyze must be a number greater than 1')
   }
 
-  if (!isArray(CONFIG.THUMBNAILS.SIZES) || CONFIG.THUMBNAILS.SIZES.length !== 2) {
-    throw new Error('thumbnails.sizes must be an array of 2 sizes')
+  if (!isArray(CONFIG.THUMBNAILS.SIZES) || CONFIG.THUMBNAILS.SIZES.length === 0) {
+    throw new Error('thumbnails.sizes must not be empty')
   }
+
+  // A video/playlist can only have one thumbnail of a given size
+  const sizes = CONFIG.THUMBNAILS.SIZES.map(s => `${s.width}x${s.height}`)
+  if (new Set(sizes).size !== sizes.length) {
+    throw new Error('thumbnails.sizes must not contain multiple sizes with the same width and height')
+  }
+}
+
+function checkBrowseVideosConfig () {
+  const sortError = getBrowseVideosDefaultSortError(CONFIG.CLIENT.BROWSE_VIDEOS.DEFAULT_SORT, CONFIG.TRENDING.VIDEOS.ALGORITHMS.ENABLED)
+  if (sortError) throw new Error(sortError)
+
+  const scopeError = getBrowseVideosDefaultScopeError(CONFIG.CLIENT.BROWSE_VIDEOS.DEFAULT_SCOPE)
+  if (scopeError) throw new Error(scopeError)
 }

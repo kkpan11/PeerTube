@@ -1,5 +1,4 @@
-import { NgFor, NgIf } from '@angular/common'
-import { AfterViewInit, Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { AfterViewInit, Component, inject, OnDestroy, OnInit, ChangeDetectionStrategy } from '@angular/core'
 import { ComponentPagination, hasMoreItems, HooksService, resetCurrentPage, ScreenService } from '@app/core'
 import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
 import { VideoChannelService } from '@app/shared/shared-main/channel/video-channel.service'
@@ -13,7 +12,8 @@ import { VideoPlaylistMiniatureComponent } from '../../shared/shared-video-playl
   selector: 'my-video-channel-playlists',
   templateUrl: './video-channel-playlists.component.html',
   styleUrls: [ './video-channel-playlists.component.scss' ],
-  imports: [ NgIf, InfiniteScrollerDirective, NgFor, VideoPlaylistMiniatureComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ InfiniteScrollerDirective, VideoPlaylistMiniatureComponent ]
 })
 export class VideoChannelPlaylistsComponent implements OnInit, AfterViewInit, OnDestroy {
   private videoPlaylistService = inject(VideoPlaylistService)
@@ -68,14 +68,17 @@ export class VideoChannelPlaylistsComponent implements OnInit, AfterViewInit, On
   }
 
   private loadVideoPlaylists () {
-    this.videoPlaylistService.listChannelPlaylists(this.videoChannel, this.pagination)
-      .subscribe(res => {
-        this.videoPlaylists = this.videoPlaylists.concat(res.data)
-        this.pagination.totalItems = res.total
+    this.videoPlaylistService.listChannelPlaylists({
+      videoChannel: this.videoChannel,
+      componentPagination: this.pagination,
+      sort: 'videoChannelPosition'
+    }).subscribe(res => {
+      this.videoPlaylists = this.videoPlaylists.concat(res.data)
+      this.pagination.totalItems = res.total
 
-        this.hooks.runAction('action:video-channel-playlists.playlists.loaded', 'video-channel', { playlists: this.videoPlaylists })
+      this.hooks.runAction('action:video-channel-playlists.playlists.loaded', 'video-channel', { playlists: this.videoPlaylists })
 
-        this.onDataSubject.next(res.data)
-      })
+      this.onDataSubject.next(res.data)
+    })
   }
 }

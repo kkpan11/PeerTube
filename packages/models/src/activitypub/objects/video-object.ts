@@ -22,15 +22,17 @@ export interface VideoObject {
   subtitleLanguage: VideoCaptionObject[]
 
   views: number
+  downloads: number
 
   sensitive: boolean
+  summary: string
 
   isLiveBroadcast: boolean
   liveSaveReplay: boolean
   permanentLive: boolean
   latencyMode: LiveVideoLatencyModeType
+  dvrWindow: string
 
-  commentsEnabled?: boolean
   commentsPolicy: VideoCommentPolicyType
   canReply: 'as:Public' | 'https://www.w3.org/ns/activitystreams#Public'
 
@@ -38,10 +40,17 @@ export interface VideoObject {
   waitTranscoding: boolean
   state: VideoStateType
 
+  // If null, the embed has restrictions
+  embedUrl: string | null
+
   published: string
   originallyPublishedAt: string
   updated: string
   uploadDate: string
+
+  schedules?: {
+    startDate: Date
+  }[]
 
   mediaType: 'text/markdown'
   content: string
@@ -59,13 +68,16 @@ export interface VideoObject {
   shares: string
   comments: string
   hasParts: string | VideoChapterObject[]
+  playerSettings: string
 
-  attributedTo: ActivityPubAttributedTo[]
+  attributedTo: ActivityPubAttributedTo[] | string
 
   preview?: ActivityPubStoryboard[]
 
   to?: string[]
   cc?: string[]
+
+  audience: string
 
   // For export
   attachment?: {
@@ -80,7 +92,7 @@ export interface VideoObject {
 
 export interface ActivityPubStoryboard {
   type: 'Image'
-  rel: [ 'storyboard' ]
+  rel: ['storyboard']
   url: {
     href: string
     mediaType: string

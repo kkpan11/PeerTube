@@ -1,19 +1,21 @@
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { getAbuseIdentifier } from '@server/lib/activitypub/url.js'
 import { UserModel } from '@server/models/user/user.js'
-import { MUserDefault } from '@server/types/models/index.js'
+import { MUserDefault, MUserWithNotificationSetting } from '@server/types/models/index.js'
 import { AbstractNewAbuseMessage } from './abstract-new-abuse-message.js'
+
+const logger = createLogger()
 
 export class NewAbuseMessageForReporter extends AbstractNewAbuseMessage {
   private reporter: MUserDefault
 
   async prepare () {
     // Only notify our users
-    if (this.abuse.ReporterAccount.isOwned() !== true) return
+    if (this.abuse.ReporterAccount.isLocal() !== true) return
 
     await this.loadMessageAccount()
 
-    const reporter = await UserModel.loadByAccountActorId(this.abuse.ReporterAccount.actorId)
+    const reporter = await UserModel.loadByAccountActorId(this.abuse.ReporterAccount.Actor.id)
     // Don't notify my own message
     if (reporter.Account.id === this.message.accountId) return
 
@@ -30,7 +32,9 @@ export class NewAbuseMessageForReporter extends AbstractNewAbuseMessage {
     return [ this.reporter ]
   }
 
-  createEmail (to: string) {
+  createEmail (user: MUserWithNotificationSetting) {
+    const to = { email: user.email, language: user.getLanguage() }
+
     return this.createEmailFor(to, 'reporter')
   }
 }

@@ -1,4 +1,9 @@
-import { Transaction } from 'sequelize'
+import { TokenSession } from '@peertube/peertube-models'
+import { afterCommitIfTransaction } from '@server/helpers/database-utils.js'
+import { TokensCache } from '@server/lib/auth/tokens-cache.js'
+import { MUserAccountId } from '@server/types/models/index.js'
+import { MOAuthTokenUser } from '@server/types/models/oauth/oauth-token.js'
+import { Op, Transaction } from 'sequelize'
 import {
   AfterDestroy,
   AfterUpdate,
@@ -6,19 +11,20 @@ import {
   BelongsTo,
   Column,
   CreatedAt,
-  ForeignKey, Scopes,
+  DataType,
+  ForeignKey,
+  Scopes,
   Table,
   UpdatedAt
 } from 'sequelize-typescript'
-import { TokensCache } from '@server/lib/auth/tokens-cache.js'
-import { MUserAccountId } from '@server/types/models/index.js'
-import { MOAuthTokenUser } from '@server/types/models/oauth/oauth-token.js'
-import { logger } from '../../helpers/logger.js'
+import { createLogger } from '../../helpers/logger.js'
 import { AccountModel } from '../account/account.js'
 import { ActorModel } from '../actor/actor.js'
+import { getSort, SequelizeModel } from '../shared/index.js'
 import { UserModel } from '../user/user.js'
 import { OAuthClientModel } from './oauth-client.js'
-import { SequelizeModel } from '../shared/index.js'
+
+const logger = createLogger()
 
 export type OAuthTokenInfo = {
   refreshToken: string
@@ -79,35 +85,52 @@ enum ScopeNames {
   ]
 })
 export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
+  @AllowNull(false)
+  @Column
+  declare accessToken: string
 
   @AllowNull(false)
   @Column
-  accessToken: string
+  declare accessTokenExpiresAt: Date
 
   @AllowNull(false)
   @Column
-  accessTokenExpiresAt: Date
+  declare refreshToken: string
 
   @AllowNull(false)
   @Column
-  refreshToken: string
-
-  @AllowNull(false)
-  @Column
-  refreshTokenExpiresAt: Date
+  declare refreshTokenExpiresAt: Date
 
   @Column
-  authName: string
+  declare authName: string
+
+  @Column(DataType.STRING(500))
+  declare loginDevice: string
+
+  @Column
+  declare loginIP: string
+
+  @Column
+  declare loginDate: Date
+
+  @Column(DataType.STRING(500))
+  declare lastActivityDevice: string
+
+  @Column
+  declare lastActivityIP: string
+
+  @Column
+  declare lastActivityDate: Date
 
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @ForeignKey(() => UserModel)
   @Column
-  userId: number
+  declare userId: number
 
   @BelongsTo(() => UserModel, {
     foreignKey: {
@@ -115,11 +138,11 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
     },
     onDelete: 'cascade'
   })
-  User: Awaited<UserModel>
+  declare User: Awaited<UserModel>
 
   @ForeignKey(() => OAuthClientModel)
   @Column
-  oAuthClientId: number
+  declare oAuthClientId: number
 
   @BelongsTo(() => OAuthClientModel, {
     foreignKey: {
@@ -127,12 +150,12 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
     },
     onDelete: 'cascade'
   })
-  OAuthClients: Awaited<OAuthClientModel>[]
+  declare OAuthClients: Awaited<OAuthClientModel>[]
 
   @AfterUpdate
   @AfterDestroy
   static removeTokenCache (token: OAuthTokenModel) {
-    return TokensCache.Instance.clearCacheByToken(token.accessToken)
+    return TokensCache.Instance.deleteToken(token.accessToken)
   }
 
   static loadByRefreshToken (refreshToken: string) {
@@ -143,6 +166,8 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
     return OAuthTokenModel.findOne(query)
   }
 
+  // ---------------------------------------------------------------------------
+
   static getByRefreshTokenAndPopulateClient (refreshToken: string) {
     const query = {
       where: {
@@ -152,25 +177,25 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
     }
 
     return OAuthTokenModel.scope(ScopeNames.WITH_USER)
-                          .findOne(query)
-                          .then(token => {
-                            if (!token) return null
+      .findOne(query)
+      .then(token => {
+        if (!token) return null
 
-                            return {
-                              refreshToken: token.refreshToken,
-                              refreshTokenExpiresAt: token.refreshTokenExpiresAt,
-                              client: {
-                                id: token.oAuthClientId,
-                                grants: []
-                              },
-                              user: token.User,
-                              token
-                            } as OAuthTokenInfo
-                          })
-                          .catch(err => {
-                            logger.error('getRefreshToken error.', { err })
-                            throw err
-                          })
+        return {
+          refreshToken: token.refreshToken,
+          refreshTokenExpiresAt: token.refreshTokenExpiresAt,
+          client: {
+            id: token.oAuthClientId,
+            grants: []
+          },
+          user: token.User,
+          token
+        }
+      })
+      .catch(err => {
+        logger.error('getRefreshToken error.', { err })
+        throw err
+      })
   }
 
   static getByTokenAndPopulateUser (bearerToken: string): Promise<MOAuthTokenUser> {
@@ -181,12 +206,12 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
     }
 
     return OAuthTokenModel.scope(ScopeNames.WITH_USER)
-                          .findOne(query)
-                          .then(token => {
-                            if (!token) return null
+      .findOne(query)
+      .then(token => {
+        if (!token) return null
 
-                            return Object.assign(token, { user: token.User })
-                          })
+        return Object.assign(token, { user: token.User })
+      })
   }
 
   static getByRefreshTokenAndPopulateUser (refreshToken: string): Promise<MOAuthTokenUser> {
@@ -205,16 +230,96 @@ export class OAuthTokenModel extends SequelizeModel<OAuthTokenModel> {
       })
   }
 
-  static deleteUserToken (userId: number, t?: Transaction) {
-    TokensCache.Instance.deleteUserToken(userId)
+  // ---------------------------------------------------------------------------
 
-    const query = {
+  static loadSessionOf (options: {
+    id: number
+    userId: number
+  }) {
+    const now = new Date()
+
+    return OAuthTokenModel.findOne({
       where: {
-        userId
-      },
-      transaction: t
-    }
+        id: options.id,
+        userId: options.userId,
+        accessTokenExpiresAt: {
+          [Op.gt]: now
+        },
+        refreshTokenExpiresAt: {
+          [Op.gt]: now
+        }
+      }
+    })
+  }
 
-    return OAuthTokenModel.destroy(query)
+  static async listSessionsOf (options: {
+    start: number
+    count: number
+    sort: string
+    userId: number
+  }) {
+    const now = new Date()
+
+    const { count, rows } = await OAuthTokenModel.findAndCountAll({
+      offset: options.start,
+      limit: options.count,
+      order: getSort(options.sort),
+      where: {
+        userId: options.userId,
+        accessTokenExpiresAt: {
+          [Op.gt]: now
+        },
+        refreshTokenExpiresAt: {
+          [Op.gt]: now
+        }
+      }
+    })
+
+    return {
+      total: count,
+      data: rows
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  static async deleteUserToken (options: {
+    userId: number
+    accessTokenException?: string
+    transaction?: Transaction
+  }) {
+    const { userId, accessTokenException, transaction } = options
+
+    const where = accessTokenException
+      ? { userId, accessToken: { [Op.ne]: accessTokenException } }
+      : { userId }
+
+    // Bulk destroy does not run the afterDestroy hook, so we have to invalidate the cache ourselves
+    // It has to be done once the rows are gone
+    const destroyed = await OAuthTokenModel.destroy({ where, transaction })
+
+    afterCommitIfTransaction(transaction, () => {
+      TokensCache.Instance.deleteUserTokens(userId, accessTokenException)
+    })
+
+    return destroyed
+  }
+
+  toSessionFormattedJSON (activeToken: string): TokenSession {
+    return {
+      id: this.id,
+
+      loginIP: this.loginIP,
+      loginDevice: this.loginDevice,
+      loginDate: this.loginDate,
+
+      lastActivityIP: this.lastActivityIP,
+      lastActivityDevice: this.lastActivityDevice,
+      lastActivityDate: this.lastActivityDate,
+
+      currentSession: this.accessToken === activeToken,
+
+      createdAt: this.createdAt
+    }
   }
 }

@@ -1,11 +1,11 @@
 import videojs from 'video.js'
+import type { VideojsComponentOptions, VideojsPlayer, VideojsPlugin } from '../../types/peertube-videojs-typings'
 import { PauseBezel } from './pause-bezel'
 
-const Plugin = videojs.getPlugin('plugin')
+const Plugin = videojs.getPlugin('plugin') as typeof VideojsPlugin
 
 class BezelsPlugin extends Plugin {
-
-  constructor (player: videojs.Player, options?: videojs.ComponentOptions) {
+  constructor (player: VideojsPlayer, options?: VideojsComponentOptions) {
     super(player)
 
     this.player.ready(() => {
@@ -15,7 +15,10 @@ class BezelsPlugin extends Plugin {
     const component = new PauseBezel(player, options)
     player.addChild(component)
 
-    this.on('dispose', () => player.removeChild(component))
+    this.on('dispose', () => {
+      // Component will remove itself from the player
+      component.dispose()
+    })
   }
 }
 

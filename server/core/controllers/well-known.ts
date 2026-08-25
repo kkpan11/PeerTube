@@ -10,6 +10,7 @@ import { cacheRoute } from '../middlewares/cache/cache.js'
 const wellKnownRouter = express.Router()
 
 const wellKnownRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.WELL_KNOWN.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.WELL_KNOWN.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.WELL_KNOWN.MAX
 })

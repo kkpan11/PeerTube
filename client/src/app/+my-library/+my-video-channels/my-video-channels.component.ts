@@ -1,25 +1,37 @@
-import { NgFor, NgIf } from '@angular/common'
-import { Component, inject } from '@angular/core'
-import { RouterLink } from '@angular/router'
+import { ChangeDetectionStrategy, Component, OnInit, inject } from '@angular/core'
+import { FormsModule } from '@angular/forms'
+import { ActivatedRoute, RouterLink } from '@angular/router'
 import {
   AuthService,
   ComponentPagination,
-  ConfirmService,
+  ComponentPaginationLight,
   Notifier,
+  PeerTubeRouterService,
   ScreenService,
   hasMoreItems,
   resetCurrentPage,
   updatePaginationOnDelete
 } from '@app/core'
 import { formatICU } from '@app/helpers'
+import { SelectOptionsComponent } from '@app/shared/shared-forms/select/select-options.component'
+import { CollaboratorStateComponent } from '@app/shared/shared-main/channel/collaborator-state.component'
 import { VideoChannel } from '@app/shared/shared-main/channel/video-channel.model'
 import { VideoChannelService } from '@app/shared/shared-main/channel/video-channel.service'
-import { maxBy, minBy } from '@peertube/peertube-core-utils'
-import { ChartData, ChartOptions, TooltipItem, TooltipModel } from 'chart.js'
+import { maxBy } from '@peertube/peertube-core-utils'
+import {
+  VIDEO_CHANNEL_STATS_DAYS_ALL_TIME,
+  VIDEO_CHANNEL_STATS_DAYS_DEFAULT,
+  VIDEO_CHANNEL_STATS_DAYS_OPTIONS,
+  VideoChannelStatsDays,
+  VideoChannelStatsGroupInterval,
+  getVideoChannelStatsGroupInterval
+} from '@peertube/peertube-models'
+import { SelectOptionsItem } from '@pt-types'
+import { ChartData, ChartOptions, TooltipItem } from 'chart.js'
 import { ChartModule } from 'primeng/chart'
-import { Subject, first, map, switchMap } from 'rxjs'
+import { Subject, first, switchMap, tap } from 'rxjs'
 import { ActorAvatarComponent } from '../../shared/shared-actor-image/actor-avatar.component'
-import { AdvancedInputFilterComponent } from '../../shared/shared-forms/advanced-input-filter.component'
+import { SearchInputComponent } from '../../shared/shared-forms/search-input.component'
 import { GlobalIconComponent } from '../../shared/shared-icons/global-icon.component'
 import { DeleteButtonComponent } from '../../shared/shared-main/buttons/delete-button.component'
 import { EditButtonComponent } from '../../shared/shared-main/buttons/edit-button.component'
@@ -28,37 +40,41 @@ import { DeferLoadingDirective } from '../../shared/shared-main/common/defer-loa
 import { InfiniteScrollerDirective } from '../../shared/shared-main/common/infinite-scroller.directive'
 import { NumberFormatterPipe } from '../../shared/shared-main/common/number-formatter.pipe'
 
-type CustomChartData = ChartData & { startDate: string, total: number }
+type CustomChartData = ChartData & { startDate: string, total: number, tooltipTitles: string[] }
+type DisplayFilter = 'all' | 'owned'
 
 @Component({
   templateUrl: './my-video-channels.component.html',
   styleUrls: [ './my-video-channels.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     GlobalIconComponent,
-    NgIf,
+    FormsModule,
     RouterLink,
     ChannelsSetupMessageComponent,
-    AdvancedInputFilterComponent,
+    SearchInputComponent,
     InfiniteScrollerDirective,
-    NgFor,
     ActorAvatarComponent,
     EditButtonComponent,
     DeleteButtonComponent,
     DeferLoadingDirective,
     ChartModule,
-    NumberFormatterPipe
+    NumberFormatterPipe,
+    SelectOptionsComponent,
+    CollaboratorStateComponent
   ]
 })
-export class MyVideoChannelsComponent {
+export class MyVideoChannelsComponent implements OnInit {
   private authService = inject(AuthService)
   private notifier = inject(Notifier)
-  private confirmService = inject(ConfirmService)
   private videoChannelService = inject(VideoChannelService)
   private screenService = inject(ScreenService)
+  private route = inject(ActivatedRoute)
+  private peertubeRouter = inject(PeerTubeRouterService)
 
   videoChannels: VideoChannel[] = []
 
-  videoChannelsChartData: CustomChartData[]
+  videoChannelsChartData: { [id: number]: CustomChartData } = {}
 
   chartOptions: ChartOptions
 
@@ -72,47 +88,87 @@ export class MyVideoChannelsComponent {
     totalItems: null
   }
 
+  displayFilter: DisplayFilter = 'all'
+  displayFilterItems: SelectOptionsItem[] = [
+    { id: 'all', label: $localize`All channels` },
+    { id: 'owned', label: $localize`Only channels owned by me` }
+  ]
+
+  statsDays: VideoChannelStatsDays = VIDEO_CHANNEL_STATS_DAYS_DEFAULT
+  statsDaysItems: SelectOptionsItem<VideoChannelStatsDays>[] = [
+    { id: VIDEO_CHANNEL_STATS_DAYS_DEFAULT, label: $localize`Last 30 days` },
+    { id: 90, label: $localize`Last 90 days` },
+    { id: 365, label: $localize`Last year` },
+    { id: VIDEO_CHANNEL_STATS_DAYS_ALL_TIME, label: $localize`All time` }
+  ]
+
   private pagesDone = new Set<number>()
 
-  get isInSmallView () {
-    return this.screenService.isInSmallView()
+  get displayChart () {
+    return !this.screenService.isInMediumView()
+  }
+
+  get user () {
+    return this.authService.getUser()
+  }
+
+  ngOnInit () {
+    if (this.route.snapshot.queryParamMap.get('displayFilter') === 'owned') {
+      this.displayFilter = 'owned'
+    }
+
+    const statsDays = parseInt(this.route.snapshot.queryParamMap.get('statsDays'), 10)
+    if (VIDEO_CHANNEL_STATS_DAYS_OPTIONS.includes(statsDays as VideoChannelStatsDays)) {
+      this.statsDays = statsDays as VideoChannelStatsDays
+    }
+  }
+
+  isOwned (channel: VideoChannel) {
+    return channel.ownerAccount.id === this.authService.getUser().account.id
+  }
+
+  onDisplayFilterChanged () {
+    this.peertubeRouter.silentNavigate([], {
+      ...this.route.snapshot.queryParams,
+
+      displayFilter: this.displayFilter === 'all'
+        ? null
+        : this.displayFilter
+    })
+
+    this.resetDataAndReload()
   }
 
   onSearch (search: string) {
     this.search = search
 
+    this.resetDataAndReload()
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private resetDataAndReload () {
     resetCurrentPage(this.pagination)
     this.videoChannels = []
+    this.videoChannelsChartData = {}
     this.pagesDone.clear()
 
     this.loadMoreVideoChannels()
   }
 
-  async deleteVideoChannel (videoChannel: VideoChannel) {
-    const res = await this.confirmService.confirmWithExpectedInput(
-      $localize`Do you really want to delete ${videoChannel.displayName}?` +
-        `<br />` +
-        formatICU(
-          // eslint-disable-next-line max-len
-          $localize`It will delete {count, plural, =1 {1 video} other {{count} videos}} uploaded in this channel, and you will not be able to create another channel or account with the same name (${videoChannel.name})!`,
-          { count: videoChannel.videosCount }
-        ),
-      $localize`Please type the name of the video channel (${videoChannel.name}) to confirm`,
-      videoChannel.name,
-      $localize`Delete`
-    )
-    if (res === false) return
-
-    this.videoChannelService.removeVideoChannel(videoChannel)
+  deleteVideoChannel (videoChannel: VideoChannel) {
+    this.videoChannelService.removeWithConfirmation(videoChannel)
       .subscribe({
-        next: () => {
+        next: removed => {
+          if (!removed) return
+
           this.videoChannels = this.videoChannels.filter(c => c.id !== videoChannel.id)
           this.notifier.success($localize`Video channel ${videoChannel.displayName} deleted.`)
 
           updatePaginationOnDelete(this.pagination)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -124,57 +180,161 @@ export class MyVideoChannelsComponent {
     this.loadMoreVideoChannels()
   }
 
+  private getChannelBaseOptions () {
+    return {
+      account: this.authService.getUser().account,
+      search: this.search,
+      componentPagination: this.pagination,
+      includeCollaborations: this.displayFilter === 'all',
+      sort: '-updatedAt'
+    }
+  }
+
   private loadMoreVideoChannels () {
     if (this.pagesDone.has(this.pagination.currentPage)) return
     this.pagesDone.add(this.pagination.currentPage)
 
-    return this.authService.userInformationLoaded
-      .pipe(
-        first(),
-        map(() => ({
-          account: this.authService.getUser().account,
-          withStats: true,
-          search: this.search,
-          componentPagination: this.pagination,
-          sort: '-updatedAt'
-        })),
-        switchMap(options => this.videoChannelService.listAccountVideoChannels(options))
-      )
-      .subscribe(res => {
+    const channelBaseOptions = this.getChannelBaseOptions()
+
+    // Snapshot the pagination so the stats request targets the same window as the list request
+    const statsPagination = { ...this.pagination }
+
+    const base = this.authService.userInformationLoaded.pipe(first())
+
+    // Load channels without stats first to display something as soon as possible, then load stats in a second time
+    base.pipe(
+      switchMap(() => this.videoChannelService.listAccountChannels(channelBaseOptions)),
+      tap(res => {
         this.videoChannels = this.videoChannels.concat(res.data)
         this.pagination.totalItems = res.total
 
-        // chart data
-        this.videoChannelsChartData = this.videoChannels.map(v => ({
-          labels: v.viewsPerDay.map(day => day.date.toLocaleDateString()),
-          datasets: [
-            {
-              label: $localize`Views for the day`,
-              data: v.viewsPerDay.map(day => day.views),
-              fill: false,
-              borderColor: '#c6c6c6'
-            }
-          ],
-
-          total: v.viewsPerDay.map(day => day.views)
-            .reduce((p, c) => p + c, 0),
-
-          startDate: v.viewsPerDay.length !== 0
-            ? v.viewsPerDay[0].date.toLocaleDateString()
-            : ''
-        }))
-
-        this.buildChartOptions()
-
         this.onChannelDataSubject.next(res.data)
       })
+    ).subscribe({
+      // Only fetch stats for the page that was just loaded, not every channel loaded so far
+      next: () => this.loadChannelsStats(statsPagination),
+
+      error: err => this.notifier.handleError(err)
+    })
+  }
+
+  onStatsDaysChanged () {
+    this.peertubeRouter.silentNavigate([], {
+      ...this.route.snapshot.queryParams,
+
+      statsDays: this.statsDays === VIDEO_CHANNEL_STATS_DAYS_DEFAULT
+        ? null
+        : this.statsDays
+    })
+
+    if (this.videoChannels.length === 0) return
+
+    // Refresh all channel stats, chunked by 100 (the max count accepted server side)
+    const chunkSize = Math.min(this.videoChannels.length, 100)
+
+    for (let start = 0; start < this.videoChannels.length; start += chunkSize) {
+      this.loadChannelsStats({
+        currentPage: (start / chunkSize) + 1,
+        itemsPerPage: chunkSize
+      })
+    }
+  }
+
+  private loadChannelsStats (componentPagination: ComponentPaginationLight) {
+    const channelBaseOptions = this.getChannelBaseOptions()
+    const requestedStatsDays = this.statsDays
+
+    this.videoChannelService.listAccountChannels({
+      ...channelBaseOptions,
+      withStats: true,
+      statsDays: requestedStatsDays,
+      componentPagination
+    }).subscribe({
+      next: res => {
+        // statsDays changed again since this request was sent: a newer request will supersede it
+        if (requestedStatsDays !== this.statsDays) return
+
+        for (const channelWithStats of res.data) {
+          const channel = this.videoChannels.find(c => c.id === channelWithStats.id)
+          if (!channel) continue
+
+          channel.viewsPerDay = channelWithStats.viewsPerDay
+          channel.viewsGroupInterval = channelWithStats.viewsGroupInterval
+          channel.videosCount = channelWithStats.videosCount
+          channel.totalViews = channelWithStats.totalViews
+        }
+
+        const barColor = getComputedStyle(document.documentElement).getPropertyValue('--border-primary')
+
+        for (const v of this.videoChannels) {
+          const viewsPerDay = v.viewsPerDay || []
+          const groupInterval = v.viewsGroupInterval || getVideoChannelStatsGroupInterval(this.statsDays)
+
+          this.videoChannelsChartData[v.id] = {
+            labels: viewsPerDay.map(day => this.formatStatsAxisLabel(day.date, groupInterval)),
+            tooltipTitles: viewsPerDay.map(day => this.formatStatsTooltipTitle(day.date, groupInterval)),
+            datasets: [
+              {
+                label: $localize`Views`,
+                data: viewsPerDay.map(day => day.views),
+                backgroundColor: barColor,
+                hoverBackgroundColor: barColor,
+                maxBarThickness: 16,
+                borderRadius: 2
+              }
+            ],
+
+            total: viewsPerDay.map(day => day.views)
+              .reduce((p, c) => p + c, 0),
+
+            startDate: viewsPerDay.length !== 0
+              ? this.formatStatsAxisLabel(viewsPerDay[0].date, groupInterval)
+              : ''
+          }
+        }
+
+        this.buildChartOptions()
+      },
+
+      error: err => this.notifier.handleError(err)
+    })
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private formatStatsAxisLabel (date: Date, groupInterval: VideoChannelStatsGroupInterval) {
+    if (groupInterval === 'month') {
+      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+    }
+
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  }
+
+  private formatStatsTooltipTitle (date: Date, groupInterval: VideoChannelStatsGroupInterval) {
+    if (groupInterval === 'month') {
+      return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short' })
+    }
+
+    if (groupInterval === 'week') {
+      const weekStart = date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+      return $localize`Week of ${weekStart}`
+    }
+
+    return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
   }
 
   private buildChartOptions () {
-    const channelsMinimumDailyViews = Math.min(...this.videoChannels.map(v => minBy(v.viewsPerDay, 'views').views))
-    const channelsMaximumDailyViews = Math.max(...this.videoChannels.map(v => maxBy(v.viewsPerDay, 'views').views))
+    const channelsWithStats = this.videoChannels.filter(v => v.viewsPerDay?.length)
+    if (channelsWithStats.length === 0) return
+
+    const channelsMaximumDailyViews = Math.max(...channelsWithStats.map(v => maxBy(v.viewsPerDay, 'views').views))
+    const styles = getComputedStyle(document.documentElement)
+    const tickColor = styles.getPropertyValue('--fg-300')
+    const gridColor = styles.getPropertyValue('--bg-secondary-350')
 
     this.chartOptions = {
+      responsive: true,
+      maintainAspectRatio: false,
       plugins: {
         legend: {
           display: false
@@ -182,41 +342,78 @@ export class MyVideoChannelsComponent {
         tooltip: {
           mode: 'index',
           intersect: false,
-          external: function ({ tooltip }: { tooltip: TooltipModel<any> }) {
-            if (!tooltip) return
-
-            // disable displaying the color box
-            tooltip.options.displayColors = false
-          },
+          displayColors: false,
           callbacks: {
-            label: (tooltip: TooltipItem<any>) => `${tooltip.formattedValue} views`
+            title: items => {
+              const item = items[0]
+              if (!item) return ''
+
+              const tooltipTitles = (item.chart.data as CustomChartData).tooltipTitles
+              return tooltipTitles?.[item.dataIndex] ?? item.label ?? ''
+            },
+            label: (tooltip: TooltipItem<any>) =>
+              formatICU(
+                $localize`${tooltip.raw} {value, plural, =1 {view} other {views}}`,
+                { value: tooltip.raw as number }
+              )
           }
         }
       },
       scales: {
         x: {
-          display: false
+          display: true,
+          border: {
+            display: false
+          },
+          grid: {
+            display: false
+          },
+          ticks: {
+            autoSkip: true,
+            maxTicksLimit: 4,
+            maxRotation: 0,
+            color: tickColor,
+            font: {
+              size: 11
+            }
+          }
         },
         y: {
-          display: false,
-          min: Math.max(0, channelsMinimumDailyViews - (3 * channelsMaximumDailyViews / 100)),
-          max: Math.max(1, channelsMaximumDailyViews)
+          display: true,
+          beginAtZero: true,
+          suggestedMax: Math.max(1, channelsMaximumDailyViews),
+          border: {
+            display: false
+          },
+          grid: {
+            color: gridColor
+          },
+          ticks: {
+            maxTicksLimit: 3,
+            color: tickColor,
+            font: {
+              size: 11
+            },
+            callback: value => {
+              const n = Number(value)
+              if (!Number.isFinite(n)) return value
+
+              return Math.abs(n) >= 1000
+                ? `${Math.round(n / 100) / 10}k`
+                : n
+            }
+          }
         }
       },
       layout: {
         padding: {
-          left: 15,
-          right: 15,
-          top: 10,
+          left: 0,
+          right: 4,
+          top: 4,
           bottom: 0
         }
       },
-      elements: {
-        point: {
-          radius: 0
-        }
-      },
-      hover: {
+      interaction: {
         mode: 'index',
         intersect: false
       }
@@ -228,6 +425,8 @@ export class MyVideoChannelsComponent {
 
     return formatICU($localize`${data.total} {value, plural, =1 {view} other {views}} since ${data.startDate}`, { value: data.total })
   }
+
+  // ---------------------------------------------------------------------------
 
   getTotalTitle () {
     return formatICU(

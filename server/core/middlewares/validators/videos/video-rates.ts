@@ -20,7 +20,7 @@ const videoUpdateRateValidator = [
     if (areValidationErrors(req, res)) return
     if (!await doesVideoExist(req.params.id, res)) return
 
-    if (!await checkCanSeeVideo({ req, res, paramId: req.params.id, video: res.locals.videoAll })) return
+    if (!await checkCanSeeVideo({ req, res, paramId: req.params.id, video: res.locals.videoFull })) return
 
     return next()
   }
@@ -28,7 +28,7 @@ const videoUpdateRateValidator = [
 
 const getAccountVideoRateValidatorFactory = function (rateType: VideoRateType) {
   return [
-    param('name')
+    param('accountName')
       .custom(isAccountNameValid),
     param('videoId')
       .custom(isIdValid),
@@ -36,7 +36,7 @@ const getAccountVideoRateValidatorFactory = function (rateType: VideoRateType) {
     async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       if (areValidationErrors(req, res)) return
 
-      const rate = await AccountVideoRateModel.loadLocalAndPopulateVideo(rateType, req.params.name, +req.params.videoId)
+      const rate = await AccountVideoRateModel.loadLocalAndPopulateVideo(rateType, req.params.accountName, +req.params.videoId)
       if (!rate) {
         return res.fail({
           status: HttpStatusCode.NOT_FOUND_404,

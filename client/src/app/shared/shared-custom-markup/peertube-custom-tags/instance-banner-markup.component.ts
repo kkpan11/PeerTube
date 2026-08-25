@@ -1,4 +1,3 @@
-import { NgIf } from '@angular/common'
 import { ChangeDetectionStrategy, ChangeDetectorRef, Component, OnInit, inject } from '@angular/core'
 import { ServerService } from '@app/core'
 import { maxBy } from '@peertube/peertube-core-utils'
@@ -12,7 +11,7 @@ import { CustomMarkupComponent } from './shared'
   selector: 'my-instance-banner-markup',
   templateUrl: 'instance-banner-markup.component.html',
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [ NgIf ]
+  imports: []
 })
 export class InstanceBannerMarkupComponent implements OnInit, CustomMarkupComponent {
   private cd = inject(ChangeDetectorRef)
@@ -24,7 +23,7 @@ export class InstanceBannerMarkupComponent implements OnInit, CustomMarkupCompon
   ngOnInit () {
     const { instance } = this.server.getHTMLConfig()
 
-    this.instanceBannerUrl = maxBy(instance.banners, 'width')?.path
+    this.instanceBannerUrl = maxBy(instance.banners, 'width')?.fileUrl
     this.cd.markForCheck()
   }
 }

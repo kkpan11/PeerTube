@@ -1,15 +1,15 @@
-import { forkJoin } from 'rxjs'
-import { filter, first, map } from 'rxjs/operators'
-import { DOCUMENT, getLocaleDirection, NgClass, NgIf, PlatformLocation } from '@angular/common'
-import { AfterViewInit, Component, LOCALE_ID, OnDestroy, OnInit, inject, viewChild } from '@angular/core'
+import { getLocaleDirection, NgClass, PlatformLocation } from '@angular/common'
+import { AfterViewInit, Component, DOCUMENT, inject, LOCALE_ID, OnDestroy, OnInit, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { DomSanitizer, SafeHtml } from '@angular/platform-browser'
-import { Event, GuardsCheckStart, RouteConfigLoadEnd, RouteConfigLoadStart, Router, RouterOutlet } from '@angular/router'
+import { Event, GuardsCheckStart, NavigationStart, RouteConfigLoadEnd, RouteConfigLoadStart, Router, RouterOutlet } from '@angular/router'
 import {
   AuthService,
   Hotkey,
   HotkeysService,
   MarkdownService,
   PeerTubeRouterService,
+  RedirectService,
+  RouterStatusService,
   ScreenService,
   ScrollService,
   ServerService,
@@ -19,7 +19,7 @@ import {
 import { HooksService } from '@app/core/plugins/hooks.service'
 import { PluginService } from '@app/core/plugins/plugin.service'
 import { AccountSetupWarningModalComponent } from '@app/modal/account-setup-warning-modal.component'
-import { AdminWelcomeModalComponent } from '@app/modal/admin-welcome-modal.component'
+import { AdminConfigWizardModalComponent } from '@app/modal/admin-config-wizard/admin-config-wizard-modal.component'
 import { CustomModalComponent } from '@app/modal/custom-modal.component'
 import { InstanceConfigWarningModalComponent } from '@app/modal/instance-config-warning-modal.component'
 import { NgbConfig, NgbModal } from '@ng-bootstrap/ng-bootstrap'
@@ -30,6 +30,8 @@ import { logger } from '@root-helpers/logger'
 import { peertubeLocalStorage } from '@root-helpers/peertube-web-storage'
 import { SharedModule } from 'primeng/api'
 import { ToastModule } from 'primeng/toast'
+import { forkJoin } from 'rxjs'
+import { filter, first, map } from 'rxjs/operators'
 import { MenuService } from './core/menu/menu.service'
 import { HeaderComponent } from './header/header.component'
 import { POP_STATE_MODAL_DISMISS } from './helpers'
@@ -37,15 +39,15 @@ import { HotkeysCheatSheetComponent } from './hotkeys/hotkeys-cheat-sheet.compon
 import { MenuComponent } from './menu/menu.component'
 import { ConfirmComponent } from './modal/confirm.component'
 import { GlobalIconComponent, GlobalIconName } from './shared/shared-icons/global-icon.component'
-
 import { InstanceService } from './shared/shared-main/instance/instance.service'
+import { PeertubeModalService } from './shared/shared-main/peertube-modal/peertube-modal.service'
 
 @Component({
   selector: 'my-app',
   templateUrl: './app.component.html',
   styleUrls: [ './app.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     HotkeysCheatSheetComponent,
     NgClass,
     HeaderComponent,
@@ -57,9 +59,9 @@ import { InstanceService } from './shared/shared-main/instance/instance.service'
     ToastModule,
     SharedModule,
     AccountSetupWarningModalComponent,
-    AdminWelcomeModalComponent,
     InstanceConfigWarningModalComponent,
-    CustomModalComponent
+    CustomModalComponent,
+    AdminConfigWizardModalComponent
   ]
 })
 export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
@@ -82,18 +84,23 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
   private loadingBar = inject(LoadingBarService)
   private scrollService = inject(ScrollService)
   private userLocalStorage = inject(UserLocalStorageService)
+  private peertubeModal = inject(PeertubeModalService)
+  private routerStatus = inject(RouterStatusService)
+  private redirectService = inject(RedirectService)
+
   menu = inject(MenuService)
 
   private static LS_BROADCAST_MESSAGE = 'app-broadcast-message-dismissed'
 
   readonly accountSetupWarningModal = viewChild<AccountSetupWarningModalComponent>('accountSetupWarningModal')
-  readonly adminWelcomeModal = viewChild<AdminWelcomeModalComponent>('adminWelcomeModal')
+  readonly adminConfigWizardModal = viewChild<AdminConfigWizardModalComponent>('adminConfigWizardModal')
   readonly instanceConfigWarningModal = viewChild<InstanceConfigWarningModalComponent>('instanceConfigWarningModal')
   readonly customModal = viewChild<CustomModalComponent>('customModal')
 
   customCSS: SafeHtml
   broadcastMessage: { message: string, dismissable: boolean, class: string } | null = null
   hotkeysModalOpened = false
+  toastPosition: 'bottom-right' | 'bottom-left' = 'bottom-right'
 
   private serverConfig: HTMLServerConfig
   private userLoaded = false
@@ -154,6 +161,17 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
 
       return Promise.resolve()
     })
+
+    this.peertubeModal.openAdminConfigWizardSubject.subscribe(({ showWelcome }) => {
+      const adminWelcomeModal = this.adminConfigWizardModal()
+      if (!adminWelcomeModal) return
+
+      adminWelcomeModal.show({ showWelcome })
+    })
+
+    if (getLocaleDirection(this.localeId) === 'rtl') {
+      this.toastPosition = 'bottom-left'
+    }
   }
 
   ngAfterViewInit () {
@@ -169,6 +187,10 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
 
   isUserLoggedIn () {
     return this.authService.isLoggedIn()
+  }
+
+  isUserAdmin () {
+    return this.isUserLoggedIn() && this.authService.getUser().role.id === UserRole.ADMINISTRATOR
   }
 
   hideBroadcastMessage () {
@@ -209,14 +231,35 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
       filter(() => this.screenService.isInSmallView() || this.screenService.isInTouchScreen())
     ).subscribe(() => this.menu.setMenuCollapsed(true)) // User clicked on a link in the menu, change the page
 
+    // ---------------------------------------------------------------------------
     // Handle lazy loaded module
+    // ---------------------------------------------------------------------------
     eventsObs.pipe(
       filter((e: Event): e is RouteConfigLoadStart => e instanceof RouteConfigLoadStart)
-    ).subscribe(() => this.loadingBar.useRef().start())
+    ).subscribe(e => {
+      if (e.route.data?.preloaded) return // This route is preloaded, don't display the loading indicator
+
+      this.loadingBar.useRef('router-' + e.route.path).start()
+    })
 
     eventsObs.pipe(
       filter((e: Event): e is RouteConfigLoadEnd => e instanceof RouteConfigLoadEnd)
-    ).subscribe(() => this.loadingBar.useRef().complete())
+    ).subscribe(e => {
+      if (e.route.data?.preloaded) return // This route is preloaded, don't display the loading indicator
+
+      this.loadingBar.useRef('router-' + e.route.path).complete()
+    })
+
+    // ---------------------------------------------------------------------------
+
+    // We need this to prevent circular dependency between the router and the custom reuse strategy
+    eventsObs.pipe(
+      filter((e: Event): e is NavigationStart => e instanceof NavigationStart)
+    ).subscribe(() => {
+      const current = this.router.currentNavigation()
+
+      this.routerStatus.isNavigatingBack = current?.trigger === 'popstate' || current?.extras.state?.trigger === 'popstate'
+    })
   }
 
   private async injectBroadcastMessage () {
@@ -227,7 +270,7 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
 
     if (messageConfig.enabled) {
       // Already dismissed this message?
-      if (messageConfig.dismissable && localStorage.getItem(AppComponent.LS_BROADCAST_MESSAGE) === messageConfig.message) {
+      if (messageConfig.dismissable && peertubeLocalStorage.getItem(AppComponent.LS_BROADCAST_MESSAGE) === messageConfig.message) {
         return
       }
 
@@ -256,7 +299,6 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
     // Inject JS
     if (this.serverConfig.instance.customizations.javascript) {
       try {
-        /* eslint-disable no-eval */
         window.eval(this.serverConfig.instance.customizations.javascript)
       } catch (err) {
         logger.error('Cannot eval custom JavaScript.', err)
@@ -302,23 +344,23 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
   }
 
   private openAdminModalsIfNeeded (user: User) {
-    const adminWelcomeModal = this.adminWelcomeModal()
+    const adminWelcomeModal = this.adminConfigWizardModal()
     if (!adminWelcomeModal) return
 
-    if (adminWelcomeModal.shouldOpen(user)) {
-      return adminWelcomeModal.show()
+    if (adminWelcomeModal.shouldAutoOpen(user)) {
+      return adminWelcomeModal.show({ showWelcome: true })
     }
 
     const instanceConfigWarningModal = this.instanceConfigWarningModal()
     if (!instanceConfigWarningModal) return
-    if (!instanceConfigWarningModal.shouldOpenByUser(user)) return
+    if (!instanceConfigWarningModal.canBeOpenByUser(user)) return
 
     forkJoin([
       this.serverService.getConfig().pipe(first()),
-      this.instanceService.getAbout().pipe(first())
+      this.instanceService.getAboutWithCache().pipe(first())
     ]).subscribe(([ config, about ]) => {
       const instanceConfigWarningModalValue = this.instanceConfigWarningModal()
-      if (instanceConfigWarningModalValue.shouldOpen(config, about)) {
+      if (instanceConfigWarningModalValue.shouldAutoOpen(config, about)) {
         instanceConfigWarningModalValue.show(about)
       }
     })
@@ -328,7 +370,7 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
     const accountSetupWarningModal = this.accountSetupWarningModal()
     if (!accountSetupWarningModal) return
 
-    if (accountSetupWarningModal.shouldOpen(user)) {
+    if (accountSetupWarningModal.shouldAutoOpen(user)) {
       accountSetupWarningModal.show(user)
     }
   }
@@ -357,10 +399,15 @@ export class AppComponent implements OnInit, AfterViewInit, OnDestroy {
         return false
       }, $localize`Go to the "Browse videos" page`),
 
-      new Hotkey('g u', () => {
-        this.router.navigate([ '/videos/upload' ])
+      new Hotkey('g p', () => {
+        this.router.navigate([ '/videos/publish' ])
         return false
-      }, $localize`Go to the "Publish video" page`)
+      }, $localize`Go to the "Publish video" page`),
+
+      new Hotkey('g l', () => {
+        this.redirectService.redirectToLogin()
+        return false
+      }, $localize`Go to the login page`)
     ])
   }
 

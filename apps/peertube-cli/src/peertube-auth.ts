@@ -1,6 +1,6 @@
-import CliTable3 from 'cli-table3'
-import prompt from 'prompt'
 import { Command } from '@commander-js/extra-typings'
+import CliTable3 from 'cli-table3'
+import prompts from 'prompts'
 import { assignToken, buildServer, getNetrc, getSettings, writeSettings } from './shared/index.js'
 
 export function defineAuthProgram () {
@@ -15,48 +15,60 @@ export function defineAuthProgram () {
     .option('-U, --username <username>', 'Username')
     .option('-p, --password <token>', 'Password')
     .option('--default', 'add the entry as the new default')
-    .action(options => {
-      /* eslint-disable no-import-assign */
-      prompt.override = options
-      prompt.start()
-      prompt.get({
-        properties: {
-          url: {
-            description: 'instance url',
-            conform: value => isURLaPeerTubeInstance(value),
-            message: 'It should be an URL (https://peertube.example.com)',
-            required: true
-          },
-          username: {
-            conform: value => typeof value === 'string' && value.length !== 0,
-            message: 'Name must be only letters, spaces, or dashes',
-            required: true
-          },
-          password: {
-            hidden: true,
-            replace: '*',
-            required: true
-          }
+    .action(async options => {
+      const overrides = {
+        url: options.url,
+        username: options.username,
+        password: options.password
+      }
+
+      const result = await prompts([
+        {
+          type: overrides.url ? null : 'text',
+          name: 'url',
+          message: 'instance url',
+          validate: value => isURLaPeerTubeInstance(value) ? true : 'It should be an URL (https://peertube.example.com)'
+        },
+        {
+          type: overrides.username ? null : 'text',
+          name: 'username',
+          message: 'username',
+          validate: value => typeof value === 'string' && value.length !== 0 ? true : 'Name must be only letters, spaces, or dashes'
+        },
+        {
+          type: overrides.password ? null : 'password',
+          name: 'password',
+          message: 'password',
+          validate: value => typeof value === 'string' && value.length !== 0 ? true : 'Password is required'
         }
-      }, async (_, result) => {
-
-        // Check credentials
-        try {
-          // Strip out everything after the domain:port.
-          // See https://github.com/Chocobozzz/PeerTube/issues/3520
-          result.url = stripExtraneousFromPeerTubeUrl(result.url)
-
-          const server = buildServer(result.url)
-          await assignToken(server, result.username, result.password)
-        } catch (err) {
-          console.error(err.message)
-          process.exit(-1)
+      ], {
+        onCancel: () => {
+          process.exit(1)
         }
-
-        await setInstance(result.url, result.username, result.password, options.default)
-
-        process.exit(0)
       })
+
+      const resolved = {
+        url: overrides.url ?? result.url,
+        username: overrides.username ?? result.username,
+        password: overrides.password ?? result.password
+      }
+
+      // Check credentials
+      try {
+        // Strip out everything after the domain:port.
+        // See https://github.com/Chocobozzz/PeerTube/issues/3520
+        resolved.url = stripExtraneousFromPeerTubeUrl(resolved.url)
+
+        const server = buildServer(resolved.url)
+        await assignToken(server, resolved.username, resolved.password)
+      } catch (err) {
+        console.error(err.message)
+        process.exit(-1)
+      }
+
+      await setInstance(resolved.url, resolved.username, resolved.password, options.default)
+
+      process.exit(0)
     })
 
   program
@@ -111,11 +123,13 @@ export function defineAuthProgram () {
       }
     })
 
-  program.addHelpText('after', '\n\n  Examples:\n\n' +
-    '    $ peertube auth add -u https://peertube.cpy.re -U "PEERTUBE_USER" --password "PEERTUBE_PASSWORD"\n' +
-    '    $ peertube auth add -u https://peertube.cpy.re -U root\n' +
-    '    $ peertube auth list\n' +
-    '    $ peertube auth del https://peertube.cpy.re\n'
+  program.addHelpText(
+    'after',
+    '\n\n  Examples:\n\n' +
+      '    $ peertube auth add -u https://peertube.cpy.re -U "PEERTUBE_USER" --password "PEERTUBE_PASSWORD"\n' +
+      '    $ peertube auth add -u https://peertube.cpy.re -U root\n' +
+      '    $ peertube auth list\n' +
+      '    $ peertube auth del https://peertube.cpy.re\n'
   )
 
   return program
@@ -129,9 +143,17 @@ async function delInstance (url: string) {
   const [ settings, netrc ] = await Promise.all([ getSettings(), getNetrc() ])
 
   const index = settings.remotes.indexOf(url)
-  settings.remotes.splice(index)
+  if (index === -1) return
 
-  if (settings.default === index) settings.default = -1
+  const defaultUrl = settings.default !== -1
+    ? settings.remotes[settings.default]
+    : undefined
+
+  settings.remotes.splice(index, 1)
+
+  settings.default = defaultUrl !== undefined
+    ? settings.remotes.indexOf(defaultUrl)
+    : -1
 
   await writeSettings(settings)
 
@@ -147,8 +169,10 @@ async function setInstance (url: string, username: string, password: string, isD
     settings.remotes.push(url)
   }
 
-  if (isDefault || settings.remotes.length === 1) {
-    settings.default = settings.remotes.length - 1
+  if (isDefault) {
+    settings.default = settings.remotes.indexOf(url)
+  } else if (settings.remotes.length === 1) {
+    settings.default = 0
   }
 
   await writeSettings(settings)

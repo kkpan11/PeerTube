@@ -1,7 +1,6 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
-import { HttpStatusCode } from '@peertube/peertube-models'
+import { HttpStatusCode, UserRegistrationState } from '@peertube/peertube-models'
 import {
   cleanupTests,
   createMultipleServers,
@@ -10,6 +9,7 @@ import {
   setAccessTokensToServers,
   waitJobs
 } from '@peertube/peertube-server-commands'
+import { expect } from 'chai'
 
 describe('Official plugin Akismet', function () {
   let servers: PeerTubeServer[]
@@ -38,18 +38,17 @@ describe('Official plugin Akismet', function () {
   })
 
   describe('Local threads/replies', function () {
-
     before(async function () {
       const { uuid } = await servers[0].videos.quickUpload({ name: 'video 1' })
       videoUUID = uuid
     })
 
     it('Should not detect a thread as spam', async function () {
-      await servers[0].comments.createThread({ videoId: videoUUID, text: 'comment' })
+      await servers[0].comments.createThread({ videoId: videoUUID, text: 'this is my comment' })
     })
 
     it('Should not detect a reply as spam', async function () {
-      await servers[0].comments.addReplyToLastThread({ text: 'reply' })
+      await servers[0].comments.addReplyToLastThread({ text: 'this is my reply to your comment' })
     })
 
     it('Should detect a thread as spam', async function () {
@@ -61,13 +60,11 @@ describe('Official plugin Akismet', function () {
     })
 
     it('Should detect a thread as spam', async function () {
-      await servers[0].comments.createThread({ videoId: videoUUID, text: 'comment' })
       await servers[0].comments.addReplyToLastThread({ text: 'akismet-guaranteed-spam', expectedStatus: HttpStatusCode.FORBIDDEN_403 })
     })
   })
 
   describe('Remote threads/replies', function () {
-
     before(async function () {
       this.timeout(60000)
 
@@ -126,7 +123,6 @@ describe('Official plugin Akismet', function () {
   })
 
   describe('Signup', function () {
-
     before(async function () {
       await servers[0].config.updateExistingConfig({
         newConfig: {
@@ -151,6 +147,25 @@ describe('Official plugin Akismet', function () {
         email: 'akismet-guaranteed-spam@example.com',
         expectedStatus: HttpStatusCode.FORBIDDEN_403
       })
+    })
+
+    it('Should detect a signup as SPAM and set it as approval', async function () {
+      await servers[0].plugins.updateSettings({
+        npmName: 'peertube-plugin-akismet',
+        settings: {
+          'akismet-api-key': process.env.AKISMET_KEY,
+          'akismet-spam-marked-user-registration-strategy': 'mark-for-approval'
+        }
+      })
+
+      const { state } = await servers[0].registrations.register({
+        username: 'user2',
+        displayName: 'user 2',
+        email: 'akismet-guaranteed-spam@example.com',
+        expectedStatus: HttpStatusCode.OK_200
+      })
+
+      expect(state.id).to.equal(UserRegistrationState.PENDING)
     })
   })
 

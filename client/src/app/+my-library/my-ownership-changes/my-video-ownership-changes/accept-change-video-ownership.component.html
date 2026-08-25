@@ -1,0 +1,34 @@
+<ng-template #modal let-close="close" let-dismiss="dismiss">
+  <div class="modal-header">
+    <h1 class="modal-title">{{ getModalTitle() }}</h1>
+
+    <button class="border-0 p-0" title="Close this modal" i18n-title (click)="dismiss()">
+      <my-global-icon iconName="cross"></my-global-icon>
+    </button>
+  </div>
+
+  <div class="modal-body" [formGroup]="form">
+    <div class="form-group">
+      <label i18n for="channel">{ ownershipChanges.length, plural, =1 {Select a channel to receive the video} other {Select a channel to receive the videos}}</label>
+      <my-select-channel-user class="d-block" inputId="channel" formControlName="channel" [items]="videoChannels"></my-select-channel-user>
+
+      @if (formErrors.channel) {
+        <div class="form-error" role="alert">{{ formErrors.channel }}</div>
+      }
+    </div>
+  </div>
+
+  <div class="modal-footer inputs">
+    <div class="inputs">
+      <input
+        type="button" role="button" i18n-value value="Cancel" class="peertube-button secondary-button"
+        (click)="dismiss()" (key.enter)="dismiss()"
+        >
+
+      <input
+        type="submit" i18n-value value="Accept" class="peertube-button primary-button"
+        (click)="close()"
+        >
+    </div>
+  </div>
+</ng-template>

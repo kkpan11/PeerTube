@@ -1,24 +1,27 @@
-import { Application, Request, Response } from 'express'
 import { Meter, metrics } from '@opentelemetry/api'
 import { PrometheusExporter } from '@opentelemetry/exporter-prometheus'
 import { MeterProvider } from '@opentelemetry/sdk-metrics'
-import { logger } from '@server/helpers/logger.js'
+import { PlaybackMetricCreate } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { MVideoImmutable } from '@server/types/models/index.js'
-import { PlaybackMetricCreate } from '@peertube/peertube-models'
+import { Application, Request, Response } from 'express'
 import {
   BittorrentTrackerObserversBuilder,
   JobQueueObserversBuilder,
   LivesObserversBuilder,
   NodeJSObserversBuilder,
   PlaybackMetrics,
+  RunnerJobQueueObserversBuilder,
+  RunnerObserversBuilder,
   StatsObserversBuilder,
   ViewersObserversBuilder
 } from './metric-helpers/index.js'
 import { WorkerThreadsObserversBuilder } from './metric-helpers/worker-threads-observers.js'
 
-class OpenTelemetryMetrics {
+const logger = createLogger()
 
+class OpenTelemetryMetrics {
   private static instance: OpenTelemetryMetrics
 
   private meter: Meter
@@ -73,6 +76,8 @@ class OpenTelemetryMetrics {
 
     new NodeJSObserversBuilder(this.meter).buildObservers()
     new JobQueueObserversBuilder(this.meter).buildObservers()
+    new RunnerJobQueueObserversBuilder(this.meter).buildObservers()
+    new RunnerObserversBuilder(this.meter).buildObservers()
     new StatsObserversBuilder(this.meter).buildObservers()
     new LivesObserversBuilder(this.meter).buildObservers()
     new ViewersObserversBuilder(this.meter).buildObservers()

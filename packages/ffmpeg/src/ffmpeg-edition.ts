@@ -22,10 +22,12 @@ export class FFmpegEdition {
     this.commandWrapper = new FFmpegCommandWrapper(options)
   }
 
-  async cutVideo (options: BaseStudioOptions & {
-    start?: number
-    end?: number
-  }) {
+  async cutVideo (
+    options: BaseStudioOptions & {
+      start?: number
+      end?: number
+    }
+  ) {
     const { videoInputPath, separatedAudioInputPath, outputPath, inputFileMutexReleaser } = options
 
     const mainProbe = await ffprobePromise(videoInputPath)
@@ -45,7 +47,9 @@ export class FFmpegEdition {
       videoStreamOnly: false,
       fps,
       canCopyAudio: false,
-      canCopyVideo: false
+      canCopyVideo: false,
+
+      chainComplexFilters: null
     })
 
     if (options.start) {
@@ -59,23 +63,53 @@ export class FFmpegEdition {
     await this.commandWrapper.runCommand()
   }
 
-  async addWatermark (options: BaseStudioOptions & {
-    watermarkPath: string
+  async addWatermark (
+    options: BaseStudioOptions & {
+      watermarkPath: string
 
-    videoFilters: {
-      watermarkSizeRatio: number
-      horitonzalMarginRatio: number
-      verticalMarginRatio: number
+      videoFilters: {
+        watermarkSizeRatio: number
+        horizontalMarginRatio: number
+        verticalMarginRatio: number
+      }
     }
-  }) {
+  ) {
     const { watermarkPath, videoInputPath, separatedAudioInputPath, outputPath, videoFilters, inputFileMutexReleaser } = options
 
     const videoProbe = await ffprobePromise(videoInputPath)
     const fps = await getVideoStreamFPS(videoInputPath, videoProbe)
-    const { resolution } = await getVideoStreamDimensionsInfo(videoInputPath, videoProbe)
+    const { resolution, height } = await getVideoStreamDimensionsInfo(videoInputPath, videoProbe)
 
-    const command = this.commandWrapper.buildCommand([ ...this.buildInputs(options), watermarkPath ], inputFileMutexReleaser)
+    this.commandWrapper.buildCommand([ ...this.buildInputs(options), watermarkPath ], inputFileMutexReleaser)
       .output(outputPath)
+
+    const videoInput = 0
+    const imageInput = separatedAudioInputPath
+      ? 2
+      : 1
+
+    const complexFilters: FilterSpecification[] = [
+      // Scale watermark
+      {
+        inputs: [ `${imageInput}` ],
+        filter: 'scale',
+        options: {
+          w: '-1',
+          h: `${height * videoFilters.watermarkSizeRatio}`
+        },
+        outputs: [ 'v_watermark' ]
+      },
+
+      {
+        inputs: [ `${videoInput}`, 'v_watermark' ],
+        filter: 'overlay',
+        options: {
+          x: `main_w - overlay_w - (main_h * ${videoFilters.horizontalMarginRatio})`,
+          y: `main_h * ${videoFilters.verticalMarginRatio}`
+        },
+        outputs: [ 'v_overlay' ]
+      }
+    ]
 
     await presetVOD({
       commandWrapper: this.commandWrapper,
@@ -87,41 +121,24 @@ export class FFmpegEdition {
       videoStreamOnly: false,
       fps,
       canCopyAudio: true,
-      canCopyVideo: false
-    })
+      canCopyVideo: false,
 
-    const complexFilter: FilterSpecification[] = [
-      // Scale watermark
-      {
-        inputs: [ '[1]', '[0]' ],
-        filter: 'scale2ref',
-        options: {
-          w: 'oh*mdar',
-          h: `ih*${videoFilters.watermarkSizeRatio}`
-        },
-        outputs: [ '[watermark]', '[video]' ]
-      },
-
-      {
-        inputs: [ '[video]', '[watermark]' ],
-        filter: 'overlay',
-        options: {
-          x: `main_w - overlay_w - (main_h * ${videoFilters.horitonzalMarginRatio})`,
-          y: `main_h * ${videoFilters.verticalMarginRatio}`
-        }
+      chainComplexFilters: {
+        complexFilters,
+        lastVideoInput: 'v_overlay'
       }
-    ]
-
-    command.complexFilter(complexFilter)
+    })
 
     await this.commandWrapper.runCommand()
   }
 
-  async addIntroOutro (options: BaseStudioOptions & {
-    introOutroPath: string
+  async addIntroOutro (
+    options: BaseStudioOptions & {
+      introOutroPath: string
 
-    type: 'intro' | 'outro'
-  }) {
+      type: 'intro' | 'outro'
+    }
+  ) {
     const { introOutroPath, videoInputPath, separatedAudioInputPath, outputPath, type, inputFileMutexReleaser } = options
 
     const mainProbe = await ffprobePromise(videoInputPath)
@@ -155,21 +172,8 @@ export class FFmpegEdition {
       introAudio++
     }
 
-    await presetVOD({
-      commandWrapper: this.commandWrapper,
-
-      videoInputPath,
-      separatedAudioInputPath,
-
-      resolution,
-      videoStreamOnly: false,
-      fps,
-      canCopyAudio: false,
-      canCopyVideo: false
-    })
-
     // Add black background to correctly scale intro/outro with padding
-    const complexFilter: FilterSpecification[] = [
+    const complexFilters: FilterSpecification[] = [
       {
         inputs: [ `${introInput}`, `${videoInput}` ],
         filter: 'scale2ref',
@@ -219,14 +223,14 @@ export class FFmpegEdition {
     ]
 
     const concatFilter = {
-      inputs: [],
+      inputs: [], // Defined later as it depends on the presence of audio and the type (intro or outro)
       filter: 'concat',
       options: {
         n: 2,
         v: 1,
         unsafe: 1
       },
-      outputs: [ 'v' ]
+      outputs: [ 'concat' ]
     }
 
     const introOutroFilterInputs = [ 'intro-outro-resized' ]
@@ -246,15 +250,149 @@ export class FFmpegEdition {
 
     if (mainHasAudio) {
       concatFilter.options['a'] = 1
-      concatFilter.outputs.push('a')
+      concatFilter.outputs.push('a_out')
 
-      command.outputOption('-map [a]')
+      command.outputOption('-map [a_out]')
     }
 
-    command.outputOption('-map [v]')
+    command.outputOption('-map [v_out]')
 
-    complexFilter.push(concatFilter)
-    command.complexFilter(complexFilter)
+    complexFilters.push(concatFilter)
+
+    await presetVOD({
+      commandWrapper: this.commandWrapper,
+
+      videoInputPath,
+      separatedAudioInputPath,
+
+      resolution,
+      videoStreamOnly: false,
+      fps,
+      canCopyAudio: false,
+      canCopyVideo: false,
+
+      chainComplexFilters: {
+        complexFilters,
+        lastVideoInput: 'concat',
+        videoOutput: 'v_out'
+      }
+    })
+
+    await this.commandWrapper.runCommand()
+  }
+
+  async removeSegments (
+    options: BaseStudioOptions & {
+      segments: { start: number, end: number }[]
+    }
+  ) {
+    const { videoInputPath, separatedAudioInputPath, outputPath, inputFileMutexReleaser, segments } = options
+
+    const mainProbe = await ffprobePromise(videoInputPath)
+    const fps = await getVideoStreamFPS(videoInputPath, mainProbe)
+    const { resolution } = await getVideoStreamDimensionsInfo(videoInputPath, mainProbe)
+    const duration = await getVideoStreamDuration(videoInputPath, mainProbe)
+
+    const mainHasAudio = await hasAudioStream(separatedAudioInputPath || videoInputPath)
+
+    const videoInput = 0
+    const audioInput = separatedAudioInputPath ? 1 : 0
+
+    // Compute keep intervals as the inverse of the delete segments
+    const sortedSegments = [ ...segments ].sort((a, b) => a.start - b.start)
+    const keepIntervals: { start: number, end: number }[] = []
+
+    let pos = 0
+    for (const seg of sortedSegments) {
+      if (seg.start > pos) keepIntervals.push({ start: pos, end: seg.start })
+      pos = seg.end
+    }
+    if (pos < duration) keepIntervals.push({ start: pos, end: duration })
+
+    if (keepIntervals.length === 0) throw new Error('No video content remains after applying remove segments')
+
+    const command = this.commandWrapper.buildCommand(this.buildInputs(options), inputFileMutexReleaser)
+      .output(outputPath)
+
+    const complexFilters: FilterSpecification[] = []
+
+    // Split input streams so each keep interval gets its own copy
+    complexFilters.push({
+      inputs: [ `${videoInput}:v` ],
+      filter: 'split',
+      options: keepIntervals.length,
+      outputs: keepIntervals.map((_, i) => `vsrc${i}`)
+    })
+
+    if (mainHasAudio) {
+      complexFilters.push({
+        inputs: [ `${audioInput}:a` ],
+        filter: 'asplit',
+        options: keepIntervals.length,
+        outputs: keepIntervals.map((_, i) => `asrc${i}`)
+      })
+    }
+
+    // Trim each keep interval and reset timestamps
+    for (let i = 0; i < keepIntervals.length; i++) {
+      const { start, end } = keepIntervals[i]
+
+      complexFilters.push(
+        { inputs: [ `vsrc${i}` ], filter: 'trim', options: { start, end }, outputs: [ `vtrimmed${i}` ] },
+        { inputs: [ `vtrimmed${i}` ], filter: 'setpts', options: 'PTS-STARTPTS', outputs: [ `v${i}` ] }
+      )
+
+      if (mainHasAudio) {
+        complexFilters.push(
+          { inputs: [ `asrc${i}` ], filter: 'atrim', options: { start, end }, outputs: [ `atrimmed${i}` ] },
+          { inputs: [ `atrimmed${i}` ], filter: 'asetpts', options: 'PTS-STARTPTS', outputs: [ `a${i}` ] }
+        )
+      }
+    }
+
+    // Concatenate all keep intervals
+    const concatInputs: string[] = []
+    for (let i = 0; i < keepIntervals.length; i++) {
+      concatInputs.push(`v${i}`)
+      if (mainHasAudio) concatInputs.push(`a${i}`)
+    }
+
+    const concatOptions: Record<string, number> = { n: keepIntervals.length, v: 1 }
+    const concatOutputs = [ 'v_concat' ]
+
+    if (mainHasAudio) {
+      concatOptions.a = 1
+      concatOutputs.push('a_out')
+    }
+
+    complexFilters.push({
+      inputs: concatInputs,
+      filter: 'concat',
+      options: concatOptions,
+      outputs: concatOutputs
+    })
+
+    await presetVOD({
+      commandWrapper: this.commandWrapper,
+
+      videoInputPath,
+      separatedAudioInputPath,
+
+      resolution,
+      videoStreamOnly: false,
+      fps,
+      canCopyAudio: false,
+      canCopyVideo: false,
+
+      chainComplexFilters: {
+        complexFilters,
+        lastVideoInput: 'v_concat',
+        videoOutput: 'v_out'
+      }
+    })
+
+    command.outputOption('-map [v_out]')
+    if (mainHasAudio) command.outputOption('-map [a_out]')
 
     await this.commandWrapper.runCommand()
   }

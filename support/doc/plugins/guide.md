@@ -193,6 +193,7 @@ function register ({
 }) {
   const value = await storageManager.getData('mykey')
   await storageManager.storeData('mykey', { subkey: 'value' })
+  await storageManager.deleteData('mykey')
 }
 ```
 
@@ -335,7 +336,8 @@ function register (...) {
     getWeight: () => 60,
 
     // Optional function called by PeerTube when the user clicked on the logout button
-    onLogout: user => {
+    // The logout request is also provided, so you can read its headers or its cookies (PeerTube >= 8.3)
+    onLogout: (user, req) => {
       console.log('User %s logged out.', user.username')
     },
 
@@ -352,7 +354,17 @@ function register (...) {
           username: 'user'
           email: 'user@example.com'
           role: 2
-          displayName: 'User display name'
+          displayName: 'User display name',
+
+          // Stable identifier of this user in your own system (e.g. LDAP `uid`/`entryUUID`)
+          // When provided, PeerTube links the local account using this id instead of relying only on the
+          // email address, which is more robust if the email changes on your side later on
+          // PeerTube >= 8.3
+          externalId: 'user-1234',
+
+          // Interface/email language of the user, must be one of PeerTube's available locales
+          // PeerTube >= 8.3
+          language: 'fr'
         }
       }
 
@@ -378,7 +390,7 @@ function register (...) {
     // Will be displayed in a button next to the login form
     authDisplayName: () => 'Auth method'
 
-    // If the user click on the auth button, PeerTube will forward the request in this function
+    // If the user click on the auth button, PeerTube will forward the request to this function
     onAuthRequest: (req, res) => {
       res.redirect('https://external-auth.example.com/auth')
     },
@@ -400,6 +412,13 @@ function register (...) {
       role: 2
       displayName: 'User display name',
 
+      // Stable identifier of this user at the identity provider (OIDC `sub` claim, SAML `NameID`...)
+      // When provided, PeerTube links/looks up the local account using this id instead of relying only on the
+      // email address, which is more robust across identity provider email changes and avoids account
+      // confusion from email collisions
+      // PeerTube >= 8.3
+      externalId: 'a1b2c3d4-external-provider-subject-id',
+
       // Custom admin flags (bypass video auto moderation etc.)
       // https://github.com/Chocobozzz/PeerTube/blob/develop/packages/models/src/users/user-flag.model.ts
       // PeerTube >= 5.1
@@ -410,6 +429,10 @@ function register (...) {
       // PeerTube >= 5.1
       videoQuotaDaily: -1, // Unlimited
 
+      // Interface/email language of the user, must be one of PeerTube's available locales
+      // PeerTube >= 8.3
+      language: 'fr',
+
       // Update the user profile if it already exists
       // Default behaviour is no update
       // Introduced in PeerTube >= 5.1
@@ -418,7 +441,12 @@ function register (...) {
         if (fieldName === 'videoQuotaDaily') return currentValue
 
         return newValue
-      }
+      },
+
+      // Ask PeerTube to redirect on this URL instead of classic `/login` page
+      // The URL will contain an `externalAuthToken` param that can be reused to authenticate to the PeerTube REST API
+      // Introduced in PeerTube >= 7.3
+      externalRedirectUri: 'https://mywebsite.example.com/peertube-login-cb'
     })
   })
 
@@ -546,6 +574,26 @@ async function register ({
   // Load a video
   {
     const video = await peertubeHelpers.videos.loadByUrl('...')
+  }
+
+  // Update video metadata (thumbnail/preview files and the video channel are not supported)
+  {
+    await peertubeHelpers.videos.updateVideo({
+      videoId: '...',
+      attributes: {
+        name: 'New video name',
+        support: 'New support text'
+      }
+    })
+  }
+
+  // Send an email
+  {
+    await peertubeHelpers.email.createJob({
+      to: { email: 'admin@example.com', language: 'en' },
+      subject: 'Hello from my plugin',
+      text: 'Plugin body text'
+    })
   }
 }
 ```
@@ -873,8 +921,14 @@ PeerTube creates gradients of some CSS variables so you don't have to specify al
 
 You can take inspiration from core PeerTube themes in [client/src/sass/application.scss](https://github.com/Chocobozzz/PeerTube/blob/develop/client/src/sass/application.scss) file:
 
+::: info
+`--is-dark` CSS variable must be provided when you define a new theme
+:::
+
 ```css
-body {
+:root {
+  --is-dark: 0; /* Or --is-dark: 1 if it's a dark theme */
+
   --primary: #FD9C50;
   --on-primary: #111;
   --border-primary: #F2690D;
@@ -1242,7 +1296,8 @@ If you want to create an antispam/moderation plugin, you could use the following
  * `filter:api.video-thread.create.accept.result`: to accept or not local thread
  * `filter:api.video-comment-reply.create.accept.result`: to accept or not local replies
  * `filter:api.video-threads.list.result`: to change/hide the text of threads
- * `filter:api.video-thread-comments.list.result`: to change/hide the text of replies
+ * `filter:api.video-thread-comments.list.result`: to change/hide the text of replies. Since PeerTube 8.3 this hook only receives a truncated view of the thread, and its `total` is the number of direct replies of the root comment
+ * `filter:api.video-comment-replies.list.result`: to change/hide the text of the replies loaded after the thread (PeerTube >= 8.3)
  * `filter:video.auto-blacklist.result`: to automatically blacklist local or remote videos
  * `filter:admin-users-list.bulk-actions.create.result`: to add bulk actions in the admin users list
  * `filter:admin-video-comments-list.actions.create.result`: to add actions in the admin video comments list

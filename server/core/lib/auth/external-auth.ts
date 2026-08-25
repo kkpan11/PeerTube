@@ -1,28 +1,29 @@
+import { UserAdminFlag, UserRole } from '@peertube/peertube-models'
+import { isDevInstance } from '@peertube/peertube-node-utils'
+import { exists } from '@server/helpers/custom-validators/misc.js'
 import {
   isUserAdminFlagsValid,
   isUserDisplayNameValid,
+  isUserLanguage,
   isUserRoleValid,
   isUserUsernameValid,
   isUserVideoQuotaDailyValid,
   isUserVideoQuotaValid
 } from '@server/helpers/custom-validators/users.js'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { generateRandomString } from '@server/helpers/utils.js'
 import { PLUGIN_EXTERNAL_AUTH_TOKEN_LIFETIME } from '@server/initializers/constants.js'
 import { PluginManager } from '@server/lib/plugins/plugin-manager.js'
 import { OAuthTokenModel } from '@server/models/oauth/oauth-token.js'
-import { MUser } from '@server/types/models/index.js'
 import {
   RegisterServerAuthenticatedResult,
   RegisterServerAuthPassOptions,
   RegisterServerExternalAuthenticatedResult
 } from '@server/types/plugins/register-server-auth.model.js'
-import { UserAdminFlag, UserRole } from '@peertube/peertube-models'
-import { BypassLogin } from './oauth-model.js'
+import { BypassLogin } from './bypass-login.model.js'
+import { ExternalUser } from './external-user.model.js'
 
-export type ExternalUser =
-  Pick<MUser, 'username' | 'email' | 'role' | 'adminFlags' | 'videoQuotaDaily' | 'videoQuota'> &
-  { displayName: string }
+const logger = createLogger()
 
 // Token is the key, expiration date is the value
 const authBypassTokens = new Map<string, {
@@ -38,14 +39,16 @@ async function onExternalUserAuthenticated (options: {
   authName: string
   authResult: RegisterServerExternalAuthenticatedResult
 }) {
-  const { npmName, authName, authResult } = options
+  const { npmName, authName } = options
 
-  if (!authResult.req || !authResult.res) {
+  if (!options.authResult.req || !options.authResult.res) {
     logger.error('Cannot authenticate external user for auth %s of plugin %s: no req or res are provided.', authName, npmName)
     return
   }
 
-  const { res } = authResult
+  const authResult = sanitizeAuthResult(npmName, authName, { ...options.authResult })
+
+  const { res, externalRedirectUri } = authResult
 
   if (!isAuthResultValid(npmName, authName, authResult)) {
     res.redirect('/login?externalAuthError=true')
@@ -76,7 +79,20 @@ async function onExternalUserAuthenticated (options: {
     }
   }
 
-  res.redirect(`/login?externalAuthToken=${bypassToken}&username=${user.username}`)
+  if (externalRedirectUri) {
+    const url = new URL(externalRedirectUri)
+    url.searchParams.set('externalAuthToken', bypassToken)
+    url.searchParams.set('username', user.username)
+    res.redirect(url.href)
+  } else {
+    const query = `externalAuthToken=${bypassToken}&username=${user.username}`
+
+    if (isDevInstance() && process.env.ANGULAR_CLIENT_ENABLED === 'true') {
+      res.redirect(`http://localhost:3000/login?${query}`)
+    } else {
+      res.redirect(`/login?${query}`)
+    }
+  }
 }
 
 async function getAuthNameFromRefreshGrant (refreshToken?: string) {
@@ -124,7 +140,10 @@ async function getBypassFromPasswordGrant (username: string, password: string): 
 
     logger.debug(
       'Using auth method %s of plugin %s to login %s with weight %d.',
-      authName, npmName, loginOptions.id, authOptions.getWeight()
+      authName,
+      npmName,
+      loginOptions.id,
+      authOptions.getWeight()
     )
 
     try {
@@ -135,7 +154,9 @@ async function getBypassFromPasswordGrant (username: string, password: string): 
 
       logger.info(
         'Login success with auth method %s of plugin %s for %s.',
-        authName, npmName, loginOptions.id
+        authName,
+        npmName,
+        loginOptions.id
       )
 
       return {
@@ -153,9 +174,12 @@ async function getBypassFromPasswordGrant (username: string, password: string): 
   return undefined
 }
 
-function getBypassFromExternalAuth (username: string, externalAuthToken: string): BypassLogin {
+function consumeBypassFromExternalAuth (username: string, externalAuthToken: string): BypassLogin {
   const obj = authBypassTokens.get(externalAuthToken)
   if (!obj) throw new Error('Cannot authenticate user with unknown bypass token')
+
+  // Prevent replaying the same token
+  authBypassTokens.delete(externalAuthToken)
 
   const { expires, user, authName, npmName } = obj
 
@@ -165,12 +189,16 @@ function getBypassFromExternalAuth (username: string, externalAuthToken: string)
   }
 
   if (user.username !== username) {
-    throw new Error(`Cannot authenticate user ${user.username} with invalid username ${username}`)
+    logger.error(`Cannot authenticate user ${user.username} with invalid username ${username}`)
+
+    throw new Error(`Cannot authenticate user with invalid username ${username}`)
   }
 
   logger.info(
     'Auth success with external auth method %s of plugin %s for %s.',
-    authName, npmName, user.email
+    authName,
+    npmName,
+    user.email
   )
 
   return {
@@ -180,6 +208,17 @@ function getBypassFromExternalAuth (username: string, externalAuthToken: string)
     userUpdater: obj.userUpdater,
     user
   }
+}
+
+function sanitizeAuthResult (npmName: string, authName: string, result: RegisterServerExternalAuthenticatedResult) {
+  if (result.language && !isUserLanguage(result.language)) {
+    logger.info(
+      'Auth method ' + authName + ' of plugin ' + npmName + ' provided invalid language ' + result.language + ', setting it to null.'
+    )
+    result.language = null
+  }
+
+  return result
 }
 
 function isAuthResultValid (npmName: string, authName: string, result: RegisterServerAuthenticatedResult) {
@@ -192,15 +231,23 @@ function isAuthResultValid (npmName: string, authName: string, result: RegisterS
   if (!result.email) return returnError('email')
 
   // Following fields are optional
-  if (result.role && !isUserRoleValid(result.role)) return returnError('role')
+  // Empty string values are considered as not provided by the plugin: buildUserResult() falls back to a default
+  if (exists(result.role) && !isUserRoleValid(result.role)) return returnError('role')
   if (result.displayName && !isUserDisplayNameValid(result.displayName)) return returnError('displayName')
-  if (result.adminFlags && !isUserAdminFlagsValid(result.adminFlags)) return returnError('adminFlags')
-  if (result.videoQuota && !isUserVideoQuotaValid(result.videoQuota + '')) return returnError('videoQuota')
-  if (result.videoQuotaDaily && !isUserVideoQuotaDailyValid(result.videoQuotaDaily + '')) return returnError('videoQuotaDaily')
+  if (exists(result.adminFlags) && !isUserAdminFlagsValid(result.adminFlags)) return returnError('adminFlags')
+  if (exists(result.videoQuota) && !isUserVideoQuotaValid(result.videoQuota + '')) return returnError('videoQuota')
+  if (exists(result.videoQuotaDaily) && !isUserVideoQuotaDailyValid(result.videoQuotaDaily + '')) {
+    return returnError('videoQuotaDaily')
+  }
+  if (result.language && !isUserLanguage(result.language)) return returnError('language')
 
-  if (result.userUpdater && typeof result.userUpdater !== 'function') {
+  if (exists(result.userUpdater) && typeof result.userUpdater !== 'function') {
     logger.error('Auth method %s of plugin %s did not provide a valid user updater function.', authName, npmName)
     return false
+  }
+
+  if (result.externalId && (typeof result.externalId !== 'string' || result.externalId.length > 255)) {
+    return returnError('externalId')
   }
 
   return true
@@ -216,15 +263,19 @@ function buildUserResult (pluginResult: RegisterServerAuthenticatedResult) {
     adminFlags: pluginResult.adminFlags ?? UserAdminFlag.NONE,
 
     videoQuota: pluginResult.videoQuota,
-    videoQuotaDaily: pluginResult.videoQuotaDaily
+    videoQuotaDaily: pluginResult.videoQuotaDaily,
+
+    language: pluginResult.language || null,
+
+    externalId: pluginResult.externalId || undefined
   }
 }
 
 // ---------------------------------------------------------------------------
 
 export {
-  onExternalUserAuthenticated,
-  getBypassFromExternalAuth,
+  consumeBypassFromExternalAuth,
   getAuthNameFromRefreshGrant,
-  getBypassFromPasswordGrant
+  getBypassFromPasswordGrant,
+  onExternalUserAuthenticated
 }

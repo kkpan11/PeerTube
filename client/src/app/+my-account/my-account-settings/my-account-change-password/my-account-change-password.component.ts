@@ -1,11 +1,10 @@
-import { NgIf } from '@angular/common'
-import { Component, OnInit, inject } from '@angular/core'
+import { Component, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { AuthService, Notifier, UserService } from '@app/core'
+import { AuthService, Notifier, ServerService, UserService } from '@app/core'
 import {
   USER_CONFIRM_PASSWORD_VALIDATOR,
   USER_EXISTING_PASSWORD_VALIDATOR,
-  USER_PASSWORD_VALIDATOR
+  getUserNewPasswordValidator
 } from '@app/shared/form-validators/user-validators'
 import { FormReactive } from '@app/shared/shared-forms/form-reactive'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
@@ -18,21 +17,25 @@ import { InputTextComponent } from '../../../shared/shared-forms/input-text.comp
   selector: 'my-account-change-password',
   templateUrl: './my-account-change-password.component.html',
   styleUrls: [ './my-account-change-password.component.scss' ],
-  imports: [ NgIf, FormsModule, ReactiveFormsModule, InputTextComponent, AlertComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, ReactiveFormsModule, InputTextComponent, AlertComponent ]
 })
 export class MyAccountChangePasswordComponent extends FormReactive implements OnInit {
   protected formReactiveService = inject(FormReactiveService)
   private notifier = inject(Notifier)
   private authService = inject(AuthService)
   private userService = inject(UserService)
+  private serverService = inject(ServerService)
 
   error: string
   user: User
 
   ngOnInit () {
+    const { minLength, maxLength } = this.serverService.getHTMLConfig().fieldsConstraints.users.password
+
     this.buildForm({
       'current-password': USER_EXISTING_PASSWORD_VALIDATOR,
-      'new-password': USER_PASSWORD_VALIDATOR,
+      'new-password': getUserNewPasswordValidator(minLength, maxLength),
       'new-confirmed-password': USER_CONFIRM_PASSWORD_VALIDATOR
     })
 

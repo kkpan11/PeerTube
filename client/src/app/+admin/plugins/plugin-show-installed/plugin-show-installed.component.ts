@@ -1,21 +1,21 @@
-import { Subscription } from 'rxjs'
-import { map, switchMap } from 'rxjs/operators'
-import { Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { Component, OnDestroy, OnInit, inject, ChangeDetectionStrategy } from '@angular/core'
+import { FormsModule, ReactiveFormsModule } from '@angular/forms'
 import { ActivatedRoute } from '@angular/router'
-import { HooksService, Notifier, PluginService } from '@app/core'
+import { HooksService, Notifier, PluginService, ServerService } from '@app/core'
+import { BuildFormArgument } from '@app/shared/form-validators/form-validator.model'
 import { FormReactive } from '@app/shared/shared-forms/form-reactive'
 import { FormReactiveService } from '@app/shared/shared-forms/form-reactive.service'
-import { PeerTubePlugin, RegisterServerSettingOptions } from '@peertube/peertube-models'
-import { PluginApiService } from '../shared/plugin-api.service'
+import { PeerTubePlugin, PluginType, RegisterServerSettingOptions } from '@peertube/peertube-models'
+import { Subscription } from 'rxjs'
+import { map, switchMap } from 'rxjs/operators'
+import { PluginApiService } from '../../../shared/shared-admin/plugin-api.service'
 import { DynamicFormFieldComponent } from '../../../shared/shared-forms/dynamic-form-field.component'
-import { FormsModule, ReactiveFormsModule } from '@angular/forms'
-import { NgIf, NgFor } from '@angular/common'
-import { BuildFormArgument } from '@app/shared/form-validators/form-validator.model'
 
 @Component({
   selector: 'my-plugin-show-installed',
   templateUrl: './plugin-show-installed.component.html',
-  imports: [ NgIf, FormsModule, ReactiveFormsModule, NgFor, DynamicFormFieldComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, ReactiveFormsModule, DynamicFormFieldComponent ]
 })
 export class PluginShowInstalledComponent extends FormReactive implements OnInit, OnDestroy {
   protected formReactiveService = inject(FormReactiveService)
@@ -24,6 +24,7 @@ export class PluginShowInstalledComponent extends FormReactive implements OnInit
   private notifier = inject(Notifier)
   private hooks = inject(HooksService)
   private route = inject(ActivatedRoute)
+  private server = inject(ServerService)
 
   plugin: PeerTubePlugin
   registeredSettings: RegisterServerSettingOptions[] = []
@@ -50,12 +51,13 @@ export class PluginShowInstalledComponent extends FormReactive implements OnInit
     const settings = this.form.value
 
     this.pluginAPIService.updatePluginSettings(this.plugin.name, this.plugin.type, settings)
+      .pipe(switchMap(() => this.server.resetConfig()))
       .subscribe({
         next: () => {
           this.notifier.success($localize`Settings updated.`)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 
@@ -77,6 +79,14 @@ export class PluginShowInstalledComponent extends FormReactive implements OnInit
     return setting.name + '-wrapper'
   }
 
+  isTheme () {
+    return this.plugin.type === PluginType.THEME
+  }
+
+  isPlugin () {
+    return this.plugin.type === PluginType.PLUGIN
+  }
+
   private loadPlugin (npmName: string) {
     this.pluginAPIService.getPlugin(npmName)
       .pipe(switchMap(plugin => {
@@ -94,7 +104,7 @@ export class PluginShowInstalledComponent extends FormReactive implements OnInit
           this.buildSettingsForm()
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
   }
 

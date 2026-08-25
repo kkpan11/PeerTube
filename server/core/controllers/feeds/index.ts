@@ -8,6 +8,7 @@ import { videoPodcastFeedsRouter } from './video-podcast-feeds.js'
 const feedsRouter = express.Router()
 
 const feedsRateLimiter = buildRateLimiter({
+  enabled: CONFIG.RATES_LIMIT.FEEDS.ENABLED,
   windowMs: CONFIG.RATES_LIMIT.FEEDS.WINDOW_MS,
   max: CONFIG.RATES_LIMIT.FEEDS.MAX
 })

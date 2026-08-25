@@ -98,8 +98,8 @@ export function isVideoFileMimeTypeValid (files: UploadFilesForCheck, field = 'v
 }
 
 const videoImageTypes = CONSTRAINTS_FIELDS.VIDEOS.IMAGE.EXTNAME
-                                          .map(v => v.replace('.', ''))
-                                          .join('|')
+  .map(v => v.replace('.', ''))
+  .join('|')
 const videoImageTypesRegex = `image/(${videoImageTypes})`
 
 export function isVideoImageValid (files: UploadFilesForCheck, field: string, optional = true) {
@@ -124,7 +124,7 @@ export function isScheduleVideoUpdatePrivacyValid (value: number) {
   return value === VideoPrivacy.UNLISTED || value === VideoPrivacy.PUBLIC || value === VideoPrivacy.INTERNAL
 }
 
-export function isVideoOriginallyPublishedAtValid (value: string | null) {
+export function isVideoPublicationDateValid (value: string | null) {
   return value === null || isDateValid(value)
 }
 
@@ -152,8 +152,7 @@ export function isVideoMagnetUriValid (value: string) {
 }
 
 export function isPasswordValid (password: string) {
-  return password.length >= CONSTRAINTS_FIELDS.VIDEO_PASSWORD.LENGTH.min &&
-    password.length < CONSTRAINTS_FIELDS.VIDEO_PASSWORD.LENGTH.max
+  return validator.default.isLength(password, CONSTRAINTS_FIELDS.VIDEOS.PASSWORD)
 }
 
 export function isValidPasswordProtectedPrivacy (req: Request, res: Response) {
@@ -173,9 +172,11 @@ export function isValidPasswordProtectedPrivacy (req: Request, res: Response) {
 
   if (privacy !== VideoPrivacy.PASSWORD_PROTECTED) return true
 
-  if (!exists(req.body.videoPasswords) && !exists(req.body.passwords)) return fail('Video passwords are missing.')
+  if (!exists(req.body.videoPasswords) && !exists(req.body.passwords) && !exists(req.body.password)) {
+    return fail('Video passwords are missing.')
+  }
 
-  const passwords = req.body.videoPasswords || req.body.passwords
+  const passwords = req.body.videoPasswords || req.body.passwords || [ req.body.password ]
 
   if (passwords.length === 0) return fail('At least one video password is required.')
 
@@ -192,4 +193,12 @@ export function isValidPasswordProtectedPrivacy (req: Request, res: Response) {
   }
 
   return true
+}
+
+export function isNSFWFlagsValid (value: number) {
+  return value === null || (exists(value) && validator.default.isInt('' + value))
+}
+
+export function isNSFWSummaryValid (value: any) {
+  return value === null || (exists(value) && validator.default.isLength(value, VIDEOS_CONSTRAINTS_FIELDS.NSFW_SUMMARY))
 }

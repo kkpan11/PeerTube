@@ -6,12 +6,15 @@ import {
   ResultList
 } from '@peertube/peertube-models'
 import { sanitizeUrl } from '@server/helpers/core-utils.js'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { doJSONRequest } from '@server/helpers/requests.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { PEERTUBE_VERSION } from '@server/initializers/constants.js'
 import { PluginModel } from '@server/models/server/plugin.js'
 import { PluginManager } from './plugin-manager.js'
+import { isStableOrUnstableVersionValid } from '@server/helpers/custom-validators/misc.js'
+
+const logger = createLogger()
 
 export async function listAvailablePluginsFromIndex (options: PeertubePluginIndexList) {
   const { start = 0, count = 20, search, sort = 'npmName', pluginType } = options
@@ -66,9 +69,16 @@ export async function getLatestPluginVersion (npmName: string) {
   const results = await getLatestPluginsVersion([ npmName ])
 
   if (Array.isArray(results) === false || results.length !== 1) {
-    logger.warn('Cannot get latest supported plugin version of %s.', npmName)
+    logger.warn(`Cannot get latest supported plugin version of ${npmName}`, { results })
     return undefined
   }
 
-  return results[0].latestVersion
+  const latestVersion = results[0].latestVersion
+
+  if (!isStableOrUnstableVersionValid(latestVersion)) {
+    logger.warn(`Cannot get latest supported plugin version of ${npmName}`, { result: results[0] })
+    return undefined
+  }
+
+  return latestVersion
 }

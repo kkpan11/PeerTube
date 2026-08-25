@@ -1,10 +1,9 @@
-import { Component, OnInit, inject, input, output } from '@angular/core'
-import { ServerService } from '@app/core'
-import { HTMLServerConfig, VideoConstant } from '@peertube/peertube-models'
-import { SelectTagsComponent } from '../shared/shared-forms/select/select-tags.component'
-import { NgIf, NgFor } from '@angular/common'
+import { Component, OnInit, inject, input, output, ChangeDetectionStrategy } from '@angular/core'
 import { FormsModule } from '@angular/forms'
+import { ServerService } from '@app/core'
 import { AdvancedSearch } from '@app/shared/shared-search/advanced-search.model'
+import { HTMLServerConfig, ConstantLabel } from '@peertube/peertube-models'
+import { SelectTagsComponent } from '../shared/shared-forms/select/select-tags.component'
 
 type FormOption = { id: string, label: string }
 
@@ -12,7 +11,8 @@ type FormOption = { id: string, label: string }
   selector: 'my-search-filters',
   styleUrls: [ './search-filters.component.scss' ],
   templateUrl: './search-filters.component.html',
-  imports: [ FormsModule, NgIf, NgFor, SelectTagsComponent ]
+  changeDetection: ChangeDetectionStrategy.Eager,
+  imports: [ FormsModule, SelectTagsComponent ]
 })
 export class SearchFiltersComponent implements OnInit {
   private serverService = inject(ServerService)
@@ -20,9 +20,9 @@ export class SearchFiltersComponent implements OnInit {
   advancedSearch = input<AdvancedSearch>(new AdvancedSearch())
   filtered = output<AdvancedSearch>()
 
-  videoCategories: VideoConstant<number>[] = []
-  videoLicences: VideoConstant<number>[] = []
-  videoLanguages: VideoConstant<string>[] = []
+  videoCategories: ConstantLabel<number>[] = []
+  videoLicences: ConstantLabel<number>[] = []
+  videoLanguages: ConstantLabel<string>[] = []
 
   publishedDateRanges: FormOption[] = []
   sorts: FormOption[] = []
@@ -131,7 +131,8 @@ export class SearchFiltersComponent implements OnInit {
   }
 
   resetOriginalPublicationYears () {
-    this.originallyPublishedStartYear = this.originallyPublishedEndYear = undefined
+    this.originallyPublishedStartYear = undefined
+    this.originallyPublishedEndYear = undefined
   }
 
   isSearchTargetEnabled () {

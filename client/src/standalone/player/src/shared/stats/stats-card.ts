@@ -1,14 +1,14 @@
-import videojs from 'video.js'
-import { logger } from '@root-helpers/logger'
 import { secondsToTime } from '@peertube/peertube-core-utils'
-import { PlayerNetworkInfo as EventPlayerNetworkInfo } from '../../types'
+import { logger } from '@root-helpers/logger'
+import videojs from 'video.js'
+import { TimeRange } from 'video.js/dist/types/utils/time'
+import { PlayerNetworkInfo as EventPlayerNetworkInfo, VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 import { bytes } from '../common'
 
-interface StatsCardOptions extends videojs.ComponentOptions {
+interface StatsCardOptions extends VideojsComponentOptions {
   videoUUID: string
   videoIsLive: boolean
   mode: 'web-video' | 'p2p-media-loader'
-  p2pEnabled: boolean
 }
 
 interface PlayerNetworkInfo {
@@ -28,13 +28,15 @@ interface InfoElement {
   value: HTMLElement
 }
 
-const Component = videojs.getComponent('Component')
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
+
 class StatsCard extends Component {
   declare options_: StatsCardOptions
 
   declare updateInterval: any
 
   declare mode: 'web-video' | 'p2p-media-loader'
+  declare p2pEnabled: boolean
 
   declare metadataStore: any
 
@@ -45,7 +47,6 @@ class StatsCard extends Component {
   declare private infoListEl: HTMLDivElement
 
   declare private playerMode: InfoElement
-  declare private p2p: InfoElement
   declare private uuid: InfoElement
   declare private viewport: InfoElement
   declare private resolution: InfoElement
@@ -54,18 +55,20 @@ class StatsCard extends Component {
   declare private color: InfoElement
   declare private connection: InfoElement
 
+  declare private bufferProgress: InfoElement
+  declare private bufferState: InfoElement
+
+  declare private p2p: InfoElement
+  declare private peers: InfoElement
   declare private network: InfoElement
   declare private transferred: InfoElement
   declare private download: InfoElement
-
-  declare private bufferProgress: InfoElement
-  declare private bufferState: InfoElement
 
   declare private liveLatency: InfoElement
 
   declare private onNetworkInfoHandler: (_event: any, data: EventPlayerNetworkInfo) => void
 
-  constructor (player: videojs.Player, options?: StatsCardOptions) {
+  constructor (player: VideojsPlayer, options?: StatsCardOptions) {
     super(player, options)
 
     this.metadataStore = {}
@@ -103,6 +106,9 @@ class StatsCard extends Component {
       const p2pStats = data.p2p
       const httpStats = data.http
 
+      // The player may have disabled P2P even if the user enabled it (small latency live for example)
+      this.p2pEnabled = !!p2pStats
+
       this.playerNetworkInfo.downloadSpeed = bytes((p2pStats?.downloadSpeed || 0) + (httpStats.downloadSpeed || 0)).join(' ')
       this.playerNetworkInfo.uploadSpeed = bytes(p2pStats?.uploadSpeed || 0).join(' ')
       this.playerNetworkInfo.totalDownloaded = bytes((p2pStats?.downloaded || 0) + httpStats.downloaded).join(' ')
@@ -138,12 +144,16 @@ class StatsCard extends Component {
     this.containerEl.style.display = 'block'
 
     this.updateInterval = setInterval(async () => {
-      if (!this.mode) return
+      const player = this.player()
+
+      if (!player || !this.mode) return
 
       try {
         const options = this.mode === 'p2p-media-loader'
           ? this.buildHLSOptions()
           : await this.buildWebVideoOptions() // Default
+
+        if (!this.player()) return
 
         this.populateInfoValues(options)
       } catch (err) {
@@ -232,38 +242,40 @@ class StatsCard extends Component {
 
   private populateInfoBlocks () {
     this.playerMode = this.buildInfoRow(this.player().localize('Player mode'))
-    this.p2p = this.buildInfoRow(this.player().localize('P2P'))
     this.uuid = this.buildInfoRow(this.player().localize('Video UUID'))
     this.viewport = this.buildInfoRow(this.player().localize('Viewport / Frames'))
     this.resolution = this.buildInfoRow(this.player().localize('Resolution'))
     this.volume = this.buildInfoRow(this.player().localize('Volume'))
     this.codecs = this.buildInfoRow(this.player().localize('Codecs'))
     this.color = this.buildInfoRow(this.player().localize('Color'))
-    this.connection = this.buildInfoRow(this.player().localize('Connection Speed'))
-
-    this.network = this.buildInfoRow(this.player().localize('Network Activity'))
-    this.transferred = this.buildInfoRow(this.player().localize('Total Transfered'))
-    this.download = this.buildInfoRow(this.player().localize('Download Breakdown'))
 
     this.bufferProgress = this.buildInfoRow(this.player().localize('Buffer Progress'))
     this.bufferState = this.buildInfoRow(this.player().localize('Buffer State'))
 
+    this.p2p = this.buildInfoRow(this.player().localize('P2P'))
+    this.peers = this.buildInfoRow(this.player().localize('Peers'))
+    this.connection = this.buildInfoRow(this.player().localize('Connection Speed'))
+    this.network = this.buildInfoRow(this.player().localize('Network Activity'))
+    this.transferred = this.buildInfoRow(this.player().localize('Total Transfered'))
+    this.download = this.buildInfoRow(this.player().localize('Download Breakdown'))
+
     this.liveLatency = this.buildInfoRow(this.player().localize('Live Latency'))
 
     this.infoListEl.appendChild(this.playerMode.root)
-    this.infoListEl.appendChild(this.p2p.root)
     this.infoListEl.appendChild(this.uuid.root)
     this.infoListEl.appendChild(this.viewport.root)
     this.infoListEl.appendChild(this.resolution.root)
     this.infoListEl.appendChild(this.volume.root)
     this.infoListEl.appendChild(this.codecs.root)
     this.infoListEl.appendChild(this.color.root)
+    this.infoListEl.appendChild(this.bufferProgress.root)
+    this.infoListEl.appendChild(this.bufferState.root)
     this.infoListEl.appendChild(this.connection.root)
+    this.infoListEl.appendChild(this.p2p.root)
+    this.infoListEl.appendChild(this.peers.root)
     this.infoListEl.appendChild(this.network.root)
     this.infoListEl.appendChild(this.transferred.root)
     this.infoListEl.appendChild(this.download.root)
-    this.infoListEl.appendChild(this.bufferProgress.root)
-    this.infoListEl.appendChild(this.bufferState.root)
     this.infoListEl.appendChild(this.liveLatency.root)
   }
 
@@ -315,10 +327,9 @@ class StatsCard extends Component {
       ? `${(progress * 100).toFixed(1)}% (${(progress * duration).toFixed(1)}s)`
       : undefined
 
-    const p2pEnabled = this.options_.p2pEnabled && this.mode === 'p2p-media-loader'
+    const p2pEnabled = this.p2pEnabled && this.mode === 'p2p-media-loader'
 
     this.setInfoValue(this.playerMode, this.mode === 'p2p-media-loader' ? 'P2P Media Loader (v2)' : 'Web Video')
-    this.setInfoValue(this.p2p, player.localize(p2pEnabled ? 'enabled' : 'disabled'))
     this.setInfoValue(this.uuid, this.options_.videoUUID)
 
     this.setInfoValue(this.viewport, frames)
@@ -326,14 +337,15 @@ class StatsCard extends Component {
     this.setInfoValue(this.volume, volume)
     this.setInfoValue(this.codecs, codecs)
     this.setInfoValue(this.color, colorSpace)
-    this.setInfoValue(this.transferred, totalTransferred)
-    this.setInfoValue(this.connection, playerNetworkInfo.averageBandwidth)
-
-    this.setInfoValue(this.network, networkActivity)
-    this.setInfoValue(this.download, downloadBreakdown)
-
     this.setInfoValue(this.bufferProgress, bufferProgress)
     this.setInfoValue(this.bufferState, buffer)
+
+    this.setInfoValue(this.p2p, p2pEnabled ? player.localize('enabled') : player.localize('disabled'))
+    this.setInfoValue(this.peers, playerNetworkInfo.numPeers ? playerNetworkInfo.numPeers + '' : player.localize('no peers'))
+    this.setInfoValue(this.connection, playerNetworkInfo.averageBandwidth)
+    this.setInfoValue(this.network, networkActivity)
+    this.setInfoValue(this.download, downloadBreakdown)
+    this.setInfoValue(this.transferred, totalTransferred)
 
     if (latency && latencyFromEdge) {
       this.setInfoValue(this.liveLatency, player.localize('{1} (from edge: {2})', [ latency, latencyFromEdge ]))
@@ -365,14 +377,26 @@ class StatsCard extends Component {
     return { root, value }
   }
 
-  private timeRangesToString (r: videojs.TimeRange) {
+  private timeRangesToString (r: TimeRange) {
     let result = ''
 
-    for (let i = 0; i < r.length; i++) {
+    let i = 0
+
+    if (r.length > 10) {
+      const toSkip = r.length - 10
+
+      result += this.player().localize(`(skipped {1} buffers) `, [ toSkip + '' ])
+
+      i = toSkip
+    }
+
+    while (i < r.length) {
       const start = Math.floor(r.start(i))
       const end = Math.floor(r.end(i))
 
       result += `[${secondsToTime(start)}, ${secondsToTime(end)}] `
+
+      i++
     }
 
     return result

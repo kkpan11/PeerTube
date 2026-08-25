@@ -1,5 +1,3 @@
-import cors from 'cors'
-import express from 'express'
 import { OBJECT_STORAGE_PROXY_PATHS } from '@server/initializers/constants.js'
 import { proxifyHLS, proxifyWebVideoFile } from '@server/lib/object-storage/index.js'
 import {
@@ -7,8 +5,12 @@ import {
   ensureCanAccessPrivateVideoHLSFiles,
   ensureCanAccessVideoPrivateWebVideoFiles,
   ensurePrivateObjectStorageProxyIsEnabled,
-  optionalAuthenticate
+  optionalAuthenticate,
+  hlsFileValidator,
+  privateWebVideoFileValidator
 } from '@server/middlewares/index.js'
+import cors from 'cors'
+import express from 'express'
 import { doReinjectVideoFileToken } from './shared/m3u8-playlist.js'
 
 const objectStorageProxyRouter = express.Router()
@@ -19,13 +21,16 @@ objectStorageProxyRouter.get(
   [ OBJECT_STORAGE_PROXY_PATHS.PRIVATE_WEB_VIDEOS + ':filename', OBJECT_STORAGE_PROXY_PATHS.LEGACY_PRIVATE_WEB_VIDEOS + ':filename' ],
   ensurePrivateObjectStorageProxyIsEnabled,
   optionalAuthenticate,
+  privateWebVideoFileValidator,
   asyncMiddleware(ensureCanAccessVideoPrivateWebVideoFiles),
   asyncMiddleware(proxifyWebVideoController)
 )
 
-objectStorageProxyRouter.get(OBJECT_STORAGE_PROXY_PATHS.STREAMING_PLAYLISTS.PRIVATE_HLS + ':videoUUID/:filename',
+objectStorageProxyRouter.get(
+  OBJECT_STORAGE_PROXY_PATHS.STREAMING_PLAYLISTS.PRIVATE_HLS + ':videoUUID/:filename',
   ensurePrivateObjectStorageProxyIsEnabled,
   optionalAuthenticate,
+  hlsFileValidator,
   asyncMiddleware(ensureCanAccessPrivateVideoHLSFiles),
   asyncMiddleware(proxifyHLSController)
 )
@@ -43,8 +48,7 @@ function proxifyWebVideoController (req: express.Request, res: express.Response)
 }
 
 function proxifyHLSController (req: express.Request, res: express.Response) {
-  const playlist = res.locals.videoStreamingPlaylist
-  const video = res.locals.onlyVideo
+  const video = res.locals.videoWithBlacklist
   const filename = req.params.filename
 
   const reinjectVideoFileToken = filename.endsWith('.m3u8') && doReinjectVideoFileToken(req)
@@ -52,7 +56,6 @@ function proxifyHLSController (req: express.Request, res: express.Response) {
   return proxifyHLS({
     req,
     res,
-    playlist,
     video,
     filename,
     reinjectVideoFileToken

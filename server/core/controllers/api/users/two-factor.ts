@@ -3,31 +3,35 @@ import { generateOTPSecret, isOTPValid } from '@server/helpers/otp.js'
 import { encrypt } from '@server/helpers/peertube-crypto.js'
 import { CONFIG } from '@server/initializers/config.js'
 import { Redis } from '@server/lib/redis.js'
-import { asyncMiddleware, authenticate, usersCheckCurrentPasswordFactory } from '@server/middlewares/index.js'
+import { asyncMiddleware, authenticate, confirmTokenRateLimiter, usersCheckCurrentPasswordFactory } from '@server/middlewares/index.js'
 import {
   confirmTwoFactorValidator,
   disableTwoFactorValidator,
   requestOrConfirmTwoFactorValidator
 } from '@server/middlewares/validators/two-factor.js'
-import { HttpStatusCode, TwoFactorEnableResult } from '@peertube/peertube-models'
+import { HttpStatusCode } from '@peertube/peertube-models'
 
 const twoFactorRouter = express.Router()
 
-twoFactorRouter.post('/:id/two-factor/request',
+twoFactorRouter.post(
+  '/:id/two-factor/request',
   authenticate,
   asyncMiddleware(usersCheckCurrentPasswordFactory(req => req.params.id)),
   asyncMiddleware(requestOrConfirmTwoFactorValidator),
   asyncMiddleware(requestTwoFactor)
 )
 
-twoFactorRouter.post('/:id/two-factor/confirm-request',
+twoFactorRouter.post(
+  '/:id/two-factor/confirm-request',
+  confirmTokenRateLimiter,
   authenticate,
   asyncMiddleware(requestOrConfirmTwoFactorValidator),
   confirmTwoFactorValidator,
   asyncMiddleware(confirmRequestTwoFactor)
 )
 
-twoFactorRouter.post('/:id/two-factor/disable',
+twoFactorRouter.post(
+  '/:id/two-factor/disable',
   authenticate,
   asyncMiddleware(usersCheckCurrentPasswordFactory(req => req.params.id)),
   asyncMiddleware(disableTwoFactorValidator),
@@ -56,7 +60,7 @@ async function requestTwoFactor (req: express.Request, res: express.Response) {
       secret,
       uri
     }
-  } as TwoFactorEnableResult)
+  })
 }
 
 async function confirmRequestTwoFactor (req: express.Request, res: express.Response) {

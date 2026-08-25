@@ -1,15 +1,19 @@
+import debug from 'debug'
 import videojs from 'video.js'
+import { VideojsButton, VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 import { toTitleCase } from '../common'
+import { MenuFocusFixed } from './menu-focus-fixed'
 import { SettingsDialog } from './settings-dialog'
 import { SettingsMenuItem } from './settings-menu-item'
 import { SettingsPanel } from './settings-panel'
 import { SettingsPanelChild } from './settings-panel-child'
-import { MenuFocusFixed } from './menu-focus-fixed'
 
-const Button = videojs.getComponent('Button')
-const Component = videojs.getComponent('Component')
+const debugLogger = debug('peertube:player:settings')
 
-export interface SettingsButtonOptions extends videojs.ComponentOptions {
+const Button = videojs.getComponent('Button') as typeof VideojsButton
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
+
+export interface SettingsButtonOptions extends VideojsComponentOptions {
   entries: any[]
   setup?: {
     maxHeightOffset: number
@@ -30,20 +34,21 @@ class SettingsButton extends Button {
 
   declare private settingsButtonOptions: SettingsButtonOptions
 
-  constructor (player: videojs.Player, options?: SettingsButtonOptions) {
+  constructor (player: VideojsPlayer, options?: SettingsButtonOptions) {
     super(player, options)
 
     this.settingsButtonOptions = options
 
     this.controlText('Settings')
 
-    this.dialog = this.player().addChild('settingsDialog')
+    this.dialog = this.player().addChild('settingsDialog') as SettingsDialog
     this.dialogEl = this.dialog.el() as HTMLElement
     this.menu = null
-    this.panel = this.dialog.addChild('settingsPanel')
-    this.panelChild = this.panel.addChild('settingsPanelChild')
+    this.panel = this.dialog.addChild('settingsPanel') as SettingsPanel
+    this.panelChild = this.panel.addChild('settingsPanelChild') as SettingsPanelChild
 
     this.addClass('vjs-settings')
+    this.setAttribute('aria-controls', 'vjs-settings-dialog-' + this.player().id())
 
     // Event handlers
     this.addSettingsItemHandler = this.onAddSettingsItem.bind(this)
@@ -58,7 +63,7 @@ class SettingsButton extends Button {
     this.player().one('play', () => this.hideDialog())
   }
 
-  onDocumentClick (event: MouseEvent) {
+  onDocumentClick (event: Event) {
     const element = event.target as HTMLElement
 
     if (element?.classList?.contains('vjs-settings') || element?.parentElement?.classList?.contains('vjs-settings')) {
@@ -144,9 +149,8 @@ class SettingsButton extends Button {
   }
 
   showDialog () {
-    this.player().peertube().onMenuOpened();
-
-    (this.menu.el() as HTMLElement).style.opacity = '1'
+    this.player().peertube().onMenuOpened()
+    ;(this.menu.el() as HTMLElement).style.opacity = '1'
 
     this.dialog.show()
     this.el().setAttribute('aria-expanded', 'true')
@@ -162,14 +166,14 @@ class SettingsButton extends Button {
     this.dialog.hide()
     this.el().setAttribute('aria-expanded', 'false')
 
-    this.setDialogSize(this.getComponentSize(this.menu));
-    (this.menu.el() as HTMLElement).style.opacity = '1'
+    this.setDialogSize(this.getComponentSize(this.menu))
+    ;(this.menu.el() as HTMLElement).style.opacity = '1'
     this.resetChildren()
   }
 
-  getComponentSize (element: videojs.Component | HTMLElement) {
-    let width: number = null
-    let height: number = null
+  getComponentSize (element: VideojsComponent | HTMLElement) {
+    let width: number
+    let height: number
 
     // Could be component or just DOM element
     if (element instanceof Component) {
@@ -214,6 +218,12 @@ class SettingsButton extends Button {
       this.focus()
     })
 
+    this.menu.on('arrow-right', (_: any, el: HTMLElement) => {
+      debugLogger('Detected arrow right on menu item', el)
+
+      el.click()
+    })
+
     this.menu.addClass('vjs-main-menu')
     const entries = this.settingsButtonOptions.entries
 
@@ -248,11 +258,15 @@ class SettingsButton extends Button {
 
     // Hide children to avoid sub menus stacking on top of each other
     // or having multiple menus open
-    // eslint-disable-next-line @typescript-eslint/unbound-method
-    settingsMenuItem.on('click', videojs.bind(this, this.hideChildren))
+    settingsMenuItem.on('click', () => this.hideChildren())
 
     // Whether to add or remove selected class on the settings sub menu element
     settingsMenuItem.on('click', openSubMenu)
+
+    settingsMenuItem.on('escaped-key', () => {
+      this.hideDialog()
+      this.focus()
+    })
   }
 
   resetChildren () {
@@ -273,9 +287,8 @@ class SettingsButton extends Button {
   isInIframe () {
     return window.self !== window.top
   }
-
 }
 
-Component.registerComponent('SettingsButton', SettingsButton)
+videojs.registerComponent('SettingsButton', SettingsButton)
 
 export { SettingsButton }

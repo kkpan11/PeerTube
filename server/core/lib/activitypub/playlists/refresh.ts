@@ -1,55 +1,61 @@
-import { logger, loggerTagsFactory } from '@server/helpers/logger.js'
+import { HttpStatusCode } from '@peertube/peertube-models'
+import { createLogger } from '@server/helpers/logger.js'
 import { PeerTubeRequestError } from '@server/helpers/requests.js'
 import { JobQueue } from '@server/lib/job-queue/index.js'
-import { MVideoPlaylist, MVideoPlaylistOwner } from '@server/types/models/index.js'
-import { HttpStatusCode } from '@peertube/peertube-models'
+import { MVideoPlaylist, MVideoPlaylistOwnerDefault } from '@server/types/models/index.js'
 import { createOrUpdateVideoPlaylist } from './create-update.js'
 import { fetchRemoteVideoPlaylist } from './shared/index.js'
 
-function scheduleRefreshIfNeeded (playlist: MVideoPlaylist) {
+const logger = createLogger('ap', 'playlist', 'refresh')
+
+export function schedulePlaylistRefreshIfNeeded (playlist: MVideoPlaylist) {
   if (!playlist.isOutdated()) return
 
-  JobQueue.Instance.createJobAsync({ type: 'activitypub-refresher', payload: { type: 'video-playlist', url: playlist.url } })
+  JobQueue.Instance.createJobAsync({
+    type: 'activitypub-refresher',
+    payload: { type: 'video-playlist', url: playlist.url },
+    deduplicationId: `refresh-video-playlist-${playlist.url}`
+  })
 }
 
-async function refreshVideoPlaylistIfNeeded (videoPlaylist: MVideoPlaylistOwner): Promise<MVideoPlaylistOwner> {
-  if (!videoPlaylist.isOutdated()) return videoPlaylist
+export async function refreshVideoPlaylistIfNeeded (videoPlaylist: MVideoPlaylistOwnerDefault): Promise<MVideoPlaylistOwnerDefault> {
+  return logger.withContext([ videoPlaylist.uuid, videoPlaylist.url ], async () => {
+    if (!videoPlaylist.isOutdated()) {
+      logger.debug('Playlist ' + videoPlaylist.url + ' is not outdated, no need to refresh it.')
 
-  const lTags = loggerTagsFactory('ap', 'video-playlist', 'refresh', videoPlaylist.uuid, videoPlaylist.url)
+      return videoPlaylist
+    }
 
-  logger.info('Refreshing playlist %s.', videoPlaylist.url, lTags())
+    // Inner functions (fetchRemoteVideoPlaylist...) inherit these tags without having to inject them
+    logger.info('Refreshing playlist %s.', videoPlaylist.url)
 
-  try {
-    const { playlistObject } = await fetchRemoteVideoPlaylist(videoPlaylist.url)
+    try {
+      const { playlistObject } = await fetchRemoteVideoPlaylist(videoPlaylist.url)
 
-    if (playlistObject === undefined) {
-      logger.warn('Cannot refresh remote playlist %s: invalid body.', videoPlaylist.url, lTags())
+      if (playlistObject === undefined) {
+        logger.warn('Cannot refresh remote playlist %s: invalid body.', videoPlaylist.url)
+
+        await videoPlaylist.setAsRefreshed()
+        return videoPlaylist
+      }
+
+      await createOrUpdateVideoPlaylist({ playlistObject, contextUrl: videoPlaylist.url })
+
+      return videoPlaylist
+    } catch (err) {
+      const statusCode = (err as PeerTubeRequestError).statusCode
+
+      if (statusCode === HttpStatusCode.NOT_FOUND_404 || statusCode === HttpStatusCode.GONE_410) {
+        logger.info('Cannot refresh not existing playlist (404/410 error code) %s. Deleting it.', videoPlaylist.url)
+
+        await videoPlaylist.destroy()
+        return undefined
+      }
+
+      logger.warn('Cannot refresh video playlist %s.', videoPlaylist.url, { err })
 
       await videoPlaylist.setAsRefreshed()
       return videoPlaylist
     }
-
-    await createOrUpdateVideoPlaylist(playlistObject)
-
-    return videoPlaylist
-  } catch (err) {
-    const statusCode = (err as PeerTubeRequestError).statusCode
-
-    if (statusCode === HttpStatusCode.NOT_FOUND_404 || statusCode === HttpStatusCode.GONE_410) {
-      logger.info('Cannot refresh not existing playlist (404/410 error code) %s. Deleting it.', videoPlaylist.url, lTags())
-
-      await videoPlaylist.destroy()
-      return undefined
-    }
-
-    logger.warn('Cannot refresh video playlist %s.', videoPlaylist.url, { err, ...lTags() })
-
-    await videoPlaylist.setAsRefreshed()
-    return videoPlaylist
-  }
-}
-
-export {
-  scheduleRefreshIfNeeded,
-  refreshVideoPlaylistIfNeeded
+  })
 }

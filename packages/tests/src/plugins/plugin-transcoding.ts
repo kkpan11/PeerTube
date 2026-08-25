@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { getAudioStream, getVideoStream, getVideoStreamFPS, hasAudioStream, hasVideoStream } from '@peertube/peertube-ffmpeg'
 import { VideoPrivacy, VideoResolution } from '@peertube/peertube-models'
@@ -9,6 +9,7 @@ import {
   PluginsCommand,
   setAccessTokensToServers,
   setDefaultVideoChannel,
+  stopFfmpeg,
   testFfmpegStreamError,
   waitJobs
 } from '@peertube/peertube-server-commands'
@@ -78,7 +79,6 @@ describe('Test transcoding plugins', function () {
   })
 
   describe('When using a plugin adding profiles to existing encoders', function () {
-
     async function checkVideoFPS (uuid: string, type: 'above' | 'below', fps: number) {
       const video = await server.videos.get({ id: uuid })
       const files = video.files.concat(...video.streamingPlaylists.map(p => p.files))
@@ -129,7 +129,6 @@ describe('Test transcoding plugins', function () {
     })
 
     describe('VOD', function () {
-
       it('Should not use the plugin profile if not chosen by the admin', async function () {
         this.timeout(240000)
 
@@ -177,7 +176,6 @@ describe('Test transcoding plugins', function () {
     })
 
     describe('Live', function () {
-
       it('Should not use the plugin profile if not chosen by the admin', async function () {
         this.timeout(240000)
 
@@ -245,11 +243,9 @@ describe('Test transcoding plugins', function () {
         await checkVideoFPS(videoUUID, 'above', 20)
       })
     })
-
   })
 
   describe('When using a plugin adding new encoders', function () {
-
     before(async function () {
       await server.plugins.install({ path: PluginsCommand.getPluginTestPath('-transcoding-two') })
 
@@ -277,7 +273,7 @@ describe('Test transcoding plugins', function () {
 
       const liveVideoId = await createLiveWrapper(server)
 
-      await server.live.sendRTMPStreamInVideo({ videoId: liveVideoId, fixtureName: 'video_short2.webm' })
+      const ffmpegCommand = await server.live.sendRTMPStreamInVideo({ videoId: liveVideoId, fixtureName: 'video_short2.webm' })
       await server.live.waitUntilPublished({ videoId: liveVideoId })
       await waitJobs([ server ])
 
@@ -292,6 +288,9 @@ describe('Test transcoding plugins', function () {
           expect(videoProbe.codec_name).to.equal('h264')
         }
       }
+
+      await stopFfmpeg(ffmpegCommand)
+      await server.live.waitUntilPublished({ videoId: liveVideoId })
     })
   })
 

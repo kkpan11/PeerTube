@@ -2,7 +2,9 @@ import { Job } from 'bullmq'
 import { Notifier } from '@server/lib/notifier/index.js'
 import { VideoModel } from '@server/models/video/video.js'
 import { NotifyPayload } from '@peertube/peertube-models'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
+
+const logger = createLogger()
 
 async function processNotify (job: Job) {
   const payload = job.data as NotifyPayload
@@ -20,7 +22,7 @@ export {
 // ---------------------------------------------------------------------------
 
 async function doNotifyNewVideo (payload: NotifyPayload & { action: 'new-video' }) {
-  const refreshedVideo = await VideoModel.loadFull(payload.videoUUID)
+  const refreshedVideo = await VideoModel.loadWithRights(payload.videoUUID)
   if (!refreshedVideo) return
 
   Notifier.Instance.notifyOnNewVideoOrLiveIfNeeded(refreshedVideo)

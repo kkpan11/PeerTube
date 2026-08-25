@@ -1,12 +1,12 @@
-@use 'sass:math';
-@use '_variables' as *;
-@use '_mixins' as *;
-@use 'form-mixins' as *;
-@use '_button-mixins' as *;
+@use "sass:math";
+@use "_variables" as *;
+@use "_mixins" as *;
+@use "form-mixins" as *;
+@use "_button-mixins" as *;
 
 $form-base-input-width: 340px;
 
-input:not([type=submit]) {
+input:not([type="submit"]) {
   @include peertube-input-text($form-base-input-width);
 }
 
@@ -17,13 +17,19 @@ my-input-text {
 }
 
 .peertube-select-container {
-  @include peertube-select-container($form-base-input-width);
+  @include responsive-width($form-base-input-width);
 }
 
-my-select-custom-value {
+my-select-custom-value:not(.has-custom-value) {
   display: block;
 
   @include responsive-width($form-base-input-width);
+}
+
+my-select-custom-value.has-custom-value {
+  display: block;
+
+  @include responsive-width($form-base-input-width + 140px);
 }
 
 .dashboard {
@@ -49,7 +55,7 @@ my-select-custom-value {
       &:active,
       &:focus,
       &:hover {
-        opacity: .8;
+        opacity: 0.8;
       }
     }
 

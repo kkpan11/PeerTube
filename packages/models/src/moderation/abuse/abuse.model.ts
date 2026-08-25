@@ -1,13 +1,15 @@
 import { Account } from '../../actors/account.model.js'
-import { AbuseStateType } from './abuse-state.model.js'
-import { AbusePredefinedReasonsString } from './abuse-reason.model.js'
-import { VideoConstant } from '../../videos/video-constant.model.js'
 import { VideoChannel } from '../../videos/channel/video-channel.model.js'
+import { Thumbnail } from '../../videos/index.js'
+import { ConstantLabel } from '../../common/constant-label.model.js'
+import { AbusePredefinedReasonsString } from './abuse-reason.model.js'
+import { AbuseStateType } from './abuse-state.model.js'
 
 export interface AdminVideoAbuse {
   id: number
   name: string
   uuid: string
+  shortUUID: string
   nsfw: boolean
 
   deleted: boolean
@@ -16,7 +18,13 @@ export interface AdminVideoAbuse {
   startAt: number | null
   endAt: number | null
 
+  /**
+   * @deprecated use thumbnails instead
+   */
   thumbnailPath?: string
+
+  thumbnails: Thumbnail[]
+
   channel?: VideoChannel
 
   countReports: number
@@ -44,10 +52,10 @@ export interface AdminAbuse {
   reason: string
   predefinedReasons?: AbusePredefinedReasonsString[]
 
-  reporterAccount: Account
-  flaggedAccount: Account
+  reporterAccount?: Account
+  flaggedAccount?: Account
 
-  state: VideoConstant<AbuseStateType>
+  state: ConstantLabel<AbuseStateType>
   moderationComment?: string
 
   video?: AdminVideoAbuse
@@ -66,5 +74,7 @@ export type UserVideoAbuse = Omit<AdminVideoAbuse, 'countReports' | 'nthReport'>
 
 export type UserVideoCommentAbuse = AdminVideoCommentAbuse
 
-export type UserAbuse = Omit<AdminAbuse, 'reporterAccount' | 'countReportsForReportee' | 'countReportsForReporter' | 'startAt' | 'endAt'
-| 'count' | 'nth' | 'moderationComment'>
+export type UserAbuse = Omit<
+  AdminAbuse,
+  'reporterAccount' | 'countReportsForReportee' | 'countReportsForReporter' | 'startAt' | 'endAt' | 'count' | 'nth' | 'moderationComment'
+>

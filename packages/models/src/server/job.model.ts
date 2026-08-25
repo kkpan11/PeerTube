@@ -1,9 +1,9 @@
 import { ContextType } from '../activitypub/context.js'
-import { VideoStateType } from '../videos/index.js'
+import { VideoFileStreamType, VideoStateType } from '../videos/index.js'
 import { VideoStudioTaskCut } from '../videos/studio/index.js'
 import { SendEmailOptions } from './emailer.model.js'
 
-export type JobState = 'active' | 'completed' | 'failed' | 'waiting' | 'delayed' | 'paused' | 'waiting-children' | 'prioritized'
+export type JobState = 'active' | 'completed' | 'failed' | 'waiting' | 'delayed' | 'wait' | 'waiting-children' | 'prioritized' | 'repeat'
 
 export type JobType =
   | 'activitypub-cleaner'
@@ -15,13 +15,18 @@ export type JobType =
   | 'activitypub-refresher'
   | 'actor-keys'
   | 'after-video-channel-import'
+  | 'build-automatic-tags'
+  | 'build-object-automatic-tags'
+  | 'create-user-export'
   | 'email'
   | 'federate-video'
-  | 'transcoding-job-builder'
+  | 'generate-video-storyboard'
+  | 'import-user-archive'
   | 'manage-video-torrent'
-  | 'move-to-object-storage'
   | 'move-to-file-system'
+  | 'move-to-object-storage'
   | 'notify'
+  | 'transcoding-job-builder'
   | 'video-channel-import'
   | 'video-file-import'
   | 'video-import'
@@ -29,12 +34,10 @@ export type JobType =
   | 'video-redundancy'
   | 'video-studio-edition'
   | 'video-transcoding'
-  | 'videos-views-stats'
-  | 'generate-video-storyboard'
-  | 'create-user-export'
-  | 'import-user-archive'
   | 'video-transcription'
+  | 'videos-stats'
 
+// Client API
 export interface Job {
   id: number | string
   state: JobState | 'unknown'
@@ -46,11 +49,14 @@ export interface Job {
   createdAt: Date | string
   finishedOn: Date | string
   processedOn: Date | string
+  canCancel: boolean
 
   parent?: {
     id: string
   }
 }
+
+// ---------------------------------------------------------------------------
 
 export type ActivitypubHttpBroadcastPayload = {
   uris: string[]
@@ -72,6 +78,8 @@ export type ActivitypubHttpFetcherPayload = {
   uri: string
   type: FetchType
   videoId?: number
+  accountId?: number
+  abortSignal?: AbortSignal
 }
 
 export type ActivitypubHttpUnicastPayload = {
@@ -98,26 +106,24 @@ export type VideoFileImportPayload = {
 export type VideoImportTorrentPayloadType = 'magnet-uri' | 'torrent-file'
 export type VideoImportYoutubeDLPayloadType = 'youtube-dl'
 
-export interface VideoImportYoutubeDLPayload {
-  type: VideoImportYoutubeDLPayloadType
+interface VideoImportAbstractPayload {
+  preventException: boolean
   videoImportId: number
-
   generateTranscription: boolean
+}
+
+export interface VideoImportYoutubeDLPayload extends VideoImportAbstractPayload {
+  type: VideoImportYoutubeDLPayloadType
 
   fileExt?: string
 }
 
-export interface VideoImportTorrentPayload {
+export interface VideoImportTorrentPayload extends VideoImportAbstractPayload {
   type: VideoImportTorrentPayloadType
-
-  generateTranscription: boolean
-
-  videoImportId: number
+  torrentPath: string | null // null if magnet URI
 }
 
-export type VideoImportPayload = (VideoImportYoutubeDLPayload | VideoImportTorrentPayload) & {
-  preventException: boolean
-}
+export type VideoImportPayload = VideoImportYoutubeDLPayload | VideoImportTorrentPayload
 
 export interface VideoImportPreventExceptionResult {
   resultType: 'success' | 'error'
@@ -129,37 +135,38 @@ export type VideoRedundancyPayload = {
   videoId: number
 }
 
-export type ManageVideoTorrentPayload =
-  {
-    action: 'create'
-    videoId: number
-    videoFileId: number
-  } | {
-    action: 'update-metadata'
+export type ManageVideoTorrentPayload = {
+  action: 'create'
+  videoId: number
+  videoFileId: number
+} | {
+  action: 'update-metadata'
 
-    videoId?: number
-    streamingPlaylistId?: number
+  videoId?: number
+  streamingPlaylistId?: number
 
-    videoFileId: number
-  }
+  videoFileId: number
+}
 
 // Video transcoding payloads
 
 interface BaseTranscodingPayload {
   videoUUID: string
-  hasChildren?: boolean
-  isNewVideo?: boolean
+  canMoveVideoState: boolean
 }
 
 export interface HLSTranscodingPayload extends BaseTranscodingPayload {
   type: 'new-resolution-to-hls'
   resolution: number
   fps: number
-  copyCodecs: boolean
 
   separatedAudio: boolean
 
   deleteWebVideoFiles: boolean
+
+  inputStreams: VideoFileStreamType[]
+
+  transcodingRequestAt: string
 }
 
 export interface NewWebVideoResolutionTranscodingPayload extends BaseTranscodingPayload {
@@ -177,12 +184,10 @@ export interface MergeAudioTranscodingPayload extends BaseTranscodingPayload {
 
 export interface OptimizeTranscodingPayload extends BaseTranscodingPayload {
   type: 'optimize-to-web-video'
-
-  quickTranscode: boolean
 }
 
 export type VideoTranscodingPayload =
-  HLSTranscodingPayload
+  | HLSTranscodingPayload
   | NewWebVideoResolutionTranscodingPayload
   | OptimizeTranscodingPayload
   | MergeAudioTranscodingPayload
@@ -206,8 +211,10 @@ export type MoveStoragePayload = MoveVideoStoragePayload | MoveCaptionPayload
 
 export interface MoveVideoStoragePayload {
   videoUUID: string
-  isNewVideo: boolean
-  previousVideoState: VideoStateType
+
+  moveVideoState?: {
+    previousVideoState: VideoStateType
+  }
 }
 
 export interface MoveCaptionPayload {
@@ -249,16 +256,28 @@ export type VideoStudioTaskWatermarkPayload = {
     file: string
 
     watermarkSizeRatio: number
-    horitonzalMarginRatio: number
+    horizontalMarginRatio: number
     verticalMarginRatio: number
   }
 }
 
+export type VideoStudioTaskRemoveSegmentsPayload = {
+  name: 'remove-segments'
+
+  options: {
+    segments: {
+      start: number
+      end: number
+    }[]
+  }
+}
+
 export type VideoStudioTaskPayload =
-  VideoStudioTaskCutPayload |
-  VideoStudioTaskIntroPayload |
-  VideoStudioTaskOutroPayload |
-  VideoStudioTaskWatermarkPayload
+  | VideoStudioTaskCutPayload
+  | VideoStudioTaskIntroPayload
+  | VideoStudioTaskOutroPayload
+  | VideoStudioTaskWatermarkPayload
+  | VideoStudioTaskRemoveSegmentsPayload
 
 export interface VideoStudioEditionPayload {
   videoUUID: string
@@ -276,21 +295,23 @@ export interface VideoChannelImportPayload {
 
 export interface AfterVideoChannelImportPayload {
   channelSyncId: number
+  buildJobErrors: number
 }
 
 // ---------------------------------------------------------------------------
 
-export type NotifyPayload =
-  {
-    action: 'new-video'
-    videoUUID: string
-  }
+export type NotifyPayload = {
+  action: 'new-video'
+  videoUUID: string
+}
 
 // ---------------------------------------------------------------------------
 
 export interface FederateVideoPayload {
   videoUUID: string
-  isNewVideoForFederation: boolean
+
+  // Actor that overrides the video channel account actor to send the update activity
+  overriddenByActorId?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -298,9 +319,9 @@ export interface FederateVideoPayload {
 export interface TranscodingJobBuilderPayload {
   videoUUID: string
 
-  optimizeJob?: {
-    isNewVideo: boolean
-  }
+  // This is a transcoding job to optimize the video
+  // Set {} for now, can accept more options in the future
+  optimizeJob?: {}
 
   // Array of jobs to create
   jobs?: {
@@ -340,4 +361,29 @@ export interface ImportUserArchivePayload {
 
 export interface VideoTranscriptionPayload {
   videoUUID: string
+}
+
+// ---------------------------------------------------------------------------
+
+export interface BuildAutomaticTagsPayload {
+  accountId: number
+  ofComments: boolean
+  ofVideos: boolean
+}
+
+// How the job has to handle the moderation policies bound to automatic tags:
+//  * `apply`: nothing is on hold, apply the policies using the tags built by the job
+//  * `release-hold`: the object has been put on hold (comment held for review, video auto blocked) while waiting for
+//     its tags, so the job has to confirm or release that hold
+//  * `none`: only rebuild the tags
+export type AutomaticTagsModeration = 'apply' | 'release-hold' | 'none'
+
+export interface BuildObjectAutomaticTagsPayload {
+  objectType: 'video' | 'comment'
+  objectId: number
+
+  moderation: AutomaticTagsModeration
+
+  // Only supported for comments
+  notify: boolean | null
 }

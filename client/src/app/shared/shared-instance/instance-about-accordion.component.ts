@@ -1,27 +1,26 @@
-import { Component, OnInit, inject, input, output, viewChild } from '@angular/core'
+import { Component, OnInit, inject, input, output, viewChild, ChangeDetectionStrategy } from '@angular/core'
 import { HooksService, Notifier } from '@app/core'
 import {
-  NgbAccordionDirective,
-  NgbAccordionItem,
-  NgbAccordionHeader,
-  NgbAccordionToggle,
+  NgbAccordionBody,
   NgbAccordionButton,
-  NgbCollapse,
   NgbAccordionCollapse,
-  NgbAccordionBody
+  NgbAccordionDirective,
+  NgbAccordionHeader,
+  NgbAccordionItem,
+  NgbAccordionToggle,
+  NgbCollapse
 } from '@ng-bootstrap/ng-bootstrap'
 import { About, ClientFilterHookName, PluginClientScope } from '@peertube/peertube-models'
+import { GlobalIconComponent } from '../shared-icons/global-icon.component'
 import { InstanceService } from '../shared-main/instance/instance.service'
 import { InstanceFeaturesTableComponent } from './instance-features-table.component'
-import { GlobalIconComponent } from '../shared-icons/global-icon.component'
-import { NgIf, NgFor } from '@angular/common'
 
 @Component({
   selector: 'my-instance-about-accordion',
   templateUrl: './instance-about-accordion.component.html',
   styleUrls: [ './instance-about-accordion.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
-    NgIf,
     NgbAccordionDirective,
     NgbAccordionItem,
     NgbAccordionHeader,
@@ -31,8 +30,7 @@ import { NgIf, NgFor } from '@angular/common'
     NgbCollapse,
     NgbAccordionCollapse,
     NgbAccordionBody,
-    InstanceFeaturesTableComponent,
-    NgFor
+    InstanceFeaturesTableComponent
   ]
 })
 export class InstanceAboutAccordionComponent implements OnInit {
@@ -69,7 +67,7 @@ export class InstanceAboutAccordionComponent implements OnInit {
   pluginPanels: { id: string, title: string, html: string }[] = []
 
   async ngOnInit () {
-    this.instanceService.getAbout()
+    this.instanceService.getAboutWithCache()
       .subscribe({
         next: async about => {
           this.about = about
@@ -79,7 +77,7 @@ export class InstanceAboutAccordionComponent implements OnInit {
           this.init.emit(this)
         },
 
-        error: err => this.notifier.error(err.message)
+        error: err => this.notifier.handleError(err)
       })
 
     this.pluginPanels = await this.hookService.wrapObject([], this.pluginScope(), this.pluginHook())

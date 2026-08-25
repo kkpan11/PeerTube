@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
 import { VideoChannel } from '@peertube/peertube-models'
@@ -92,6 +92,19 @@ describe('Test channels search', function () {
       const body = await command.advancedChannelSearch({ search })
       expect(body.total).to.equal(1)
       expect(body.data).to.have.lengthOf(0)
+    }
+  })
+
+  it('Should also search by account display name', async function () {
+    {
+      const body = await command.searchChannels({ search: 'roat' })
+      expect(body.total).to.equal(0)
+      expect(body.data).to.have.lengthOf(0)
+    }
+
+    {
+      const body = await command.searchChannels({ search: 'root' })
+      expect(body.data.map(c => c.displayName)).to.have.members([ 'Squall channel', 'Main root channel', 'Zell channel' ])
     }
   })
 

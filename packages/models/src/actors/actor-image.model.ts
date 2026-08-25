@@ -1,10 +1,9 @@
 export interface ActorImage {
+  height: number
   width: number
 
-  // TODO: remove, deprecated in 7.1
+  // TODO: remove, deprecated in 8.0
   path: string
-  // TODO: remove, deprecated in 7.1
-  url?: string
 
   fileUrl: string
 

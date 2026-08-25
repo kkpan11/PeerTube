@@ -3,11 +3,12 @@ import { pathExists } from 'fs-extra/esm'
 import { writeFile } from 'fs/promises'
 import maxmind, { CityResponse, CountryResponse, Reader } from 'maxmind'
 import { join } from 'path'
+import { REQUEST_TIMEOUTS } from '../initializers/constants.js'
 import { isArray } from './custom-validators/misc.js'
-import { logger, loggerTagsFactory } from './logger.js'
-import { isBinaryResponse, unsafeSSRFGot } from './requests.js'
+import { createLogger } from './logger.js'
+import { doBufferRequest, isBinaryResponse } from './requests.js'
 
-const lTags = loggerTagsFactory('geo-ip')
+const logger = createLogger('geo-ip')
 
 export class GeoIP {
   private static instance: GeoIP
@@ -15,7 +16,7 @@ export class GeoIP {
   private countryReader: Reader<CountryResponse>
   private cityReader: Reader<CityResponse>
 
-  private lastInitTry: Date
+  private lastFailedTry: Date
   private initReadersPromise: Promise<any>
 
   private readonly INIT_READERS_RETRY_INTERVAL = 1000 * 60 * 10 // 10 minutes
@@ -30,7 +31,10 @@ export class GeoIP {
     if (CONFIG.GEO_IP.ENABLED === false) return emptyResult
 
     try {
-      if (!this.initReadersPromise) this.initReadersPromise = this.initReadersIfNeeded()
+      if (this.initReadersPromise === undefined) {
+        this.initReadersPromise = this.initReadersIfNeeded()
+      }
+
       await this.initReadersPromise
       this.initReadersPromise = undefined
 
@@ -45,6 +49,8 @@ export class GeoIP {
       logger.error('Cannot get country/city information from IP.', { err })
 
       return emptyResult
+    } finally {
+      this.initReadersPromise = undefined
     }
   }
 
@@ -94,12 +100,14 @@ export class GeoIP {
   }
 
   private async updateDatabaseFile (url: string, destination: string) {
-    logger.info('Updating GeoIP databases from %s.', url, lTags())
-
-    const gotOptions = { context: { bodyKBLimit: 800_000 }, responseType: 'buffer' as 'buffer' }
+    logger.info('Updating GeoIP databases from %s.', url)
 
     try {
-      const gotResult = await unsafeSSRFGot(url, gotOptions)
+      const gotResult = await doBufferRequest(url, {
+        bodyKBLimit: 800_000,
+        timeout: REQUEST_TIMEOUTS.FILE,
+        preventSSRF: false
+      })
 
       if (!isBinaryResponse(gotResult)) {
         throw new Error('Not a binary response')
@@ -107,40 +115,45 @@ export class GeoIP {
 
       await writeFile(destination, gotResult.body)
 
-      logger.info('GeoIP database updated %s.', destination, lTags())
+      logger.info('GeoIP database updated %s.', destination)
     } catch (err) {
-      logger.error('Cannot update GeoIP database from %s.', url, { err, ...lTags() })
+      logger.error('Cannot update GeoIP database from %s.', url, { err })
     }
   }
 
   // ---------------------------------------------------------------------------
 
   private async initReadersIfNeeded () {
-    if (this.lastInitTry && this.lastInitTry.getTime() > Date.now() - this.INIT_READERS_RETRY_INTERVAL) return
-    this.lastInitTry = new Date()
+    if (this.lastFailedTry && this.lastFailedTry.getTime() > Date.now() - this.INIT_READERS_RETRY_INTERVAL) return
 
-    if (!this.countryReader) {
-      let open = true
+    try {
+      if (!this.countryReader) {
+        let open = true
 
-      if (!await pathExists(this.countryDBPath)) {
-        open = await this.updateCountryDatabase()
+        if (!await pathExists(this.countryDBPath)) {
+          open = await this.updateCountryDatabase()
+        }
+
+        if (open) {
+          this.countryReader = await maxmind.open(this.countryDBPath)
+        }
       }
 
-      if (open) {
-        this.countryReader = await maxmind.open(this.countryDBPath)
-      }
-    }
+      if (!this.cityReader) {
+        let open = true
 
-    if (!this.cityReader) {
-      let open = true
+        if (!await pathExists(this.cityDBPath)) {
+          open = await this.updateCityDatabase()
+        }
 
-      if (!await pathExists(this.cityDBPath)) {
-        open = await this.updateCityDatabase()
+        if (open) {
+          this.cityReader = await maxmind.open(this.cityDBPath)
+        }
       }
+    } catch (err) {
+      this.lastFailedTry = new Date()
 
-      if (open) {
-        this.cityReader = await maxmind.open(this.cityDBPath)
-      }
+      throw err
     }
   }
 

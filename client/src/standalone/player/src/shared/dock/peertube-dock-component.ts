@@ -1,6 +1,7 @@
 import videojs from 'video.js'
+import { VideojsComponent, VideojsComponentOptions, VideojsPlayer } from '../../types'
 
-const Component = videojs.getComponent('Component')
+const Component = videojs.getComponent('Component') as typeof VideojsComponent
 
 export type PeerTubeDockComponentOptions = {
   title?: string
@@ -9,10 +10,10 @@ export type PeerTubeDockComponentOptions = {
 }
 
 class PeerTubeDockComponent extends Component {
-  declare options_: videojs.ComponentOptions & PeerTubeDockComponentOptions
+  declare options_: VideojsComponentOptions & PeerTubeDockComponentOptions
 
   // eslint-disable-next-line @typescript-eslint/no-useless-constructor
-  constructor (player: videojs.Player, options: videojs.ComponentOptions & PeerTubeDockComponentOptions) {
+  constructor (player: VideojsPlayer, options: VideojsComponentOptions & PeerTubeDockComponentOptions) {
     super(player, options)
   }
 
@@ -23,7 +24,7 @@ class PeerTubeDockComponent extends Component {
       const avatar = videojs.dom.createEl('img', {
         className: 'peertube-dock-avatar',
         src: this.options_.avatarUrl
-      })
+      }, { alt: '' })
 
       el.appendChild(avatar)
     }
@@ -33,7 +34,7 @@ class PeerTubeDockComponent extends Component {
     })
 
     if (this.options_.title) {
-      const title = videojs.dom.createEl('div', {
+      const title = videojs.dom.createEl('h2', {
         className: 'peertube-dock-title',
         title: this.options_.title,
         innerText: this.options_.title

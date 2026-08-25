@@ -1,4 +1,11 @@
-import { wait } from '@peertube/peertube-core-utils'
+import {
+  compareLiveFilenames,
+  getLivePlaylistIdFromSegmentPath,
+  getLivePlaylistNameFromSegmentPath,
+  isLivePlaylistPath,
+  isLiveSegmentPath,
+  wait
+} from '@peertube/peertube-core-utils'
 import {
   ffprobePromise,
   getVideoStreamBitrate,
@@ -13,8 +20,7 @@ import {
   RunnerJobLiveRTMPHLSTranscodingPayload,
   ServerErrorCode
 } from '@peertube/peertube-models'
-import { buildUUID } from '@peertube/peertube-node-utils'
-import { FSWatcher, watch } from 'chokidar'
+import { buildUUID, DirectoryWatcher } from '@peertube/peertube-node-utils'
 import { FfmpegCommand } from 'fluent-ffmpeg'
 import { ensureDir, remove } from 'fs-extra/esm'
 import { readFile } from 'fs/promises'
@@ -23,16 +29,20 @@ import { ConfigManager } from '../../../shared/config-manager.js'
 import { logger } from '../../../shared/index.js'
 import { buildFFmpegLive, ProcessOptions } from './common.js'
 
-type CustomLiveRTMPHLSTranscodingUpdatePayload =
-  Omit<LiveRTMPHLSTranscodingUpdatePayload, 'resolutionPlaylistFile'> & { resolutionPlaylistFile?: [ Buffer, string ] | Blob | string }
+type CustomLiveRTMPHLSTranscodingUpdatePayload = Omit<LiveRTMPHLSTranscodingUpdatePayload, 'resolutionPlaylistFile'> & {
+  resolutionPlaylistFile?: [Buffer, string] | Blob | string
+}
 
 export class ProcessLiveRTMPHLSTranscoding {
-
   private readonly outputPath: string
-  private readonly fsWatchers: FSWatcher[] = []
+  private fsWatcher: DirectoryWatcher
 
-  // Playlist name -> chunks
+  // Playlist ID -> chunks
   private readonly pendingChunksPerPlaylist = new Map<string, string[]>()
+
+  // Closing the files watcher stops new events but not the async handlers it already started, that can still read
+  // the chunks and the playlists of the output directory: the cleanup waits for them
+  private readonly pendingWatcherHandlers = new Set<Promise<void>>()
 
   private readonly playlistsCreated = new Set<string>()
   private allPlaylistsCreated = false
@@ -68,44 +78,62 @@ export class ProcessLiveRTMPHLSTranscoding {
         const bitrate = await getVideoStreamBitrate(this.payload.input.rtmpUrl, probe)
         const { ratio } = await getVideoStreamDimensionsInfo(this.payload.input.rtmpUrl, probe)
 
-        const m3u8Watcher = watch(this.outputPath, { ignored: path => path !== this.outputPath && !path.endsWith('.m3u8') })
-        this.fsWatchers.push(m3u8Watcher)
-
-        const tsWatcher = watch(this.outputPath, { ignored: path => path !== this.outputPath && !path.endsWith('.ts') })
-        this.fsWatchers.push(tsWatcher)
-
-        m3u8Watcher.on('change', p => {
-          logger.debug(`${p} m3u8 playlist changed`)
-        })
-
-        m3u8Watcher.on('add', p => {
+        const onPlaylistAdded = (p: string) => {
           this.playlistsCreated.add(p)
 
           if (this.playlistsCreated.size === this.options.job.payload.output.toTranscode.length + 1) {
             this.allPlaylistsCreated = true
             logger.info('All m3u8 playlists are created.')
           }
-        })
+        }
 
-        tsWatcher.on('add', async p => {
+        const onChunkAdded = async (p: string) => {
           try {
             await this.sendPendingChunks()
           } catch (err) {
             this.onUpdateError({ err, rej, res })
           }
 
-          const playlistName = this.getPlaylistIdFromTS(p)
+          const playlistId = getLivePlaylistIdFromSegmentPath(p)
+          if (!playlistId) {
+            logger.warn(`Cannot get the playlist id of live chunk ${p}, ignoring it`)
+            return
+          }
 
-          const pendingChunks = this.pendingChunksPerPlaylist.get(playlistName) || []
+          const pendingChunks = this.pendingChunksPerPlaylist.get(playlistId) || []
           pendingChunks.push(p)
 
-          this.pendingChunksPerPlaylist.set(playlistName, pendingChunks)
+          this.pendingChunksPerPlaylist.set(playlistId, pendingChunks)
+        }
+
+        this.fsWatcher = new DirectoryWatcher({
+          directory: this.outputPath,
+          filter: filename => isLiveSegmentPath(filename) || isLivePlaylistPath(filename),
+          // A listing has to rebuild the order in which ffmpeg generated the files
+          sort: compareLiveFilenames
         })
 
-        tsWatcher.on('unlink', p => {
-          this.sendDeletedChunkUpdate(p)
-            .catch(err => this.onUpdateError({ err, rej, res }))
+        this.fsWatcher.on('error', err => logger.error({ err }, `Error in watcher of ${this.outputPath}`))
+
+        this.fsWatcher.on('add', p => {
+          if (isLivePlaylistPath(p)) return onPlaylistAdded(p)
+
+          this.trackWatcherHandler(
+            onChunkAdded(p)
+              .catch(err => logger.error({ err }, `Error in add handler of ${p}`))
+          )
         })
+
+        this.fsWatcher.on('unlink', p => {
+          if (!isLiveSegmentPath(p)) return
+
+          this.trackWatcherHandler(
+            this.sendDeletedChunkUpdate(p)
+              .catch(err => this.onUpdateError({ err, rej, res }))
+          )
+        })
+
+        this.fsWatcher.watch()
 
         this.ffmpegCommand = await buildFFmpegLive().getLiveTranscodingCommand({
           inputUrl: this.payload.input.rtmpUrl,
@@ -229,6 +257,11 @@ export class ProcessLiveRTMPHLSTranscoding {
     await wait(1500)
 
     try {
+      // ffmpeg exited so no new chunk will be generated, but the OS watcher may never have notified us of the last
+      // ones: ask for a final listing, and wait for the handlers that queue them
+      await this.fsWatcher?.flush()
+      await Promise.all(this.pendingWatcherHandlers)
+
       await this.sendPendingChunks()
     } catch (err) {
       logger.error(err, 'Cannot send latest chunks after ffmpeg ended')
@@ -256,8 +289,8 @@ export class ProcessLiveRTMPHLSTranscoding {
 
   // ---------------------------------------------------------------------------
 
-  private sendDeletedChunkUpdate (deletedChunk: string): Promise<any> {
-    if (this.ended) return Promise.resolve()
+  private async sendDeletedChunkUpdate (deletedChunk: string): Promise<any> {
+    if (this.ended) return
 
     logger.debug(`Sending removed live chunk ${deletedChunk} update`)
 
@@ -268,9 +301,10 @@ export class ProcessLiveRTMPHLSTranscoding {
       videoChunkFilename
     }
 
-    if (this.allPlaylistsCreated) {
-      const playlistName = this.getPlaylistName(videoChunkFilename)
+    const playlistName = getLivePlaylistNameFromSegmentPath(videoChunkFilename)
 
+    // We may never have been able to read the content of the playlist that references this chunk
+    if (this.allPlaylistsCreated && this.latestFilteredPlaylistContent[playlistName]) {
       payload = {
         ...payload,
 
@@ -303,9 +337,9 @@ export class ProcessLiveRTMPHLSTranscoding {
             videoChunkFile: chunk
           }
 
-          if (this.allPlaylistsCreated) {
-            const playlistName = this.getPlaylistName(videoChunkFilename)
+          const playlistName = getLivePlaylistNameFromSegmentPath(videoChunkFilename)
 
+          if (this.allPlaylistsCreated && playlistName) {
             try {
               await this.updatePlaylistContent(playlistName, videoChunkFilename)
 
@@ -326,7 +360,7 @@ export class ProcessLiveRTMPHLSTranscoding {
 
         const p = payloadBuilder().then(p => this.updateWithRetry(p))
 
-        if (!sequentialPromises) sequentialPromises = p
+        if (sequentialPromises === undefined) sequentialPromises = p
         else sequentialPromises = sequentialPromises.then(() => p)
       }
 
@@ -359,16 +393,6 @@ export class ProcessLiveRTMPHLSTranscoding {
     }
   }
 
-  private getPlaylistName (videoChunkFilename: string) {
-    return `${videoChunkFilename.split('-')[0]}.m3u8`
-  }
-
-  private getPlaylistIdFromTS (segmentPath: string) {
-    const playlistIdMatcher = /^([\d+])-/
-
-    return basename(segmentPath).match(playlistIdMatcher)[1]
-  }
-
   private async updatePlaylistContent (playlistName: string, latestChunkFilename: string) {
     const m3u8Path = join(this.outputPath, playlistName)
     let playlistContent = await readFile(m3u8Path, 'utf-8')
@@ -388,7 +412,7 @@ export class ProcessLiveRTMPHLSTranscoding {
     return [
       Buffer.from(this.latestFilteredPlaylistContent[playlistName], 'utf-8'),
       join(this.outputPath, 'master.m3u8')
-    ] as [ Buffer, string ]
+    ] as [Buffer, string]
   }
 
   // ---------------------------------------------------------------------------
@@ -396,12 +420,27 @@ export class ProcessLiveRTMPHLSTranscoding {
   private cleanup () {
     logger.debug(`Cleaning up job ${this.options.job.uuid}`)
 
-    for (const fsWatcher of this.fsWatchers) {
-      fsWatcher.close()
-        .catch(err => logger.error({ err }, 'Cannot close watcher'))
-    }
-
-    remove(this.outputPath)
+    this.removeOutputDirectory()
       .catch(err => logger.error({ err }, `Cannot remove ${this.outputPath}`))
+  }
+
+  private async removeOutputDirectory () {
+    // Wait for the watcher to stop reading the directory before removing it
+    await this.fsWatcher?.close()
+
+    await Promise.all(this.pendingWatcherHandlers)
+
+    await remove(this.outputPath)
+  }
+
+  // Watcher handlers are async and fire and forget: remember them so the cleanup can wait for the pending ones
+  private trackWatcherHandler (handler: Promise<void>) {
+    const tracked: Promise<void> = handler
+      .catch(err => logger.error({ err }, 'Error in live files watcher handler'))
+      .finally(() => {
+        this.pendingWatcherHandlers.delete(tracked)
+      })
+
+    this.pendingWatcherHandlers.add(tracked)
   }
 }

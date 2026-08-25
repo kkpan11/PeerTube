@@ -1,17 +1,22 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { expect } from 'chai'
-import { extractMentions } from '@peertube/peertube-server/core/helpers/mentions.js'
+import { extractLocalMentions } from '@peertube/peertube-server/core/helpers/mentions.js'
 
 describe('Comment model', function () {
   it('Should correctly extract mentions', async function () {
     const text = '@florian @jean@localhost:9000 @flo @another@localhost:9000 @flo2@jean.com hello ' +
       'email@localhost:9000 coucou.com no? @chocobozzz @chocobozzz @end'
 
-    const isOwned = true
+    const isLocal = true
 
-    const result = extractMentions(text, isOwned).sort((a, b) => a.localeCompare(b))
+    const result = extractLocalMentions(text, isLocal)
 
-    expect(result).to.deep.equal([ 'another', 'chocobozzz', 'end', 'flo', 'florian', 'jean' ])
+    expect(result).to.deep.equal([ 'florian', 'jean', 'flo', 'another', 'chocobozzz', 'end' ])
+  })
+
+  it('Should correctly extract mentions with adjacent punctuations and newlines', async function () {
+    expect(extractLocalMentions('thanks @bob!', true)).to.deep.equal([ 'bob' ])
+    expect(extractLocalMentions('@bob\n', true)).to.deep.equal([ 'bob' ])
   })
 })

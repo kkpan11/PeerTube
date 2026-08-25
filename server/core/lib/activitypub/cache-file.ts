@@ -1,10 +1,17 @@
 import { CacheFileObject, VideoStreamingPlaylistType } from '@peertube/peertube-models'
-import { logger } from '@server/helpers/logger.js'
+import { createLogger } from '@server/helpers/logger.js'
 import { MActorId, MVideoRedundancy, MVideoWithAllFiles } from '@server/types/models/index.js'
 import { Transaction } from 'sequelize'
 import { VideoRedundancyModel } from '../../models/redundancy/video-redundancy.js'
 
-async function createOrUpdateCacheFile (cacheFileObject: CacheFileObject, video: MVideoWithAllFiles, byActor: MActorId, t: Transaction) {
+const logger = createLogger()
+
+export async function createOrUpdateCacheFile (
+  cacheFileObject: CacheFileObject,
+  video: MVideoWithAllFiles,
+  byActor: MActorId,
+  t: Transaction
+) {
   const redundancyModel = await VideoRedundancyModel.loadByUrl(cacheFileObject.id, t)
 
   if (redundancyModel) {
@@ -15,11 +22,7 @@ async function createOrUpdateCacheFile (cacheFileObject: CacheFileObject, video:
 }
 
 // ---------------------------------------------------------------------------
-
-export {
-  createOrUpdateCacheFile
-}
-
+// Private
 // ---------------------------------------------------------------------------
 
 function createCacheFile (cacheFileObject: CacheFileObject, video: MVideoWithAllFiles, byActor: MActorId, t: Transaction) {

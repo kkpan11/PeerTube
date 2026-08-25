@@ -1,12 +1,19 @@
-import { getAbsoluteAPIUrl } from '@app/helpers'
+import { getOriginUrl } from '@app/helpers'
 import { maxBy } from '@peertube/peertube-core-utils'
-import { ActorImage, Account as ServerAccount, VideoChannel as ServerVideoChannel, ViewsPerDate } from '@peertube/peertube-models'
+import {
+  ActorImage,
+  Account as ServerAccount,
+  VideoChannel as ServerVideoChannel,
+  VideoChannelStatsGroupInterval,
+  ViewsPerDate
+} from '@peertube/peertube-models'
 import { Actor } from '../account/actor.model'
 
 export class VideoChannel extends Actor implements ServerVideoChannel {
   displayName: string
   description: string
   support: string
+  publicEmail: string
 
   nameWithHost: string
   nameWithHostForced: string
@@ -23,35 +30,30 @@ export class VideoChannel extends Actor implements ServerVideoChannel {
   videosCount?: number
 
   viewsPerDay?: ViewsPerDate[]
+  viewsGroupInterval?: VideoChannelStatsGroupInterval
   totalViews?: number
 
-  static GET_ACTOR_AVATAR_URL (
-    actor: {
-      avatars: { width: number, fileUrl?: string, url?: string, path: string }[]
-    },
-    size: number
-  ) {
-    return Actor.GET_ACTOR_AVATAR_URL(actor, size)
-  }
-
-  static GET_ACTOR_BANNER_URL (channel: ServerVideoChannel) {
-    if (!channel || channel.banners.length === 0) {
+  static GET_ACTOR_BANNER_URL (channel: Partial<Pick<ServerVideoChannel, 'banners'>>) {
+    if (!channel || !Array.isArray(channel.banners) || channel.banners.length === 0) {
       return ''
     }
 
     const banner = maxBy(channel.banners, 'width')
     if (!banner) return ''
 
-    if (banner.url) return banner.url
-    return getAbsoluteAPIUrl() + banner.path
+    return banner.fileUrl
   }
 
   static GET_DEFAULT_AVATAR_URL (size: number) {
     if (size <= 48) {
-      return `${window.location.origin}/client/assets/images/default-avatar-video-channel-48x48.png`
+      return `${getOriginUrl()}/client/assets/images/default-avatar-video-channel-48x48.png`
     }
 
-    return `${window.location.origin}/client/assets/images/default-avatar-video-channel.png`
+    return `${getOriginUrl()}/client/assets/images/default-avatar-video-channel.png`
+  }
+
+  static buildPublicUrl (channel: Pick<ServerVideoChannel, 'name' | 'host'>) {
+    return `/c/${Actor.CREATE_BY_STRING(channel.name, channel.host)}`
   }
 
   constructor (hash: Partial<ServerVideoChannel>) {
@@ -60,6 +62,7 @@ export class VideoChannel extends Actor implements ServerVideoChannel {
     this.displayName = hash.displayName
     this.description = hash.description
     this.support = hash.support
+    this.publicEmail = hash.publicEmail
 
     this.banners = hash.banners || []
 
@@ -76,6 +79,8 @@ export class VideoChannel extends Actor implements ServerVideoChannel {
       this.viewsPerDay = hash.viewsPerDay.map(v => ({ ...v, date: new Date(v.date) }))
     }
 
+    this.viewsGroupInterval = hash.viewsGroupInterval
+
     if (hash.totalViews !== null && hash.totalViews !== undefined) {
       this.totalViews = hash.totalViews
     }
@@ -86,26 +91,6 @@ export class VideoChannel extends Actor implements ServerVideoChannel {
     }
 
     this.updateComputedAttributes()
-  }
-
-  updateAvatar (newAvatars: ActorImage[]) {
-    this.avatars = newAvatars
-
-    this.updateComputedAttributes()
-  }
-
-  resetAvatar () {
-    this.updateAvatar([])
-  }
-
-  updateBanner (newBanners: ActorImage[]) {
-    this.banners = newBanners
-
-    this.updateComputedAttributes()
-  }
-
-  resetBanner () {
-    this.updateBanner([])
   }
 
   updateComputedAttributes () {

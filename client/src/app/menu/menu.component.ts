@@ -1,16 +1,7 @@
-import { CommonModule } from '@angular/common'
-import { Component, OnDestroy, OnInit, inject } from '@angular/core'
+import { CommonModule, getLocaleDirection, NgTemplateOutlet } from '@angular/common'
+import { ChangeDetectionStrategy, Component, inject, LOCALE_ID, OnDestroy, OnInit } from '@angular/core'
 import { Params, RouterLink, RouterLinkActive } from '@angular/router'
-import {
-  AuthService,
-  AuthStatus,
-  AuthUser,
-  HooksService,
-  MenuService,
-  RedirectService,
-  ServerService,
-  UserService
-} from '@app/core'
+import { AuthService, AuthStatus, AuthUser, HooksService, MenuService, RedirectService, ServerService, UserService } from '@app/core'
 import { GlobalIconComponent, GlobalIconName } from '@app/shared/shared-icons/global-icon.component'
 import { ButtonComponent } from '@app/shared/shared-main/buttons/button.component'
 import { NgbDropdownModule } from '@ng-bootstrap/ng-bootstrap'
@@ -46,18 +37,21 @@ const debugLogger = debug('peertube:menu:MenuComponent')
   selector: 'my-menu',
   templateUrl: './menu.component.html',
   styleUrls: [ './menu.component.scss' ],
+  changeDetection: ChangeDetectionStrategy.Eager,
   imports: [
     CommonModule,
     GlobalIconComponent,
     RouterLink,
     RouterLinkActive,
     NgbDropdownModule,
+    NgTemplateOutlet,
     ButtonComponent
   ]
 })
 export class MenuComponent implements OnInit, OnDestroy {
   private authService = inject(AuthService)
   private userService = inject(UserService)
+  private localeId = inject(LOCALE_ID)
   private serverService = inject(ServerService)
   private hooks = inject(HooksService)
   private menu = inject(MenuService)
@@ -132,7 +126,7 @@ export class MenuComponent implements OnInit, OnDestroy {
         {
           path: this.redirectService.getDefaultRoute(),
           query: this.redirectService.getDefaultRouteQuery(),
-          icon: 'home' as GlobalIconName,
+          icon: 'home',
           label: $localize`Home`
         }
       ]
@@ -141,7 +135,7 @@ export class MenuComponent implements OnInit, OnDestroy {
     if (this.loggedIn) {
       base.links.push({
         path: '/videos/subscriptions',
-        icon: 'subscriptions' as GlobalIconName,
+        icon: 'subscriptions',
         label: $localize`Subscriptions`
       })
     }
@@ -156,12 +150,12 @@ export class MenuComponent implements OnInit, OnDestroy {
       links = links.concat([
         {
           path: '/my-library/video-playlists',
-          icon: 'playlists' as GlobalIconName,
+          icon: 'playlists',
           label: $localize`Playlists`
         },
         {
           path: '/my-library/history/videos',
-          icon: 'history' as GlobalIconName,
+          icon: 'history',
           label: $localize`History`
         }
       ])
@@ -181,20 +175,20 @@ export class MenuComponent implements OnInit, OnDestroy {
       links = links.concat([
         {
           path: '/my-library/video-channels',
-          icon: 'channel' as GlobalIconName,
+          icon: 'channel',
           iconClass: 'channel-icon',
           label: $localize`Channels`
         },
 
         {
           path: '/my-library/videos',
-          icon: 'videos' as GlobalIconName,
+          icon: 'videos',
           label: $localize`Videos`
         },
 
         {
-          path: '/videos/upload',
-          icon: 'upload' as GlobalIconName,
+          path: '/videos/publish',
+          icon: 'upload',
           label: $localize`Publish`,
           isPrimaryButton: true,
           ngClass: 'publish-button'
@@ -216,7 +210,7 @@ export class MenuComponent implements OnInit, OnDestroy {
       if (this.user.hasRight(UserRight.SEE_ALL_VIDEOS)) {
         links.push({
           path: '/admin/overview',
-          icon: 'overview' as GlobalIconName,
+          icon: 'overview',
           label: $localize`Overview`
         })
       }
@@ -224,7 +218,7 @@ export class MenuComponent implements OnInit, OnDestroy {
       if (this.user.hasRight(UserRight.MANAGE_ABUSES)) {
         links.push({
           path: '/admin/moderation',
-          icon: 'moderation' as GlobalIconName,
+          icon: 'moderation',
           label: $localize`Moderation`
         })
       }
@@ -232,7 +226,7 @@ export class MenuComponent implements OnInit, OnDestroy {
       if (this.user.hasRight(UserRight.MANAGE_CONFIGURATION)) {
         links.push({
           path: '/admin/settings',
-          icon: 'config' as GlobalIconName,
+          icon: 'config',
           label: $localize`Settings`
         })
       }
@@ -279,5 +273,9 @@ export class MenuComponent implements OnInit, OnDestroy {
 
         this.buildMenuSections()
       })
+  }
+
+  isRTL () {
+    return getLocaleDirection(this.localeId) === 'rtl'
   }
 }

@@ -1,7 +1,7 @@
-@use '_variables' as *;
-@use '_mixins' as *;
-@use '_icons' as *;
-@use './_player-variables' as *;
+@use "_variables" as *;
+@use "_mixins" as *;
+@use "_icons" as *;
+@use "./_player-variables" as *;
 
 $setting-transition-duration: 0.15s;
 $setting-transition-easing: ease-out;
@@ -9,27 +9,27 @@ $setting-transition-easing: ease-out;
 /* Sass for videojs-settings-menu */
 
 .video-js {
-
   .vjs-settings-sub-menu-title {
-    width: 4em;
     text-transform: initial;
   }
 
   .vjs-settings-dialog {
     position: absolute;
-    right: .5em;
+    right: 0.5em;
     bottom: 4em;
-    color: pvar(--embed-fg);
-    opacity: $primary-foreground-opacity;
+    color: pvar(--pt-player-fg);
     margin: 0 auto;
     font-size: $font-size !important;
     z-index: 100;
     border-radius: 10px;
+    background-color: var(--pt-player-overlay-bg);
 
     width: auto;
     overflow: hidden;
 
-    transition: width $setting-transition-duration $setting-transition-easing,  height $setting-transition-duration $setting-transition-easing;
+    transition:
+      width $setting-transition-duration $setting-transition-easing,
+      height $setting-transition-duration $setting-transition-easing;
 
     .vjs-settings-sub-menu-value,
     .vjs-settings-sub-menu-title {
@@ -39,7 +39,6 @@ $setting-transition-easing: ease-out;
     }
 
     .vjs-settings-sub-menu-title {
-      text-align: start;
       font-weight: $font-semibold;
     }
 
@@ -65,7 +64,7 @@ $setting-transition-easing: ease-out;
     .vjs-settings-panel-child {
       display: flex;
 
-      align-items: flex-end;
+      align-items: flex-start;
       white-space: nowrap;
 
       &:focus,
@@ -89,7 +88,7 @@ $setting-transition-easing: ease-out;
 
           &:hover {
             cursor: pointer;
-            background-color: rgba(255, 255, 255, 0.2);
+            background-color: var(--pt-player-overlay-bg-hover);
           }
 
           &.disabled {
@@ -117,16 +116,19 @@ $setting-transition-easing: ease-out;
         .vjs-menu-item {
           outline: 0;
           font-weight: $font-semibold;
-          text-align: end;
+          justify-content: flex-end;
           padding: 8px 15px;
 
           &.vjs-back-button {
             padding: 12px 15px;
             margin-bottom: 5px;
             border-bottom: 1px solid #808080;
-            text-align: start;
+            justify-content: flex-start;
+            align-items: center;
 
             &::before {
+              top: -1px;
+
               @include chevron-left(9px, 2px);
               @include margin-right(10px);
             }
@@ -143,9 +145,9 @@ $setting-transition-easing: ease-out;
 
             &::before {
               position: absolute;
-              content: ' ';
+              content: " ";
               margin-top: 1px;
-              background-image: url('./svg/tick-white.svg');
+              background-image: url("../svg/tick-white.svg");
 
               @include icon(15px);
               @include left(15px);
@@ -169,7 +171,8 @@ $setting-transition-easing: ease-out;
           }
         }
 
-        &.vjs-resolution-button {
+        &.vjs-resolution-button,
+        &.vjs-video-filter-button {
           .vjs-menu-item-text {
             @include margin-left(25px);
           }
@@ -183,7 +186,7 @@ $setting-transition-easing: ease-out;
   }
 }
 
-:root[dir=rtl] {
+:root[dir="rtl"] {
   .vjs-back-button::before {
     transform: rotate(45deg) !important;
   }

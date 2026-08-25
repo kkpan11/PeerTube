@@ -2,7 +2,7 @@ import express from 'express'
 import { HttpStatusCode, UserRight } from '@peertube/peertube-models'
 import { JobQueue } from '@server/lib/job-queue/index.js'
 import { VideoRedundancyModel } from '@server/models/redundancy/video-redundancy.js'
-import { logger } from '../../../helpers/logger.js'
+import { createLogger } from '../../../helpers/logger.js'
 import { removeRedundanciesOfServer, removeVideoRedundancy } from '../../../lib/redundancy.js'
 import {
   asyncMiddleware,
@@ -20,16 +20,20 @@ import {
   updateServerRedundancyValidator
 } from '../../../middlewares/validators/redundancy.js'
 
+const logger = createLogger()
+
 const serverRedundancyRouter = express.Router()
 
-serverRedundancyRouter.put('/redundancy/:host',
+serverRedundancyRouter.put(
+  '/redundancy/:host',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_SERVER_FOLLOW),
   asyncMiddleware(updateServerRedundancyValidator),
   asyncMiddleware(updateRedundancy)
 )
 
-serverRedundancyRouter.get('/redundancy/videos',
+serverRedundancyRouter.get(
+  '/redundancy/videos',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEOS_REDUNDANCIES),
   listVideoRedundanciesValidator,
@@ -40,14 +44,16 @@ serverRedundancyRouter.get('/redundancy/videos',
   asyncMiddleware(listVideoRedundancies)
 )
 
-serverRedundancyRouter.post('/redundancy/videos',
+serverRedundancyRouter.post(
+  '/redundancy/videos',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEOS_REDUNDANCIES),
   addVideoRedundancyValidator,
   asyncMiddleware(addVideoRedundancy)
 )
 
-serverRedundancyRouter.delete('/redundancy/videos/:redundancyId',
+serverRedundancyRouter.delete(
+  '/redundancy/videos/:redundancyId',
   authenticate,
   ensureUserHasRight(UserRight.MANAGE_VIDEOS_REDUNDANCIES),
   removeVideoRedundancyValidator,
@@ -81,7 +87,7 @@ async function listVideoRedundancies (req: express.Request, res: express.Respons
 
 async function addVideoRedundancy (req: express.Request, res: express.Response) {
   const payload = {
-    videoId: res.locals.onlyVideo.id
+    videoId: res.locals.videoWithBlacklist.id
   }
 
   await JobQueue.Instance.createJob({

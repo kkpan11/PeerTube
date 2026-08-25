@@ -1,9 +1,8 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
-import { writeJson } from 'fs-extra/esm'
-import { join } from 'path'
+import { wait } from '@peertube/peertube-core-utils'
 import { HttpStatusCode, VideoPrivacy } from '@peertube/peertube-models'
+import { uuidToShort } from '@peertube/peertube-node-utils'
 import {
   cleanupTests,
   createSingleServer,
@@ -11,6 +10,9 @@ import {
   PeerTubeServer,
   setAccessTokensToServers
 } from '@peertube/peertube-server-commands'
+import { expect } from 'chai'
+import { writeJson } from 'fs-extra/esm'
+import { join } from 'path'
 import { expectLogDoesNotContain } from './shared/checks.js'
 
 describe('Test misc endpoints', function () {
@@ -28,7 +30,6 @@ describe('Test misc endpoints', function () {
   })
 
   describe('Test a well known endpoints', function () {
-
     it('Should get security.txt', async function () {
       const res = await makeGetRequest({
         url: server.url,
@@ -134,7 +135,6 @@ describe('Test misc endpoints', function () {
   })
 
   describe('Test classic static endpoints', function () {
-
     it('Should get robots.txt', async function () {
       const res = await makeGetRequest({
         url: server.url,
@@ -167,6 +167,15 @@ describe('Test misc endpoints', function () {
   })
 
   describe('Test bots endpoints', function () {
+    let uuid1: string
+    let user1Token: string
+
+    function extractLastmod (text: string, loc: string) {
+      const escapedLoc = loc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      const match = new RegExp(`<loc>${escapedLoc}</loc><lastmod>([^<]+)</lastmod>`).exec(text)
+
+      return match?.[1]
+    }
 
     it('Should get the empty sitemap', async function () {
       const res = await makeGetRequest({
@@ -176,7 +185,7 @@ describe('Test misc endpoints', function () {
       })
 
       expect(res.text).to.contain('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"')
-      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance</loc></url>')
+      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance/home</loc></url>')
     })
 
     it('Should get the empty cached sitemap', async function () {
@@ -187,13 +196,15 @@ describe('Test misc endpoints', function () {
       })
 
       expect(res.text).to.contain('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"')
-      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance</loc></url>')
+      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance/home</loc></url>')
     })
 
     it('Should add videos, channel and accounts and get sitemap', async function () {
       this.timeout(35000)
 
-      const { token: user1Token } = await server.users.generate('user1')
+      const user1 = await server.users.generate('user1')
+      user1Token = user1.token
+
       const { token: user2Token } = await server.users.generate('user2')
       const { token: user3Token } = await server.users.generate('user3')
 
@@ -210,12 +221,13 @@ describe('Test misc endpoints', function () {
         token: user3Token
       })
 
-      const { id: video1Id } = await server.videos.upload({ attributes: { name: 'video 1', nsfw: false }, videoChannelId: channel1Id })
+      const video1 = await server.videos.upload({ attributes: { name: 'video 1', nsfw: false }, videoChannelId: channel1Id })
+      uuid1 = video1.uuid
       await server.videos.upload({ attributes: { name: 'video 2', nsfw: false }, videoChannelId: channel2Id })
       await server.videos.upload({ attributes: { name: 'video 3', privacy: VideoPrivacy.PRIVATE }, videoChannelId: channel3Id })
 
       await server.videos.update({
-        id: video1Id,
+        id: uuid1,
         attributes: {
           tags: [ 'fish', 'chips' ]
         }
@@ -228,7 +240,7 @@ describe('Test misc endpoints', function () {
       })
 
       expect(res.text).to.contain('xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"')
-      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance</loc></url>')
+      expect(res.text).to.contain('<url><loc>' + server.url + '/about/instance/home</loc></url>')
 
       expect(res.text).to.contain('<video:title>video 1</video:title>')
       expect(res.text).to.contain('<video:title>video 2</video:title>')
@@ -246,13 +258,105 @@ describe('Test misc endpoints', function () {
       expect(res.text).to.match(/<video:uploader.*>channel 1<\/video:uploader>/)
       expect(res.text).to.match(/<video:live>NO<\/video:live>/)
 
-      expect(res.text).to.contain('<url><loc>' + server.url + '/c/channel1/videos</loc></url>')
-      expect(res.text).to.contain('<url><loc>' + server.url + '/c/channel2/videos</loc></url>')
+      expect(res.text).to.contain('<loc>' + server.url + '/c/channel1/videos</loc>')
+      expect(res.text).to.contain('<loc>' + server.url + '/c/channel2/videos</loc>')
       expect(res.text).to.not.contain('<url><loc>' + server.url + '/c/channel3/videos</loc></url>')
 
-      expect(res.text).to.contain('<url><loc>' + server.url + '/a/user1/video-channels</loc></url>')
-      expect(res.text).to.contain('<url><loc>' + server.url + '/a/user2/video-channels</loc></url>')
+      expect(res.text).to.contain('<loc>' + server.url + '/a/user1/video-channels</loc>')
+      expect(res.text).to.contain('<loc>' + server.url + '/a/user2/video-channels</loc>')
       expect(res.text).to.not.contain('<url><loc>' + server.url + '/a/user3/video-channels</loc></url>')
+
+      const isoDateRegexp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/
+
+      expect(extractLastmod(res.text, server.url + '/w/' + uuidToShort(uuid1))).to.match(isoDateRegexp)
+      expect(extractLastmod(res.text, server.url + '/c/channel1/videos')).to.match(isoDateRegexp)
+      expect(extractLastmod(res.text, server.url + '/a/user1/video-channels')).to.match(isoDateRegexp)
+    })
+
+    it('Should only update the video lastmod when relevant content changed', async function () {
+      this.timeout(20000)
+
+      const videoLoc = server.url + '/w/' + uuidToShort(uuid1)
+
+      const getLastmod = async (query: string) => {
+        const res = await makeGetRequest({
+          url: server.url,
+          path: '/sitemap.xml?t=' + query, // avoid using cache
+          expectedStatus: HttpStatusCode.OK_200
+        })
+
+        return extractLastmod(res.text, videoLoc)
+      }
+
+      const initialLastmod = await getLastmod('lastmod-1')
+
+      // Updating tags only should not change the lastmod value
+      await server.videos.update({ id: uuid1, attributes: { tags: [ 'sea', 'bass' ] } })
+      const afterTagsUpdateLastmod = await getLastmod('lastmod-2')
+      expect(afterTagsUpdateLastmod).to.equal(initialLastmod)
+
+      // Updating the name should bump the lastmod value
+      await wait(1500)
+      await server.videos.update({ id: uuid1, attributes: { name: 'video 1 updated' } })
+      const afterNameUpdateLastmod = await getLastmod('lastmod-3')
+      expect(afterNameUpdateLastmod).to.not.equal(initialLastmod)
+      expect(new Date(afterNameUpdateLastmod).getTime()).to.be.greaterThan(new Date(initialLastmod).getTime())
+    })
+
+    it('Should update the channel lastmod when it is updated', async function () {
+      this.timeout(20000)
+
+      const channelLoc = server.url + '/c/channel1/videos'
+
+      const res1 = await makeGetRequest({
+        url: server.url,
+        path: '/sitemap.xml?t=channel-lastmod-1',
+        expectedStatus: HttpStatusCode.OK_200
+      })
+      const initialLastmod = extractLastmod(res1.text, channelLoc)
+
+      await wait(1500)
+      await server.channels.update({
+        channelName: 'channel1',
+        token: user1Token,
+        attributes: { displayName: 'channel 1 updated' }
+      })
+
+      const res2 = await makeGetRequest({
+        url: server.url,
+        path: '/sitemap.xml?t=channel-lastmod-2',
+        expectedStatus: HttpStatusCode.OK_200
+      })
+      const updatedLastmod = extractLastmod(res2.text, channelLoc)
+
+      expect(updatedLastmod).to.not.equal(initialLastmod)
+      expect(new Date(updatedLastmod).getTime()).to.be.greaterThan(new Date(initialLastmod).getTime())
+    })
+
+    it('Should update the account lastmod when it is updated', async function () {
+      this.timeout(20000)
+
+      const accountLoc = server.url + '/a/user1/video-channels'
+
+      const res1 = await makeGetRequest({
+        url: server.url,
+        path: '/sitemap.xml?t=account-lastmod-1',
+        expectedStatus: HttpStatusCode.OK_200
+      })
+      const initialLastmod = extractLastmod(res1.text, accountLoc)
+
+      await wait(1500)
+      await server.users.updateMe({ token: user1Token, description: 'updated bio' })
+
+      const res2 = await makeGetRequest({
+        url: server.url,
+        path: '/sitemap.xml?t=account-lastmod-2',
+        expectedStatus: HttpStatusCode.OK_200
+      })
+      const updatedLastmod = extractLastmod(res2.text, accountLoc)
+
+      expect(updatedLastmod).to.not.equal(initialLastmod)
+      expect(new Date(updatedLastmod).getTime()).to.be.greaterThan(new Date(initialLastmod).getTime())
     })
 
     it('Should not fail with big title/description videos', async function () {
@@ -270,6 +374,35 @@ describe('Test misc endpoints', function () {
       await expectLogDoesNotContain(server, 'Error in sitemap generation')
 
       expect(res.text).to.contain(`<video:title>${'v'.repeat(97)}...</video:title>`)
+    })
+
+    it('Should use an experimental env variable to update video URLs', async function () {
+      const video = await server.videos.get({ id: uuid1 })
+
+      {
+        const res = await makeGetRequest({
+          url: server.url,
+          path: '/sitemap.xml?t=3', // avoid using cache
+          expectedStatus: HttpStatusCode.OK_200
+        })
+
+        const url = server.url + '/w/' + uuidToShort(video.uuid)
+        expect(res.text).to.contain(`<loc>${url}</loc>`)
+      }
+
+      await server.kill()
+      await server.run({}, { env: { EXPERIMENTAL_SITEMAP_VIDEO_URL: 'true' } })
+
+      {
+        const res = await makeGetRequest({
+          url: server.url,
+          path: '/sitemap.xml?t=4', // avoid using cache
+          expectedStatus: HttpStatusCode.OK_200
+        })
+
+        const url = server.url + '/videos/watch/' + video.uuid
+        expect(res.text).to.contain(`<loc>${url}</loc>`)
+      }
     })
   })
 

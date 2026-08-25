@@ -17,18 +17,18 @@ import { AutomaticTagModel } from './automatic-tag.js'
 })
 export class AccountAutomaticTagPolicyModel extends SequelizeModel<AccountAutomaticTagPolicyModel> {
   @CreatedAt
-  createdAt: Date
+  declare createdAt: Date
 
   @UpdatedAt
-  updatedAt: Date
+  declare updatedAt: Date
 
   @AllowNull(true)
   @Column(DataType.INTEGER)
-  policy: AutomaticTagPolicyType
+  declare policy: AutomaticTagPolicyType
 
   @ForeignKey(() => AccountModel)
   @Column
-  accountId: number
+  declare accountId: number
 
   @BelongsTo(() => AccountModel, {
     foreignKey: {
@@ -36,11 +36,11 @@ export class AccountAutomaticTagPolicyModel extends SequelizeModel<AccountAutoma
     },
     onDelete: 'cascade'
   })
-  Account: Awaited<AccountModel>
+  declare Account: Awaited<AccountModel>
 
   @ForeignKey(() => AutomaticTagModel)
   @Column
-  automaticTagId: number
+  declare automaticTagId: number
 
   @BelongsTo(() => AutomaticTagModel, {
     foreignKey: {
@@ -48,7 +48,7 @@ export class AccountAutomaticTagPolicyModel extends SequelizeModel<AccountAutoma
     },
     onDelete: 'cascade'
   })
-  AutomaticTag: Awaited<AutomaticTagModel>
+  declare AutomaticTag: Awaited<AutomaticTagModel>
 
   static async listOfAccount (account: MAccountId) {
     const rows = await this.findAll({
@@ -77,6 +77,21 @@ export class AccountAutomaticTagPolicyModel extends SequelizeModel<AccountAutoma
     })
   }
 
+  // Whether the account has at least one policy of this type, whatever the tag
+  static hasPolicy (options: {
+    accountId: number
+    policy: AutomaticTagPolicyType
+    transaction?: Transaction
+  }) {
+    const { accountId, policy, transaction } = options
+
+    const query = `SELECT 1 FROM "accountAutomaticTagPolicy" ` +
+      `WHERE "accountId" = $accountId AND "policy" = $policy ` +
+      `LIMIT 1`
+
+    return doesExist({ sequelize: this.sequelize, query, bind: { accountId, policy }, transaction })
+  }
+
   static hasPolicyOnTags (options: {
     accountId: number
     tags: string[]
@@ -88,7 +103,7 @@ export class AccountAutomaticTagPolicyModel extends SequelizeModel<AccountAutoma
     const query = `SELECT 1 FROM "accountAutomaticTagPolicy" ` +
       `INNER JOIN "automaticTag" ON "automaticTag"."id" = "accountAutomaticTagPolicy"."automaticTagId" ` +
       `WHERE "accountId" = $accountId AND "accountAutomaticTagPolicy"."policy" = $policy AND ` +
-        `"automaticTag"."name" IN (${createSafeIn(this.sequelize, tags)}) ` +
+      `"automaticTag"."name" IN (${createSafeIn(this.sequelize, tags)}) ` +
       `LIMIT 1`
 
     return doesExist({ sequelize: this.sequelize, query, bind: { accountId, policy }, transaction })

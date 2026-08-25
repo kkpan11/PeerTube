@@ -7,8 +7,8 @@ import {
 } from '../../types'
 
 type ControlBarOptionsBuilderConstructorOptions =
-  Pick<PeerTubePlayerConstructorOptions, 'peertubeLink' | 'instanceName' | 'theaterButton'> &
-  {
+  & Pick<PeerTubePlayerConstructorOptions, 'peertubeLink' | 'instanceName' | 'theaterButton'>
+  & {
     videoShortUUID: () => string
     p2pEnabled: () => boolean
 
@@ -17,7 +17,6 @@ type ControlBarOptionsBuilderConstructorOptions =
   }
 
 export class ControlBarOptionsBuilder {
-
   constructor (private options: ControlBarOptionsBuilderConstructorOptions) {
   }
 
@@ -35,8 +34,9 @@ export class ControlBarOptionsBuilder {
 
       p2PInfoButton: {},
 
-      muteToggle: {},
-      volumeControl: {},
+      volumePanel: {
+        inline: false
+      },
 
       captionToggleButton: {},
 
@@ -58,6 +58,7 @@ export class ControlBarOptionsBuilder {
     settingEntries.push('playbackRateMenuButton')
     settingEntries.push('captionsButton')
     settingEntries.push('resolutionMenuButton')
+    settingEntries.push('videoFilterMenuButton')
 
     return {
       settingsButton: {
@@ -84,11 +85,7 @@ export class ControlBarOptionsBuilder {
       progressControl: {
         children: {
           seekBar: {
-            children: {
-              loadProgressBar: {},
-              mouseTimeDisplay: {},
-              playProgressBar: {}
-            }
+            children: [ 'loadProgressBar', 'playProgressBar' ]
           }
         }
       }

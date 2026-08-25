@@ -1,8 +1,8 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
-import { expect } from 'chai'
 import {
   BooleanBothQuery,
+  NSFWFlag,
   VideoChannelsSearchQuery,
   VideoPlaylistPrivacy,
   VideoPlaylistsSearchQuery,
@@ -16,6 +16,7 @@ import {
   SearchCommand,
   setAccessTokensToServers
 } from '@peertube/peertube-server-commands'
+import { expect } from 'chai'
 
 describe('Test index search', function () {
   const localVideoName = 'local video' + new Date().toISOString()
@@ -36,7 +37,6 @@ describe('Test index search', function () {
   })
 
   describe('Default search', async function () {
-
     it('Should make a local videos search by default', async function () {
       await server.config.updateExistingConfig({
         newConfig: {
@@ -88,7 +88,6 @@ describe('Test index search', function () {
   })
 
   describe('Videos search', async function () {
-
     async function check (search: VideosSearchQuery, exists = true) {
       const body = await command.advancedVideoSearch({ search })
 
@@ -108,17 +107,18 @@ describe('Test index search', function () {
       expect(video.licence.label).to.equal('Attribution - Share Alike')
       expect(video.privacy.label).to.equal('Public')
       expect(video.duration).to.equal(113)
+      // oxlint-disable-next-line @typescript-eslint/no-deprecated
       expect(video.thumbnailUrl.startsWith('https://framatube.org/lazy-static/thumbnails')).to.be.true
 
       expect(video.account.host).to.equal('framatube.org')
       expect(video.account.name).to.equal('framasoft')
       expect(video.account.url).to.equal('https://framatube.org/accounts/framasoft')
-      expect(video.account.avatars.length).to.equal(2, 'Account should have one avatar image')
+      expect(video.account.avatars.length).to.equal(4, 'Account should have four avatar images')
 
       expect(video.channel.host).to.equal('framatube.org')
       expect(video.channel.name).to.equal('joinpeertube')
       expect(video.channel.url).to.equal('https://framatube.org/video-channels/joinpeertube')
-      expect(video.channel.avatars.length).to.equal(2, 'Channel should have one avatar image')
+      expect(video.channel.avatars.length).to.equal(4, 'Channel should have four avatar images')
     }
 
     const baseSearch: VideosSearchQuery = {
@@ -147,6 +147,10 @@ describe('Test index search', function () {
 
     it('Should make a simple search', async function () {
       await check(baseSearch)
+    })
+
+    it('Should sort results', async function () {
+      await check({ ...baseSearch, sort: '-hot' }, true)
     })
 
     it('Should search by start date', async function () {
@@ -179,6 +183,29 @@ describe('Test index search', function () {
         const search = { ...baseSearch, nsfw: 'both' as BooleanBothQuery }
         await check(search, true)
       }
+    })
+
+    it('Should search by nsfw flag', async function () {
+      const checkNSFW = async (search: VideosSearchQuery, exists = true) => {
+        const body = await command.advancedVideoSearch({ search: { search: 'NSFW', host: 'peertube2.cpy.re', ...search } })
+        const video = body.data.find(v => v.name === 'NSFW test')
+
+        if (exists === false) {
+          expect(video).to.not.exist
+          return
+        }
+
+        expect(video).to.exist
+        expect(video.nsfw).to.be.true
+        expect(video.nsfwFlags).to.equal(NSFWFlag.VIOLENT)
+        expect(video.nsfwSummary).to.equal('This video can be violent')
+      }
+
+      await checkNSFW({ nsfw: 'false', nsfwFlagsIncluded: NSFWFlag.VIOLENT }, true)
+      await checkNSFW({ nsfw: 'false', nsfwFlagsIncluded: NSFWFlag.VIOLENT | NSFWFlag.EXPLICIT_SEX }, true)
+      await checkNSFW({ nsfw: 'true', nsfwFlagsExcluded: NSFWFlag.VIOLENT }, false)
+      await checkNSFW({ nsfw: 'both', nsfwFlagsExcluded: NSFWFlag.VIOLENT | NSFWFlag.EXPLICIT_SEX }, false)
+      await checkNSFW({ nsfw: 'false', nsfwFlagsIncluded: NSFWFlag.EXPLICIT_SEX }, false)
     })
 
     it('Should search by host', async function () {
@@ -279,7 +306,6 @@ describe('Test index search', function () {
   })
 
   describe('Channels search', async function () {
-
     async function check (search: VideoChannelsSearchQuery, exists = true) {
       const body = await command.advancedChannelSearch({ search })
 
@@ -295,13 +321,13 @@ describe('Test index search', function () {
       const videoChannel = body.data[0]
       expect(videoChannel.url).to.equal('https://framatube.org/video-channels/bf54d359-cfad-4935-9d45-9d6be93f63e8')
       expect(videoChannel.host).to.equal('framatube.org')
-      expect(videoChannel.avatars.length).to.equal(2, 'Channel should have two avatar images')
+      expect(videoChannel.avatars.length).to.equal(4, 'Channel should have four avatar images')
       expect(videoChannel.displayName).to.exist
 
       expect(videoChannel.ownerAccount.url).to.equal('https://framatube.org/accounts/framasoft')
       expect(videoChannel.ownerAccount.name).to.equal('framasoft')
       expect(videoChannel.ownerAccount.host).to.equal('framatube.org')
-      expect(videoChannel.ownerAccount.avatars.length).to.equal(2, 'Account should have two avatar images')
+      expect(videoChannel.ownerAccount.avatars.length).to.equal(4, 'Account should have four avatar images')
     }
 
     it('Should make a simple search and not have results', async function () {
@@ -335,7 +361,6 @@ describe('Test index search', function () {
   })
 
   describe('Playlists search', async function () {
-
     async function check (search: VideoPlaylistsSearchQuery, exists = true) {
       const body = await command.advancedPlaylistSearch({ search })
 
@@ -351,6 +376,7 @@ describe('Test index search', function () {
       const videoPlaylist = body.data[0]
 
       expect(videoPlaylist.url).to.equal('https://peertube2.cpy.re/videos/watch/playlist/73804a40-da9a-40c2-b1eb-2c6d9eec8f0a')
+      // oxlint-disable-next-line @typescript-eslint/no-deprecated
       expect(videoPlaylist.thumbnailUrl).to.exist
       expect(videoPlaylist.embedUrl).to.equal('https://peertube2.cpy.re/video-playlists/embed/fgei1ws1oa6FCaJ2qZPG29')
 
@@ -367,12 +393,12 @@ describe('Test index search', function () {
       expect(videoPlaylist.ownerAccount.url).to.equal('https://peertube2.cpy.re/accounts/chocobozzz')
       expect(videoPlaylist.ownerAccount.name).to.equal('chocobozzz')
       expect(videoPlaylist.ownerAccount.host).to.equal('peertube2.cpy.re')
-      expect(videoPlaylist.ownerAccount.avatars.length).to.equal(2, 'Account should have two avatar images')
+      expect(videoPlaylist.ownerAccount.avatars.length).to.equal(4, 'Account should have four avatar images')
 
       expect(videoPlaylist.videoChannel.url).to.equal('https://peertube2.cpy.re/video-channels/chocobozzz_channel')
       expect(videoPlaylist.videoChannel.name).to.equal('chocobozzz_channel')
       expect(videoPlaylist.videoChannel.host).to.equal('peertube2.cpy.re')
-      expect(videoPlaylist.videoChannel.avatars.length).to.equal(2, 'Channel should have two avatar images')
+      expect(videoPlaylist.videoChannel.avatars.length).to.equal(4, 'Channel should have four avatar images')
     }
 
     it('Should make a simple search and not have results', async function () {

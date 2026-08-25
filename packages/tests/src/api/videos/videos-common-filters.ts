@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
+/* oxlint-disable @typescript-eslint/no-unused-expressions,@typescript-eslint/require-await */
 
 import { pick } from '@peertube/peertube-core-utils'
 import {
@@ -11,6 +11,7 @@ import {
   VideoIncludeType,
   VideoPrivacy,
   VideoPrivacyType,
+  VideoState,
   VideosCommonQuery
 } from '@peertube/peertube-models'
 import {
@@ -32,6 +33,7 @@ describe('Test videos filter', function () {
   let remotePaths: string[]
 
   const subscriptionVideosPath = '/api/v1/users/me/subscriptions/videos'
+  const userVideosPath = '/api/v1/users/me/videos'
 
   // ---------------------------------------------------------------
 
@@ -86,15 +88,16 @@ describe('Test videos filter', function () {
   })
 
   describe('Check videos filters', function () {
+    async function listVideos (
+      options: {
+        server: PeerTubeServer
+        path: string
 
-    async function listVideos (options: {
-      server: PeerTubeServer
-      path: string
-
-      token?: string
-      expectedStatus?: HttpStatusCodeType
-      excludeAlreadyWatched?: boolean
-    } & VideosCommonQuery) {
+        token?: string
+        expectedStatus?: HttpStatusCodeType
+        excludeAlreadyWatched?: boolean
+      } & VideosCommonQuery
+    ) {
       const res = await makeGetRequest({
         url: options.server.url,
         path: options.path,
@@ -109,6 +112,7 @@ describe('Test videos filter', function () {
             'categoryOneOf',
             'languageOneOf',
             'privacyOneOf',
+            'stateOneOf',
             'excludeAlreadyWatched',
             'host',
             'search'
@@ -131,13 +135,18 @@ describe('Test videos filter', function () {
         token?: string
         expectedStatus?: HttpStatusCodeType
         skipSubscription?: boolean
+        includeUserVideos?: boolean
         excludeAlreadyWatched?: boolean
       }
     ) {
-      const { skipSubscription = false } = options
+      const { skipSubscription = false, includeUserVideos = false } = options
       const videosResults: string[][] = []
 
-      for (const path of paths) {
+      const allPaths = includeUserVideos
+        ? [ ...paths, '/api/v1/users/me/videos' ]
+        : paths
+
+      for (const path of allPaths) {
         if (skipSubscription && path === subscriptionVideosPath) continue
 
         const videos = await listVideos({ ...options, path })
@@ -162,7 +171,6 @@ describe('Test videos filter', function () {
     it('Should display local videos with hidden privacy by the admin or the moderator', async function () {
       for (const server of servers) {
         for (const token of [ server.accessToken, server['moderatorAccessToken'] ]) {
-
           const namesResults = await getVideosNames(
             {
               server,
@@ -187,7 +195,6 @@ describe('Test videos filter', function () {
     it('Should display all videos by the admin or the moderator', async function () {
       for (const server of servers) {
         for (const token of [ server.accessToken, server['moderatorAccessToken'] ]) {
-
           const [ channelVideos, accountVideos, videos, searchVideos ] = await getVideosNames({
             server,
             token,
@@ -278,6 +285,13 @@ describe('Test videos filter', function () {
           expect(video).to.exist
           expect(video.blacklisted).to.be.true
         }
+
+        {
+          const { data: videos } = await servers[0].videos.listMyVideos()
+          const video = finder(videos)
+          expect(video).to.exist
+          expect(video.blacklisted).to.be.true
+        }
       }
     })
 
@@ -343,7 +357,7 @@ describe('Test videos filter', function () {
     })
 
     it('Should include video files', async function () {
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         {
           const videos = await listVideos({ server: servers[0], path })
 
@@ -359,6 +373,8 @@ describe('Test videos filter', function () {
           const videos = await listVideos({ server: servers[0], path, include: VideoInclude.FILES })
 
           for (const video of videos) {
+            if (video.isLive) continue
+
             const videoWithFiles = video as VideoDetails
 
             expect(videoWithFiles.files).to.exist
@@ -372,7 +388,7 @@ describe('Test videos filter', function () {
       await servers[0].videos.upload({ attributes: { name: 'tag filter', tags: [ 'tag1', 'tag2' ] } })
       await servers[0].videos.upload({ attributes: { name: 'tag filter with category', tags: [ 'tag3' ], category: 4 } })
 
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         {
           const videos = await listVideos({ server: servers[0], path, tagsAllOf: [ 'tag1', 'tag2' ] })
           expect(videos).to.have.lengthOf(1)
@@ -401,7 +417,7 @@ describe('Test videos filter', function () {
       await servers[0].videos.upload({ attributes: { name: 'english', language: 'en' } })
       await servers[0].videos.upload({ attributes: { name: 'french', language: 'fr' } })
 
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         {
           const videos = await listVideos({ server: servers[0], path, languageOneOf: [ 'fr', 'en' ] })
           expect(videos).to.have.lengthOf(2)
@@ -465,7 +481,7 @@ describe('Test videos filter', function () {
 
       await waitJobs(servers)
 
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         {
           const videos = await listVideos({ server: servers[0], path, hasWebVideoFiles: true })
 
@@ -518,8 +534,9 @@ describe('Test videos filter', function () {
 
     it('Should filter already watched videos by the user', async function () {
       const { id } = await servers[0].videos.upload({ attributes: { name: 'video for history' } })
+      await waitJobs(servers)
 
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         const videos = await listVideos({ server: servers[0], path, isLocal: true, excludeAlreadyWatched: true })
         const foundVideo = videos.find(video => video.id === id)
 
@@ -527,11 +544,41 @@ describe('Test videos filter', function () {
       }
       await servers[0].views.view({ id, currentTime: 1, token: servers[0].accessToken })
 
-      for (const path of paths) {
+      for (const path of [ ...paths, userVideosPath ]) {
         const videos = await listVideos({ server: servers[0], path, excludeAlreadyWatched: true })
         const foundVideo = videos.find(video => video.id === id)
 
         expect(foundVideo).to.be.undefined
+      }
+    })
+
+    it('Should filter by stateOneOf', async function () {
+      for (const path of paths) {
+        {
+          const videos = await listVideos({ server: servers[0], path, stateOneOf: [ VideoState.PUBLISHED ] })
+          expect(videos.length).to.be.at.least(1)
+        }
+
+        {
+          const videos = await listVideos({ server: servers[0], path, stateOneOf: [ VideoState.TO_TRANSCODE ] })
+          expect(videos).to.have.lengthOf(0)
+        }
+      }
+    })
+  })
+
+  describe('Check sorts', function () {
+    it('Should correctly sort with a search', async function () {
+      for (
+        const sort of [
+          '-match',
+          'hot',
+          'trending',
+          'best',
+          'localVideoFilesSize'
+        ]
+      ) {
+        await servers[0].videos.listAllForAdmin({ sort, search: 'toto' })
       }
     })
   })
